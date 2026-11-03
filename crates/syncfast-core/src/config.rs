@@ -424,7 +424,13 @@ fn expand_tilde(path: &Path, home: &Path) -> PathBuf {
     }
 }
 
-fn valid_id(id: &str) -> bool {
+/// `syncfast-watch.service` already uses this name; a sync with it would
+/// share the unit file.
+const RESERVED_ID: &str = "watch";
+
+/// True for ids that name a sync: `a-z`, `0-9` and `-`, up to 32 characters.
+#[must_use]
+pub fn valid_id(id: &str) -> bool {
     let mut chars = id.chars();
     id.len() <= 32
         && chars
@@ -440,6 +446,9 @@ fn problem_before_overlap(pair: &Pair, duplicate_id: bool, data_dir: &Path) -> O
             "sync id \"{}\" must use a-z, 0-9 and \"-\", up to 32 characters",
             pair.id
         ));
+    }
+    if pair.id == RESERVED_ID {
+        return Some(format!("sync id \"{}\" is reserved", pair.id));
     }
     if duplicate_id {
         return Some(format!("duplicate sync id \"{}\"", pair.id));
@@ -729,6 +738,13 @@ mod tests {
                 )]
             );
         }
+    }
+
+    #[test]
+    fn id_watch_is_reserved_for_the_watcher_unit() {
+        let config = config(&[pair_block("watch", "Watch", "/data/Watch", "gdrive:")]);
+
+        assert_eq!(messages(&config), ["sync id \"watch\" is reserved"]);
     }
 
     #[test]

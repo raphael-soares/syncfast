@@ -1,0 +1,732 @@
+//! `syncfast watch` (spec step 9): inotify on every enabled sync's local
+//! tree, and a debounced round trigger per sync.
+
+use std::collections::{HashMap, HashSet};
+use std::ffi::OsString;
+use std::future::{Future, pending, poll_fn};
+use std::io;
+use std::path::{Path, PathBuf};
+use std::pin::pin;
+use std::process::Stdio;
+use std::sync::Arc;
+use std::time::Duration;
+
+use futures_core::Stream as _;
+use inotify::{EventMask, EventStream, Inotify, WatchDescriptor, WatchMask, Watches};
+use tokio::process::Command;
+use tokio::time::{Instant, sleep_until};
+
+use crate::behavior::Behavior;
+use crate::config::{Config, GlobalConfigError, Pair};
+use crate::filters::{self, DirMatcher};
+use crate::network::BoxFuture;
+use crate::paths::Paths;
+use crate::rclone::{Rclone, RcloneError};
+use crate::state::is_running;
+use crate::units::{Systemctl, SystemdMode, command_text, service_name};
+
+/// How often a trigger blocked by a running round looks at the lock again.
+pub const LOCK_RECHECK: Duration = Duration::from_secs(5);
+/// Quiet time after `config.toml` changes before the watches are rebuilt.
+const CONFIG_RELOAD_DELAY: Duration = Duration::from_millis(500);
+const EVENT_BUFFER_BYTES: usize = 4096;
+
+const TREE_MASK: WatchMask = WatchMask::CREATE
+    .union(WatchMask::DELETE)
+    .union(WatchMask::MODIFY)
+    .union(WatchMask::MOVED_FROM)
+    .union(WatchMask::MOVED_TO)
+    .union(WatchMask::CLOSE_WRITE)
+    .union(WatchMask::DELETE_SELF);
+const CONFIG_MASK: WatchMask = WatchMask::CLOSE_WRITE
+    .union(WatchMask::MOVED_TO)
+    .union(WatchMask::CREATE)
+    .union(WatchMask::DELETE)
+    .union(WatchMask::MOVED_FROM);
+
+#[derive(Debug, thiserror::Error)]
+pub enum WatchError {
+    #[error("{0}")]
+    Config(#[from] GlobalConfigError),
+    #[error("{0}")]
+    Rclone(#[from] RcloneError),
+    #[error("inotify: {0}")]
+    Inotify(#[source] io::Error),
+}
+
+impl WatchError {
+    /// 2 for a config the user must fix, 1 for anything else.
+    #[must_use]
+    pub fn exit_code(&self) -> u8 {
+        match self {
+            Self::Config(_) => 2,
+            _ => 1,
+        }
+    }
+}
+
+/// Starts a round of a sync. Never waits for the round to end.
+pub trait Trigger: Send + Sync {
+    fn start<'a>(&'a self, pair_id: &'a str) -> BoxFuture<'a, ()>;
+}
+
+/// `systemctl --user start --no-block syncfast-<id>.service`.
+pub struct SystemdTrigger {
+    systemctl: Arc<dyn Systemctl>,
+}
+
+impl SystemdTrigger {
+    #[must_use]
+    pub fn new(systemctl: Arc<dyn Systemctl>) -> Self {
+        Self { systemctl }
+    }
+}
+
+impl std::fmt::Debug for SystemdTrigger {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SystemdTrigger").finish_non_exhaustive()
+    }
+}
+
+impl Trigger for SystemdTrigger {
+    fn start<'a>(&'a self, pair_id: &'a str) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            let service = service_name(pair_id);
+            let args = ["start", "--no-block", service.as_str()];
+            if let Err(stderr) = self.systemctl.run(&args).await {
+                log::warn!("{}: {stderr}", command_text(&args));
+            }
+        })
+    }
+}
+
+/// `syncfast run <id>` as a child process, for [`SystemdMode::Off`].
+#[derive(Debug, Clone)]
+pub struct ChildTrigger {
+    bin: PathBuf,
+}
+
+impl ChildTrigger {
+    #[must_use]
+    pub fn new(bin: PathBuf) -> Self {
+        Self { bin }
+    }
+}
+
+impl Trigger for ChildTrigger {
+    fn start<'a>(&'a self, pair_id: &'a str) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            let spawned = Command::new(&self.bin)
+                .arg("run")
+                .arg(pair_id)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .spawn();
+            match spawned {
+                Ok(mut child) => {
+                    // Reaps the child; its outcome is in the sync's state.
+                    tokio::spawn(async move {
+                        if let Err(err) = child.wait().await {
+                            log::warn!("cannot wait for a round: {err}");
+                        }
+                    });
+                }
+                Err(err) => log::warn!("cannot start {} run {pair_id}: {err}", self.bin.display()),
+            }
+        })
+    }
+}
+
+/// The trigger for `mode`: systemd units, or the CLI binary at `bin`.
+#[must_use]
+pub fn trigger_for(
+    mode: SystemdMode,
+    bin: PathBuf,
+    systemctl: Arc<dyn Systemctl>,
+) -> Arc<dyn Trigger> {
+    match mode {
+        SystemdMode::User => Arc::new(SystemdTrigger::new(systemctl)),
+        SystemdMode::Off => Arc::new(ChildTrigger::new(bin)),
+    }
+}
+
+/// What the watcher needs from the outside world.
+pub struct WatchEnv {
+    pub paths: Paths,
+    pub rclone: Rclone,
+    pub trigger: Arc<dyn Trigger>,
+    /// The timings (and `watch` switch) of a sync.
+    pub behavior_for: fn(&Pair) -> Behavior,
+    pub lock_recheck: Duration,
+}
+
+impl WatchEnv {
+    #[must_use]
+    pub fn new(paths: Paths, rclone: Rclone, trigger: Arc<dyn Trigger>) -> Self {
+        Self {
+            paths,
+            rclone,
+            trigger,
+            behavior_for: Behavior::for_pair,
+            lock_recheck: LOCK_RECHECK,
+        }
+    }
+}
+
+impl std::fmt::Debug for WatchEnv {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WatchEnv")
+            .field("paths", &self.paths)
+            .field("rclone", &self.rclone)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Idle,
+    /// Changes seen. Fires `debounce` after the last one, or `max_wait`
+    /// after the first, whichever comes first.
+    Pending {
+        first: Instant,
+        last: Instant,
+    },
+    /// A round was running when the sync was due. Events only mark it
+    /// dirty (they are mostly the round's own writes); the lock is polled.
+    Blocked {
+        check_at: Instant,
+    },
+    /// The round ended: one more `debounce`, then a single trigger.
+    Settling {
+        fire_at: Instant,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Timing {
+    debounce: Duration,
+    max_wait: Duration,
+    recheck: Duration,
+}
+
+/// When a sync's trigger fires. Pure: time and the lock state come in as
+/// arguments.
+#[derive(Debug, Clone, Copy)]
+struct Schedule {
+    timing: Timing,
+    phase: Phase,
+}
+
+impl Schedule {
+    fn new(timing: Timing) -> Self {
+        Self {
+            timing,
+            phase: Phase::Idle,
+        }
+    }
+
+    /// A change under the sync's local folder.
+    fn event(&mut self, now: Instant, running: impl FnOnce() -> bool) {
+        self.phase = match self.phase {
+            Phase::Idle if running() => Phase::Blocked {
+                check_at: now + self.timing.recheck,
+            },
+            Phase::Idle => Phase::Pending {
+                first: now,
+                last: now,
+            },
+            Phase::Pending { first, .. } => Phase::Pending { first, last: now },
+            blocked_or_settling => blocked_or_settling,
+        };
+    }
+
+    fn deadline(&self) -> Option<Instant> {
+        match self.phase {
+            Phase::Idle => None,
+            Phase::Pending { first, last } => Some(self.pending_fire_at(first, last)),
+            Phase::Blocked { check_at } => Some(check_at),
+            Phase::Settling { fire_at } => Some(fire_at),
+        }
+    }
+
+    fn pending_fire_at(&self, first: Instant, last: Instant) -> Instant {
+        (last + self.timing.debounce).min(first + self.timing.max_wait)
+    }
+
+    /// Advances to `now`; true when the trigger must fire.
+    fn due(&mut self, now: Instant, running: impl FnOnce() -> bool) -> bool {
+        if self.deadline().is_none_or(|deadline| now < deadline) {
+            return false;
+        }
+        match self.phase {
+            Phase::Idle => false,
+            Phase::Pending { .. } => {
+                if running() {
+                    self.phase = Phase::Blocked {
+                        check_at: now + self.timing.recheck,
+                    };
+                    false
+                } else {
+                    self.phase = Phase::Idle;
+                    true
+                }
+            }
+            Phase::Blocked { .. } => {
+                self.phase = if running() {
+                    Phase::Blocked {
+                        check_at: now + self.timing.recheck,
+                    }
+                } else {
+                    Phase::Settling {
+                        fire_at: now + self.timing.debounce,
+                    }
+                };
+                false
+            }
+            Phase::Settling { .. } => {
+                self.phase = Phase::Idle;
+                true
+            }
+        }
+    }
+}
+
+/// A sync whose tree is watched.
+#[derive(Debug)]
+struct Watched {
+    id: String,
+    root: PathBuf,
+    matcher: DirMatcher,
+    timing: Timing,
+}
+
+/// The directories with a watch, by descriptor.
+#[derive(Debug)]
+struct Dir {
+    pair: usize,
+    /// Relative to the sync's local folder; empty for the folder itself.
+    rel: PathBuf,
+}
+
+fn is_watch_limit(err: &io::Error) -> bool {
+    err.kind() == io::ErrorKind::StorageFull
+}
+
+/// The inotify watcher. [`Watcher::start`] puts the watches in place;
+/// [`Watcher::run`] then serves events until told to stop.
+pub struct Watcher {
+    env: WatchEnv,
+    stream: EventStream<Vec<u8>>,
+    watches: Watches,
+    pairs: Vec<Watched>,
+    dirs: HashMap<WatchDescriptor, Dir>,
+    /// Syncs that ran into the inotify limit and are left to the timer.
+    limit_hit: HashSet<usize>,
+    schedules: HashMap<String, Schedule>,
+    config_watch: Option<(WatchDescriptor, OsString)>,
+    reload_at: Option<Instant>,
+}
+
+impl std::fmt::Debug for Watcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Watcher")
+            .field("pairs", &self.pairs)
+            .field("directories", &self.dirs.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Watcher {
+    /// Loads the config and watches every enabled sync with `watch` on.
+    ///
+    /// # Errors
+    /// The config has a global problem, rclone cannot list its accounts, or
+    /// inotify cannot start.
+    pub async fn start(env: WatchEnv) -> Result<Self, WatchError> {
+        let inotify = Inotify::init().map_err(WatchError::Inotify)?;
+        let registry = inotify.watches();
+        let stream = inotify
+            .into_event_stream(vec![0; EVENT_BUFFER_BYTES])
+            .map_err(WatchError::Inotify)?;
+        let pairs = load_pairs(&env).await?;
+        let mut watcher = Self {
+            env,
+            stream,
+            watches: registry,
+            pairs,
+            dirs: HashMap::new(),
+            limit_hit: HashSet::new(),
+            schedules: HashMap::new(),
+            config_watch: None,
+            reload_at: None,
+        };
+        watcher.watch_config().await;
+        watcher.watch_trees();
+        Ok(watcher)
+    }
+
+    /// Serves events and fires triggers until `shutdown` completes.
+    ///
+    /// # Errors
+    /// The inotify stream failed.
+    pub async fn run(mut self, shutdown: impl Future<Output = ()>) -> Result<(), WatchError> {
+        let mut shutdown = pin!(shutdown);
+        loop {
+            let deadline = self.next_deadline();
+            tokio::select! {
+                () = &mut shutdown => return Ok(()),
+                event = poll_fn(|cx| std::pin::Pin::new(&mut self.stream).poll_next(cx)) => {
+                    match event {
+                        Some(Ok(event)) => self.handle(&event.wd, event.mask, event.name.as_deref()),
+                        Some(Err(err)) => return Err(WatchError::Inotify(err)),
+                        None => return Err(WatchError::Inotify(io::Error::other("event stream ended"))),
+                    }
+                }
+                () = wait_until(deadline) => self.tick().await,
+            }
+        }
+    }
+
+    fn next_deadline(&self) -> Option<Instant> {
+        self.schedules
+            .values()
+            .filter_map(Schedule::deadline)
+            .chain(self.reload_at)
+            .min()
+    }
+
+    fn is_running(&self, pair: usize) -> bool {
+        is_running(&self.env.paths, &self.pairs[pair].id)
+    }
+
+    fn mark(&mut self, pair: usize, now: Instant) {
+        let running = self.is_running(pair);
+        if let Some(schedule) = self.schedules.get_mut(&self.pairs[pair].id) {
+            schedule.event(now, || running);
+        }
+    }
+
+    async fn tick(&mut self) {
+        let now = Instant::now();
+        if self.reload_at.is_some_and(|at| now >= at) {
+            self.reload_at = None;
+            self.reload().await;
+        }
+        let mut fire = Vec::new();
+        for index in 0..self.pairs.len() {
+            let id = &self.pairs[index].id;
+            let running = || is_running(&self.env.paths, id);
+            if self
+                .schedules
+                .get_mut(id)
+                .is_some_and(|schedule| schedule.due(now, running))
+            {
+                fire.push(id.clone());
+            }
+        }
+        for id in fire {
+            self.env.trigger.start(&id).await;
+        }
+    }
+
+    fn handle(&mut self, wd: &WatchDescriptor, mask: EventMask, name: Option<&std::ffi::OsStr>) {
+        let now = Instant::now();
+        if mask.contains(EventMask::Q_OVERFLOW) {
+            log::warn!("inotify queue overflowed; checking every sync again");
+            for pair in 0..self.pairs.len() {
+                self.mark(pair, now);
+            }
+            self.watch_trees();
+            return;
+        }
+        if let Some((config_wd, file)) = &self.config_watch
+            && wd == config_wd
+        {
+            if name == Some(file.as_os_str()) {
+                self.reload_at = Some(now + CONFIG_RELOAD_DELAY);
+            }
+            return;
+        }
+        if mask.contains(EventMask::IGNORED) {
+            self.dirs.remove(wd);
+            return;
+        }
+        let Some(dir) = self.dirs.get(wd) else {
+            return;
+        };
+        let pair = dir.pair;
+        let rel = name.map_or_else(|| dir.rel.clone(), |name| dir.rel.join(name));
+        if name.is_some() && self.pairs[pair].matcher.is_excluded(&rel) {
+            return;
+        }
+        if mask.contains(EventMask::ISDIR) {
+            if mask.intersects(EventMask::CREATE | EventMask::MOVED_TO) {
+                self.watch_subtree(pair, rel);
+            } else if mask.contains(EventMask::MOVED_FROM) {
+                self.forget_subtree(pair, &rel);
+            }
+        }
+        self.mark(pair, now);
+    }
+
+    /// Puts a watch on every directory of every sync again.
+    fn watch_trees(&mut self) {
+        for (wd, _) in self.dirs.drain() {
+            let _ = self.watches.remove(wd);
+        }
+        self.limit_hit.clear();
+        let timings: Vec<(String, Timing)> = self
+            .pairs
+            .iter()
+            .map(|pair| (pair.id.clone(), pair.timing))
+            .collect();
+        let mut kept = HashMap::new();
+        for (id, timing) in timings {
+            let mut schedule = self
+                .schedules
+                .remove(&id)
+                .unwrap_or_else(|| Schedule::new(timing));
+            schedule.timing = timing;
+            kept.insert(id, schedule);
+        }
+        self.schedules = kept;
+        for pair in 0..self.pairs.len() {
+            self.watch_subtree(pair, PathBuf::new());
+        }
+    }
+
+    /// Watches `start` (relative to the sync's folder) and every directory
+    /// below it that the filters do not exclude.
+    fn watch_subtree(&mut self, pair: usize, start: PathBuf) {
+        let mut pending = vec![start];
+        while let Some(rel) = pending.pop() {
+            if self.limit_hit.contains(&pair) {
+                return;
+            }
+            let watched = &self.pairs[pair];
+            if !rel.as_os_str().is_empty() && watched.matcher.is_excluded(&rel) {
+                continue;
+            }
+            let dir = watched.root.join(&rel);
+            match self.watches.add(&dir, TREE_MASK) {
+                Ok(wd) => {
+                    self.dirs.insert(
+                        wd,
+                        Dir {
+                            pair,
+                            rel: rel.clone(),
+                        },
+                    );
+                }
+                Err(err) if is_watch_limit(&err) => {
+                    log::warn!(
+                        "inotify watch limit reached for \"{}\"; relying on the timer",
+                        watched.id
+                    );
+                    self.limit_hit.insert(pair);
+                    return;
+                }
+                Err(err) => {
+                    log::warn!("cannot watch {}: {err}", dir.display());
+                    continue;
+                }
+            }
+            match std::fs::read_dir(&dir) {
+                Ok(entries) => {
+                    pending.extend(
+                        entries
+                            .filter_map(Result::ok)
+                            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+                            .map(|entry| rel.join(entry.file_name())),
+                    );
+                }
+                Err(err) => log::warn!("cannot list {}: {err}", dir.display()),
+            }
+        }
+    }
+
+    /// A directory moved out of the tree keeps its inode, and with it the
+    /// watches below it; they would report changes outside the sync.
+    fn forget_subtree(&mut self, pair: usize, rel: &Path) {
+        let gone: Vec<WatchDescriptor> = self
+            .dirs
+            .iter()
+            .filter(|(_, dir)| dir.pair == pair && dir.rel.starts_with(rel))
+            .map(|(wd, _)| wd.clone())
+            .collect();
+        for wd in gone {
+            self.dirs.remove(&wd);
+            let _ = self.watches.remove(wd);
+        }
+    }
+
+    /// Watches the folder that holds the real `config.toml` (the target of
+    /// the stow symlink), because that is where saves land.
+    async fn watch_config(&mut self) {
+        if let Some((wd, _)) = self.config_watch.take() {
+            let _ = self.watches.remove(wd);
+        }
+        let file = self.env.paths.config_file();
+        let target = tokio::fs::canonicalize(&file).await.unwrap_or(file);
+        let (Some(dir), Some(name)) = (target.parent(), target.file_name()) else {
+            return;
+        };
+        match self.watches.add(dir, CONFIG_MASK) {
+            Ok(wd) => self.config_watch = Some((wd, name.to_owned())),
+            Err(err) => log::warn!("cannot watch {} for changes: {err}", dir.display()),
+        }
+    }
+
+    async fn reload(&mut self) {
+        match load_pairs(&self.env).await {
+            Ok(pairs) => self.pairs = pairs,
+            Err(err) => {
+                log::warn!("keeping the previous configuration: {err}");
+                return;
+            }
+        }
+        self.watch_config().await;
+        self.watch_trees();
+    }
+}
+
+async fn wait_until(deadline: Option<Instant>) {
+    match deadline {
+        Some(at) => sleep_until(at).await,
+        None => pending().await,
+    }
+}
+
+/// The valid, enabled syncs that want their folder watched.
+async fn load_pairs(env: &WatchEnv) -> Result<Vec<Watched>, WatchError> {
+    let config = Config::load(&env.paths).await?;
+    let accounts = env.rclone.listremotes().await?;
+    let validation = config.validate(&env.paths, &accounts);
+    let mut watched = Vec::new();
+    for pair in validation.pairs.iter().filter(|pair| pair.enabled) {
+        let behavior = (env.behavior_for)(pair);
+        if !behavior.watch {
+            continue;
+        }
+        watched.push(Watched {
+            id: pair.id.clone(),
+            root: pair.local.clone(),
+            matcher: DirMatcher::new(&filters::render(pair)),
+            timing: Timing {
+                debounce: behavior.debounce,
+                max_wait: behavior.max_wait,
+                recheck: env.lock_recheck,
+            },
+        });
+    }
+    Ok(watched)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DEBOUNCE: Duration = Duration::from_secs(30);
+    const MAX_WAIT: Duration = Duration::from_secs(300);
+    const RECHECK: Duration = Duration::from_secs(5);
+
+    fn schedule() -> (Schedule, Instant) {
+        let timing = Timing {
+            debounce: DEBOUNCE,
+            max_wait: MAX_WAIT,
+            recheck: RECHECK,
+        };
+        (Schedule::new(timing), Instant::now())
+    }
+
+    fn secs(n: u64) -> Duration {
+        Duration::from_secs(n)
+    }
+
+    #[test]
+    fn burst_of_events_fires_once_a_debounce_after_the_last_one() {
+        let (mut schedule, t0) = schedule();
+
+        for at in [0, 10, 25] {
+            schedule.event(t0 + secs(at), || false);
+        }
+
+        assert_eq!(schedule.deadline(), Some(t0 + secs(25) + DEBOUNCE));
+        assert!(!schedule.due(t0 + secs(54), || false));
+        assert!(schedule.due(t0 + secs(55), || false));
+        assert_eq!(schedule.deadline(), None);
+    }
+
+    #[test]
+    fn continuous_events_fire_at_max_wait_after_the_first() {
+        let (mut schedule, t0) = schedule();
+
+        for at in (0..=290).step_by(10) {
+            schedule.event(t0 + secs(at), || false);
+        }
+
+        assert_eq!(schedule.deadline(), Some(t0 + MAX_WAIT));
+        assert!(!schedule.due(t0 + secs(299), || false));
+        assert!(schedule.due(t0 + MAX_WAIT, || false));
+    }
+
+    #[test]
+    fn event_while_a_round_runs_does_not_start_the_debounce() {
+        let (mut schedule, t0) = schedule();
+
+        schedule.event(t0, || true);
+
+        assert_eq!(schedule.deadline(), Some(t0 + RECHECK));
+        assert!(!schedule.due(t0 + secs(30), || true));
+    }
+
+    #[test]
+    fn due_trigger_waits_for_the_round_then_settles_one_debounce_and_fires_once() {
+        let (mut schedule, t0) = schedule();
+        schedule.event(t0, || false);
+
+        let at_due = schedule.due(t0 + DEBOUNCE, || true);
+        let still_running = schedule.due(t0 + DEBOUNCE + RECHECK, || true);
+        let freed = schedule.due(t0 + DEBOUNCE + 2 * RECHECK, || false);
+        let freed_at = t0 + DEBOUNCE + 2 * RECHECK;
+        let too_early = schedule.due(freed_at + DEBOUNCE - secs(1), || false);
+        let settled = schedule.due(freed_at + DEBOUNCE, || false);
+        let after = schedule.due(freed_at + 2 * DEBOUNCE, || false);
+
+        assert_eq!(
+            [at_due, still_running, freed, too_early, settled, after],
+            [false, false, false, false, true, false]
+        );
+    }
+
+    #[test]
+    fn events_while_blocked_or_settling_change_nothing() {
+        let (mut schedule, t0) = schedule();
+        schedule.event(t0, || true);
+        let blocked = schedule.deadline();
+
+        schedule.event(t0 + secs(1), || false);
+        schedule.event(t0 + secs(2), || true);
+
+        assert_eq!(schedule.deadline(), blocked);
+        assert!(!schedule.due(t0 + RECHECK, || false));
+        let settling = schedule.deadline();
+        schedule.event(t0 + RECHECK + secs(1), || false);
+        assert_eq!(schedule.deadline(), settling);
+        assert!(schedule.due(t0 + RECHECK + DEBOUNCE, || false));
+    }
+
+    #[test]
+    fn nothing_is_due_without_events() {
+        let (mut schedule, t0) = schedule();
+
+        assert_eq!(schedule.deadline(), None);
+        assert!(!schedule.due(t0 + secs(3600), || false));
+    }
+
+    #[test]
+    fn running_out_of_inotify_watches_is_recognized_as_enospc() {
+        assert!(is_watch_limit(&io::Error::from_raw_os_error(28)));
+        assert!(!is_watch_limit(&io::Error::from_raw_os_error(2)));
+    }
+}

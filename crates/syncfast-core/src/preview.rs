@@ -1,9 +1,11 @@
 //! The dry run behind the Review sheet: what a resync or a forced round
 //! would change, without changing anything.
 
+use serde::Serialize;
+
 use crate::behavior::Behavior;
 use crate::bisync::{Mode, ReviewKind, bisync_args, log_file};
-use crate::bisync_log::{RunSummary, summarize};
+use crate::bisync_log::{Change, ChangeKind, RunSummary, summarize};
 use crate::filters;
 use crate::notify::last_error_message;
 use crate::run::{
@@ -19,6 +21,57 @@ pub struct Preview {
     pub summary: RunSummary,
 }
 
+impl Preview {
+    /// What `syncfast preview` prints.
+    #[must_use]
+    pub fn report(&self) -> PreviewReport<'_> {
+        PreviewReport {
+            filters_hash: &self.filters_hash,
+            changes: &self.summary.changes,
+            counts: ChangeCounts::of(&self.summary.changes),
+        }
+    }
+}
+
+/// How many changes of each kind a preview found.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct ChangeCounts {
+    pub upload: u32,
+    pub download: u32,
+    pub overwrite_local: u32,
+    pub overwrite_remote: u32,
+    pub delete_local: u32,
+    pub delete_remote: u32,
+    pub other: u32,
+}
+
+impl ChangeCounts {
+    #[must_use]
+    pub fn of(changes: &[Change]) -> Self {
+        let mut counts = Self::default();
+        for change in changes {
+            let slot = match change.kind {
+                ChangeKind::Upload => &mut counts.upload,
+                ChangeKind::Download => &mut counts.download,
+                ChangeKind::OverwriteLocal => &mut counts.overwrite_local,
+                ChangeKind::OverwriteRemote => &mut counts.overwrite_remote,
+                ChangeKind::DeleteLocal => &mut counts.delete_local,
+                ChangeKind::DeleteRemote => &mut counts.delete_remote,
+                ChangeKind::Other => &mut counts.other,
+            };
+            *slot = slot.saturating_add(1);
+        }
+        counts
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PreviewReport<'a> {
+    pub filters_hash: &'a str,
+    pub changes: &'a [Change],
+    pub counts: ChangeCounts,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum PreviewError {
     /// A round of this sync is running; try again when it finishes.
@@ -32,6 +85,20 @@ pub enum PreviewError {
     Failed { exit_code: i32, message: String },
     #[error(transparent)]
     Run(#[from] RunError),
+}
+
+impl PreviewError {
+    /// 3 when a round is running, 2 for a config the user must fix, 1 for
+    /// anything else.
+    #[must_use]
+    pub fn exit_code(&self) -> u8 {
+        match self {
+            Self::Busy => 3,
+            Self::InvalidPair(_) => 2,
+            Self::Failed { .. } => 1,
+            Self::Run(err) => err.exit_code(),
+        }
+    }
 }
 
 /// Dry-runs `kind` for `pair_id`. Takes the pair's lock for the duration,
@@ -82,4 +149,90 @@ pub async fn preview(
         filters_hash: filters_file.hash,
         summary: summarize(&lines),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn change(kind: ChangeKind, path: &str) -> Change {
+        Change {
+            kind,
+            path: path.to_owned(),
+        }
+    }
+
+    #[test]
+    fn counts_tally_each_kind_and_leave_the_others_at_zero() {
+        let changes = [
+            change(ChangeKind::Upload, "a"),
+            change(ChangeKind::Upload, "b"),
+            change(ChangeKind::DeleteRemote, "c"),
+            change(ChangeKind::Other, "d"),
+        ];
+
+        let counts = ChangeCounts::of(&changes);
+
+        assert_eq!(
+            counts,
+            ChangeCounts {
+                upload: 2,
+                delete_remote: 1,
+                other: 1,
+                ..ChangeCounts::default()
+            }
+        );
+    }
+
+    #[test]
+    fn report_serializes_hash_changes_and_counts() {
+        let preview = Preview {
+            filters_hash: "abc".to_owned(),
+            summary: RunSummary {
+                changes: vec![change(ChangeKind::Download, "x.txt")],
+                ..RunSummary::default()
+            },
+        };
+
+        let json = serde_json::to_value(preview.report()).unwrap();
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "filters_hash": "abc",
+                "changes": [{"kind": "download", "path": "x.txt"}],
+                "counts": {
+                    "upload": 0,
+                    "download": 1,
+                    "overwrite_local": 0,
+                    "overwrite_remote": 0,
+                    "delete_local": 0,
+                    "delete_remote": 0,
+                    "other": 0
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn busy_preview_exits_with_three_and_the_documented_message() {
+        let err = PreviewError::Busy;
+
+        assert_eq!(err.exit_code(), 3);
+        assert_eq!(
+            err.to_string(),
+            "this sync is running; try again when it finishes"
+        );
+    }
+
+    #[test]
+    fn invalid_pair_and_failed_dry_run_exit_with_two_and_one() {
+        let invalid = PreviewError::InvalidPair("bad".to_owned());
+        let failed = PreviewError::Failed {
+            exit_code: 1,
+            message: "boom".to_owned(),
+        };
+
+        assert_eq!([invalid.exit_code(), failed.exit_code()], [2, 1]);
+    }
 }
