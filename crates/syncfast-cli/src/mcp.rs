@@ -1,0 +1,496 @@
+//! `syncfast mcp`: the operations of `syncfast_core::ops` as MCP tools over
+//! stdio. A tool only translates its arguments and the result; the logic
+//! is the core's (ADR 0007).
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use rmcp::handler::server::wrapper::Parameters;
+use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
+use rmcp::{ServerHandler, ServiceExt as _, tool, tool_handler, tool_router};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use syncfast_core::ops::{
+    DEFAULT_DEPTH, DEFAULT_MAX_FOLDERS, DEFAULT_WAIT_SECONDS, ExploreOptions, Keep, NewSync,
+    OpError, Ops,
+};
+
+const INSTRUCTIONS: &str = "\
+syncfast keeps folders on this computer in sync with a cloud account (rclone bisync). \
+You can do what the user can do in syncfast, except signing in: creating an account or \
+changing its credentials is for the user.
+
+Recommended flow:
+1. Explore. list_accounts, then list_remote_folders and explore on the remote \
+(`account:folder`) and on the local folder. Explore reads names, sizes and dates only, \
+never the content of a file. Use it to decide what to sync and what to leave out.
+2. Propose. Tell the user which local folder pairs with which remote folder and which \
+filters you suggest. test_filters says how many files a rule leaves out before anything is saved.
+3. Add. add_sync with the folders the user agreed to (create_local and create_remote only \
+when they agreed to create folders). The new sync is held for a review: nothing is copied yet.
+4. Review. show_review lists what the first sync would change. When agent_can_confirm is \
+true (nothing is deleted), call confirm_review with the filters_hash it returned. When the \
+review deletes files you cannot confirm it: ask the user to review it in syncfast.
+5. Follow. status and show_sync say where each sync stands; sync_now runs a round; \
+list_conflicts and resolve_conflict settle files that changed on both sides; list_activity \
+and show_round_log explain what a round did.
+
+Rules: a changed filter or an error holds the sync for a new review. A sync held because many \
+files would be deleted is for the user to confirm. A first sync of a large folder can take \
+longer than the wait: the round goes on by itself, read status later.";
+
+/// The MCP server: one tool per operation.
+#[derive(Clone)]
+pub struct SyncfastMcp {
+    ops: Arc<Ops>,
+}
+
+fn reply<T: Serialize>(result: Result<T, OpError>) -> CallToolResult {
+    let outcome = result.map_err(|err| err.to_string()).and_then(|value| {
+        serde_json::to_string(&value).map_err(|err| format!("cannot encode the result: {err}"))
+    });
+    match outcome {
+        Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]),
+        Err(message) => CallToolResult::error(vec![ContentBlock::text(message)]),
+    }
+}
+
+fn wait(seconds: Option<u64>) -> Duration {
+    Duration::from_secs(seconds.unwrap_or(DEFAULT_WAIT_SECONDS))
+}
+
+/// One sync, or all of them: exactly one of the two must be asked for.
+fn one_or_all(id: Option<String>, all: Option<bool>) -> Result<Option<String>, OpError> {
+    match (id, all.unwrap_or(false)) {
+        (Some(id), false) => Ok(Some(id)),
+        (None, true) => Ok(None),
+        _ => Err(OpError::Invalid(
+            "give either id (one sync) or all = true (every sync)".to_owned(),
+        )),
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct IdArgs {
+    /// The sync id, as `status` shows it.
+    id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct AddSyncArgs {
+    /// Name shown for the sync.
+    name: String,
+    /// Folder on this computer; `~` is the home folder.
+    local: String,
+    /// Remote folder as `account:folder`, for example `gdrive:Notes`; `gdrive:` is the whole account.
+    remote: String,
+    /// Sync id (a-z, 0-9, `-`, up to 32 characters); made from the name when absent.
+    id: Option<String>,
+    /// Presets to turn on: `system_junk` and `dev_dirs`. All of them when absent; `[]` turns them off.
+    presets: Option<Vec<String>>,
+    /// Custom filter rules, each `- pattern` (exclude) or `+ pattern` (include).
+    filters: Option<Vec<String>>,
+    /// Create the local folder when it does not exist. Only when the user agreed.
+    create_local: Option<bool>,
+    /// Create the remote folder when it does not exist. Only when the user agreed.
+    create_remote: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct RemoveSyncArgs {
+    /// The sync id.
+    id: String,
+    /// Also delete the saved versions of replaced and deleted local files.
+    delete_versions: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct OneOrAllArgs {
+    /// The sync id.
+    id: Option<String>,
+    /// Every sync, instead of one. Give `id` or `all`, not both.
+    all: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct SetFiltersArgs {
+    /// The sync id.
+    id: String,
+    /// The presets to turn on (`system_junk`, `dev_dirs`); replaces the current ones. Unchanged when absent.
+    presets: Option<Vec<String>>,
+    /// Custom rules, each `- pattern` or `+ pattern`; replaces the current ones. Unchanged when absent.
+    rules: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct TestFiltersArgs {
+    /// A sync to test: its folder and rules, unless overridden below.
+    id: Option<String>,
+    /// A folder on this computer, to test before a sync exists. Give `id` or `local`.
+    local: Option<String>,
+    /// Presets to test with. Absent: the sync's, or all of them.
+    presets: Option<Vec<String>>,
+    /// Rules to test with. Absent: the sync's, or none.
+    rules: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct PathArgs {
+    /// A remote folder as `account:folder`; `gdrive:` is the whole account.
+    path: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ExploreArgs {
+    /// A folder on this computer (absolute, or starting with `~`), or a remote folder as `account:folder`.
+    target: String,
+    /// How many levels of folders to list below the target. Default 2.
+    depth: Option<usize>,
+    /// The most folders to list, biggest first, so the answer stays short. Default 60.
+    max_folders: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct SyncNowArgs {
+    /// The sync id.
+    id: Option<String>,
+    /// Every enabled sync, instead of one. Give `id` or `all`, not both.
+    all: Option<bool>,
+    /// Seconds to wait for the round to end (default 60; 0 returns at once). The round goes on by itself.
+    wait_seconds: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ConfirmReviewArgs {
+    /// The sync id.
+    id: String,
+    /// The `filters_hash` that `show_review` returned.
+    filters_hash: String,
+    /// Seconds to wait for the round to end (default 60; 0 returns at once). The round goes on by itself.
+    wait_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum KeepArg {
+    /// Delete the conflicted copy.
+    Current,
+    /// The conflicted copy becomes the file; the current one goes to the saved versions.
+    Conflicted,
+    /// Keep the conflicted copy beside the file under a new name.
+    Both,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ResolveConflictArgs {
+    /// The sync id.
+    id: String,
+    /// The conflicted copy, relative to the sync's folder, as `list_conflicts` shows it.
+    path: String,
+    /// Which version to keep.
+    keep: KeepArg,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct RoundLogArgs {
+    /// The sync id.
+    id: String,
+    /// The round, as `list_activity` shows it.
+    round: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ThemeArgs {
+    /// `system`, `light`, `dark` or a file of the themes folder. Absent: only report the current one.
+    name: Option<String>,
+}
+
+#[tool_router]
+impl SyncfastMcp {
+    #[must_use]
+    pub fn new(ops: Ops) -> Self {
+        Self { ops: Arc::new(ops) }
+    }
+
+    #[tool(
+        description = "Every sync with its status (up to date, review needed, paused, offline, ...), gate and last success.",
+        annotations(read_only_hint = true)
+    )]
+    async fn status(&self) -> CallToolResult {
+        reply(self.ops.status().await)
+    }
+
+    #[tool(
+        description = "One sync: folders, filters, status, gate, the filters hash and the counters of the last round.",
+        annotations(read_only_hint = true)
+    )]
+    async fn show_sync(&self, Parameters(args): Parameters<IdArgs>) -> CallToolResult {
+        reply(self.ops.show(&args.id).await)
+    }
+
+    #[tool(
+        description = "Create a sync between a folder on this computer and a remote folder. It starts held for the review of its first round: nothing is copied until show_review and confirm_review.",
+        annotations(read_only_hint = false, destructive_hint = false)
+    )]
+    async fn add_sync(&self, Parameters(args): Parameters<AddSyncArgs>) -> CallToolResult {
+        reply(
+            self.ops
+                .add(NewSync {
+                    name: args.name,
+                    local: args.local,
+                    remote: args.remote,
+                    id: args.id,
+                    presets: args.presets,
+                    filters: args.filters.unwrap_or_default(),
+                    create_local: args.create_local.unwrap_or(false),
+                    create_remote: args.create_remote.unwrap_or(false),
+                })
+                .await,
+        )
+    }
+
+    #[tool(
+        description = "Remove a sync from syncfast. Files on both sides stay. delete_versions also deletes the saved versions of replaced local files.",
+        annotations(read_only_hint = false, destructive_hint = true)
+    )]
+    async fn remove_sync(&self, Parameters(args): Parameters<RemoveSyncArgs>) -> CallToolResult {
+        reply(
+            self.ops
+                .remove(&args.id, args.delete_versions.unwrap_or(false))
+                .await,
+        )
+    }
+
+    #[tool(
+        description = "Pause one sync, or all of them. A paused sync does not run.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    async fn pause_sync(&self, Parameters(args): Parameters<OneOrAllArgs>) -> CallToolResult {
+        match one_or_all(args.id, args.all) {
+            Ok(id) => reply(self.ops.set_enabled(id.as_deref(), false).await),
+            Err(err) => reply::<()>(Err(err)),
+        }
+    }
+
+    #[tool(
+        description = "Resume a paused sync, or all of them.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    async fn resume_sync(&self, Parameters(args): Parameters<OneOrAllArgs>) -> CallToolResult {
+        match one_or_all(args.id, args.all) {
+            Ok(id) => reply(self.ops.set_enabled(id.as_deref(), true).await),
+            Err(err) => reply::<()>(Err(err)),
+        }
+    }
+
+    #[tool(
+        description = "Set the presets and custom rules of a sync; what is not given stays. A rule is a line starting with `- ` (exclude) or `+ ` (include). Changed filters hold the sync for a new review.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    async fn set_filters(&self, Parameters(args): Parameters<SetFiltersArgs>) -> CallToolResult {
+        reply(
+            self.ops
+                .set_filters(&args.id, args.presets, args.rules)
+                .await,
+        )
+    }
+
+    #[tool(
+        description = "Count the files that filters would leave out of a sync folder (and the top folders they are in), without changing anything. Say how many files a rule excludes before saving it.",
+        annotations(read_only_hint = true)
+    )]
+    async fn test_filters(&self, Parameters(args): Parameters<TestFiltersArgs>) -> CallToolResult {
+        reply(
+            self.ops
+                .test_filters(
+                    args.id.as_deref(),
+                    args.local.as_deref(),
+                    args.presets,
+                    args.rules,
+                )
+                .await,
+        )
+    }
+
+    #[tool(
+        description = "The accounts rclone knows: name, type, and a warning when a Google Drive account uses rclone's shared client ID. Never secrets. Creating an account is for the user.",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_accounts(&self) -> CallToolResult {
+        reply(self.ops.accounts().await)
+    }
+
+    #[tool(
+        description = "The folders directly inside a remote folder (`account:folder`; `account:` is the root).",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_remote_folders(&self, Parameters(args): Parameters<PathArgs>) -> CallToolResult {
+        reply(self.ops.folders(&args.path).await)
+    }
+
+    #[tool(
+        description = "Create a remote folder (`account:folder`) and the missing ones above it. Only when the user agreed to it.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    async fn create_remote_folder(&self, Parameters(args): Parameters<PathArgs>) -> CallToolResult {
+        reply(self.ops.make_folder(&args.path).await)
+    }
+
+    #[tool(
+        description = "Summarize a folder, on this computer or remote (`account:folder`): for the folder and each subfolder down to `depth`, the number of files, total size, most common extensions and newest date. Names, sizes and dates only, never file content. Large remotes take a while; explore a subfolder when the whole is big.",
+        annotations(read_only_hint = true)
+    )]
+    async fn explore(&self, Parameters(args): Parameters<ExploreArgs>) -> CallToolResult {
+        reply(
+            self.ops
+                .explore(
+                    &args.target,
+                    ExploreOptions {
+                        depth: args.depth.unwrap_or(DEFAULT_DEPTH),
+                        max_folders: args.max_folders.unwrap_or(DEFAULT_MAX_FOLDERS),
+                    },
+                )
+                .await,
+        )
+    }
+
+    #[tool(
+        description = "Start a round of a sync (or of all enabled ones) and wait for it up to wait_seconds. A sync held for a review does not run until it is confirmed. The round goes on by itself when the wait ends: read status later.",
+        annotations(read_only_hint = false, destructive_hint = false)
+    )]
+    async fn sync_now(&self, Parameters(args): Parameters<SyncNowArgs>) -> CallToolResult {
+        match one_or_all(args.id, args.all) {
+            Ok(id) => reply(
+                self.ops
+                    .sync_now(id.as_deref(), wait(args.wait_seconds))
+                    .await,
+            ),
+            Err(err) => reply::<()>(Err(err)),
+        }
+    }
+
+    #[tool(
+        description = "Dry-run the review a held sync waits for and list what would change (uploads, downloads, replacements, deletions). Returns the filters_hash that confirm_review needs, and whether confirm_review will accept it: it does not when the review deletes files.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    async fn show_review(&self, Parameters(args): Parameters<IdArgs>) -> CallToolResult {
+        reply(self.ops.show_review(&args.id).await)
+    }
+
+    #[tool(
+        description = "Confirm the review that show_review showed, and start the sync it releases. Refused with `This review deletes files. Confirm it in syncfast.` when the review deletes files, and when filters_hash is not the one that was shown or the filters changed since. Nothing changes when it is refused.",
+        annotations(read_only_hint = false, destructive_hint = false)
+    )]
+    async fn confirm_review(
+        &self,
+        Parameters(args): Parameters<ConfirmReviewArgs>,
+    ) -> CallToolResult {
+        reply(
+            self.ops
+                .confirm_review(&args.id, &args.filters_hash, wait(args.wait_seconds))
+                .await,
+        )
+    }
+
+    #[tool(
+        description = "The conflicts of a sync: files that changed on both sides, with the newer kept and the other saved as `<name>.conflictN`. Each has its size and date, current and conflicted.",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_conflicts(&self, Parameters(args): Parameters<IdArgs>) -> CallToolResult {
+        reply(self.ops.conflicts(&args.id).await)
+    }
+
+    #[tool(
+        description = "Settle one conflict: keep the current file, keep the conflicted copy (the current one goes to the saved versions) or keep both (the copy is renamed). Starts a sync of the result.",
+        annotations(read_only_hint = false, destructive_hint = true)
+    )]
+    async fn resolve_conflict(
+        &self,
+        Parameters(args): Parameters<ResolveConflictArgs>,
+    ) -> CallToolResult {
+        let keep = match args.keep {
+            KeepArg::Current => Keep::Current,
+            KeepArg::Conflicted => Keep::Conflicted,
+            KeepArg::Both => Keep::Both,
+        };
+        reply(
+            self.ops
+                .resolve_conflict(&args.id, &PathBuf::from(args.path), keep)
+                .await,
+        )
+    }
+
+    #[tool(
+        description = "The recent rounds of a sync, newest first: when, how long, result, and counts of uploads, downloads and deletions.",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_activity(&self, Parameters(args): Parameters<IdArgs>) -> CallToolResult {
+        reply(self.ops.activity(&args.id).await)
+    }
+
+    #[tool(
+        description = "What one round logged: its last messages, oldest first. The round is a name from list_activity.",
+        annotations(read_only_hint = true)
+    )]
+    async fn show_round_log(&self, Parameters(args): Parameters<RoundLogArgs>) -> CallToolResult {
+        reply(self.ops.round_log(&args.id, &args.round).await)
+    }
+
+    #[tool(
+        description = "Report the window theme, or set it when `name` is given (`system`, `light`, `dark` or a theme file).",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    async fn theme(&self, Parameters(args): Parameters<ThemeArgs>) -> CallToolResult {
+        match args.name {
+            Some(name) => reply(self.ops.set_theme(&name).await),
+            None => reply::<_>(Ok::<_, OpError>(self.ops.theme().await)),
+        }
+    }
+}
+
+#[allow(clippy::unused_async_trait_impl)]
+#[tool_handler]
+impl ServerHandler for SyncfastMcp {
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new("syncfast", env!("CARGO_PKG_VERSION")))
+            .with_instructions(INSTRUCTIONS)
+    }
+}
+
+/// Serves the tools on stdin and stdout until the client closes them.
+///
+/// # Errors
+/// The transport fails to start or breaks.
+pub async fn serve(ops: Ops) -> anyhow::Result<()> {
+    let server = SyncfastMcp::new(ops)
+        .serve(rmcp::transport::stdio())
+        .await?;
+    server.waiting().await?;
+    Ok(())
+}
