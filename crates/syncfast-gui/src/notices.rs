@@ -81,9 +81,10 @@ impl Notices {
 
     pub fn show(&mut self, notice: &Notice) {
         if self.client.is_none() {
+            let entry = fastframe_desktop::desktop_entry("syncfast");
             let app = App::new("syncfast", "syncfast")
-                .desktop_entry("syncfast")
-                .icon("syncfast");
+                .desktop_entry(&entry)
+                .icon(&entry);
             match Client::new(app) {
                 Ok(client) => self.client = Some(client),
                 Err(err) => {

@@ -57,5 +57,5 @@ modules:
     sources:
       - type: dir
         path: ../..
-        skip: [.git, target, .dev, mutants.out]
+        skip: [.git, target, .dev, mutants.out, repo, syncfast.flatpak]
       - cargo-sources.json

@@ -18,6 +18,7 @@ env:
 
 jobs:
   build:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
@@ -29,8 +30,12 @@ jobs:
         run: |
           ostree init --repo=repo --mode=archive-z2
           ostree remote add --repo=repo --no-gpg-verify published "$SITE_URL"
-          ostree pull --repo=repo --mirror --depth=-1 published "app/$APP_ID/x86_64/master" \
-            || echo "No published history yet; starting a new repository."
+          status=$(curl -s -o /dev/null -w '%{http_code}' "${SITE_URL}refs/heads/app/$APP_ID/x86_64/master")
+          case "$status" in
+            404) echo "No published history yet; starting a new repository." ;;
+            200) ostree pull --repo=repo --mirror --depth=-1 published "app/$APP_ID/x86_64/master" ;;
+            *) echo "Unexpected HTTP $status from the published repository" >&2; exit 1 ;;
+          esac
 
       - name: Import the signing key
         env:
