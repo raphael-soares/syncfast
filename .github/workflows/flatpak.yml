@@ -1,0 +1,72 @@
+name: Flatpak
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: flatpak-pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  APP_ID: io.github.raphael_soares.syncfast
+  SITE_URL: https://raphael-soares.github.io/syncfast/
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Restore the published history
+        run: |
+          ostree init --repo=repo --mode=archive-z2
+          ostree remote add --repo=repo --no-gpg-verify published "$SITE_URL"
+          ostree pull --repo=repo --mirror --depth=-1 published "app/$APP_ID/x86_64/master" \
+            || echo "No published history yet; starting a new repository."
+
+      - name: Import the signing key
+        env:
+          FLATPAK_GPG_PRIVATE_KEY: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
+        run: printf '%s' "$FLATPAK_GPG_PRIVATE_KEY" | gpg --batch --import
+
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6.8
+        with:
+          bundle: syncfast.flatpak
+          manifest-path: packaging/flatpak/io.github.raphael_soares.syncfast.yml
+          cache-key: flatpak-builder-${{ hashFiles('packaging/flatpak/io.github.raphael_soares.syncfast.yml', 'packaging/flatpak/cargo-sources.json') }}
+          gpg-sign: ${{ secrets.FLATPAK_GPG_KEY_ID }}
+          artifact-name: syncfast.flatpak
+
+      - name: Publish the repository files
+        env:
+          GPG_KEY_ID: ${{ secrets.FLATPAK_GPG_KEY_ID }}
+        run: |
+          flatpak build-update-repo --gpg-sign="$GPG_KEY_ID" --title=syncfast \
+            --prune --prune-depth=10 --generate-static-deltas repo
+          cp packaging/flatpak/syncfast.flatpakrepo "packaging/flatpak/$APP_ID.flatpakref" repo/
+
+      - uses: actions/upload-pages-artifact@v5.0.0
+        with:
+          path: repo
+
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5.0.1

@@ -40,6 +40,10 @@ flatpak:
 flatpak-bundle: flatpak
     flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo target/flatpak/repo syncfast.flatpak {{flatpak_id}}
 
+# Pulls the latest published build.
+flatpak-update:
+    flatpak update --user io.github.raphael_soares.syncfast
+
 # Regenerates the offline crate sources the Flatpak build needs; run it after Cargo.lock changes.
 flatpak-sources:
     python3 -m venv target/flatpak-tools
