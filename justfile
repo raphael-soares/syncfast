@@ -18,9 +18,10 @@ dev-env:
     mkdir -p .dev/config/syncfast .dev/state .dev/data .dev/run .dev/remote
     printf '[devremote]\ntype = local\n' > .dev/rclone.conf
 
+# The Wayland socket lives in the real XDG_RUNTIME_DIR, which dev mode replaces.
 run-gui-dev: dev-env
     cargo build -p syncfast-cli
-    {{dev_env}} cargo run -p syncfast-gui
+    wl="${WAYLAND_DISPLAY:-}"; case "$wl" in ''|/*) ;; *) wl="$XDG_RUNTIME_DIR/$wl";; esac; {{dev_env}} ${wl:+WAYLAND_DISPLAY=$wl} cargo run -p syncfast-gui
 
 run-cli-dev *args: dev-env
     {{dev_env}} cargo run -p syncfast-cli -- {{args}}

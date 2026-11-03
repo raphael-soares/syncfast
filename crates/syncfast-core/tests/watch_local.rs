@@ -16,7 +16,7 @@ use syncfast_core::behavior::Behavior;
 use syncfast_core::config::Pair;
 use syncfast_core::network::BoxFuture;
 use syncfast_core::state::try_lock_pair;
-use syncfast_core::units::{SystemdMode, UserSystemctl};
+use syncfast_core::units::{Systemctl, SystemdMode, UserSystemctl};
 use syncfast_core::watch::{Trigger, WatchEnv, Watcher, trigger_for};
 use tokio::sync::oneshot;
 
@@ -37,12 +37,13 @@ fn fast(pair: &Pair) -> Behavior {
 struct Recorder(Mutex<Vec<(String, Instant)>>);
 
 impl Trigger for Recorder {
-    fn start<'a>(&'a self, pair_id: &'a str) -> BoxFuture<'a, ()> {
+    fn start<'a>(&'a self, pair_id: &'a str) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
             self.0
                 .lock()
                 .unwrap()
                 .push((pair_id.to_owned(), Instant::now()));
+            Ok(())
         })
     }
 }
@@ -530,7 +531,7 @@ async fn child_trigger_runs_the_cli_binary_with_run_and_the_pair_id() {
     );
     let trigger = trigger_for(SystemdMode::Off, bin, Arc::new(UserSystemctl));
 
-    trigger.start("docs").await;
+    trigger.start("docs").await.unwrap();
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut args = String::new();
     while args.is_empty() && Instant::now() < deadline {
@@ -539,4 +540,42 @@ async fn child_trigger_runs_the_cli_binary_with_run_and_the_pair_id() {
     }
 
     assert_eq!(args, "run docs\n");
+}
+
+#[tokio::test]
+async fn child_trigger_reports_a_binary_that_cannot_be_started() {
+    let bed = Bed::new();
+    let missing = bed.root.join("no-such-syncfast");
+    let trigger = trigger_for(SystemdMode::Off, missing.clone(), Arc::new(UserSystemctl));
+
+    let err = trigger.start("docs").await.unwrap_err();
+
+    assert!(
+        err.starts_with(&format!("cannot start {} run docs", missing.display())),
+        "{err}"
+    );
+}
+
+struct RefusingSystemctl;
+
+impl Systemctl for RefusingSystemctl {
+    fn run<'a>(&'a self, _args: &'a [&'a str]) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async { Err("Unit syncfast-docs.service not found.".to_owned()) })
+    }
+}
+
+#[tokio::test]
+async fn systemd_trigger_reports_the_command_and_the_reason_when_systemctl_refuses() {
+    let trigger = trigger_for(
+        SystemdMode::User,
+        PathBuf::new(),
+        Arc::new(RefusingSystemctl),
+    );
+
+    let err = trigger.start("docs").await.unwrap_err();
+
+    assert_eq!(
+        err,
+        "systemctl --user start --no-block syncfast-docs.service: Unit syncfast-docs.service not found."
+    );
 }

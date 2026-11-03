@@ -1,0 +1,9 @@
+[catalog.syncfast]
+name = "syncfast"
+category = "utility"
+
+[templates.syncfast]
+input_path_modes = { dark = "syncfast-dark.json", light = "syncfast-light.json" }
+output_path = "$XDG_CONFIG_HOME/syncfast/themes/noctalia.json"
+post_hook = "syncfast-gui reload-themes >/dev/null 2>&1 || true"
+requires_path = "$XDG_CONFIG_HOME/syncfast"

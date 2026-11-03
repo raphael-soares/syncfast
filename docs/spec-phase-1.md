@@ -664,7 +664,7 @@ A GUI chama `apply` como função do core: ao iniciar, depois de cada gravação
     - `Syncing` troca o glifo por `refresh-cw`.
     - `Offline` troca por `cloud-off`.
     - Atenção e erro acrescentam um ponto de 35% do tamanho no canto inferior direito, com as cores fixas `#F2B85C` (atenção) e `#F5717F` (erro). São as únicas cores literais fora da paleta.
-  - Pior estado entre pares, pela ordem do passo 6.
+  - Pior estado entre pares, do pior para o melhor: `Error`, `NeedsReview`, `Conflicts`, `Failing`, `Syncing`, `Paused`, `Offline`, `Retrying`, `UpToDate`. O que exige ação do usuário vem antes de rodada em andamento, pausa e falta de rede (a ordem do passo 6 vale para um par só).
 - Template Noctalia em `contrib/noctalia/syncfast/` com `template.toml`, `syncfast-dark.json`, `syncfast-light.json`. Cópia do spotifast trocando `spotifast` por `syncfast`. `output_path = "$XDG_CONFIG_HOME/syncfast/themes/noctalia.json"`, `post_hook = "syncfast-gui reload-themes >/dev/null 2>&1 || true"`, `requires_path = "$XDG_CONFIG_HOME/syncfast"`. Sem a entrada flatpak.
 
 ### 12. Casca da GUI (`main.rs`, `app.rs`, `backend.rs`)
