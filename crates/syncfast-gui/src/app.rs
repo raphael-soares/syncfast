@@ -535,7 +535,12 @@ impl App {
             | Action::ChangeClientId(_)
             | Action::Review(_)
             | Action::AddSyncSheet(_)
-            | Action::Account(_) => self.apply_to_sheets(&action),
+            | Action::Account(_) => {
+                if brings_main_window(&action, self.screens.settings_open) {
+                    self.show_window(ctx);
+                }
+                self.apply_to_sheets(&action);
+            }
             Action::OpenSettings
             | Action::OpenAccounts
             | Action::CloseSettings
@@ -697,6 +702,17 @@ enum CloseRequest {
     Minimize,
 }
 
+/// Sheets draw in the main window, so a sheet opened from the Settings
+/// window must bring the main window forward: it may be minimized, behind
+/// another window, or hidden in the tray.
+fn brings_main_window(action: &Action, settings_open: bool) -> bool {
+    settings_open
+        && matches!(
+            action,
+            Action::AddAccount | Action::ReconnectAccount(_) | Action::ChangeClientId(_)
+        )
+}
+
 fn on_close_requested(intent: CloseIntent, tray_shown: bool) -> CloseRequest {
     match (intent, tray_shown) {
         (CloseIntent::Unplanned, true) => CloseRequest::Hide,
@@ -763,6 +779,29 @@ mod tests {
 
     use super::*;
     use crate::snapshot::PairSnapshot;
+
+    #[test]
+    fn an_account_sheet_asked_from_settings_brings_the_main_window() {
+        let accounts = [
+            Action::AddAccount,
+            Action::ReconnectAccount("gdrive".into()),
+            Action::ChangeClientId("gdrive".into()),
+        ];
+
+        for action in &accounts {
+            assert!(brings_main_window(action, true), "{action:?}");
+            assert!(!brings_main_window(action, false), "{action:?}");
+        }
+    }
+
+    #[test]
+    fn actions_that_open_no_account_sheet_do_not_bring_the_main_window() {
+        assert!(!brings_main_window(
+            &Action::SetTheme(crate::theme::ThemeChoice::Dark),
+            true
+        ));
+        assert!(!brings_main_window(&Action::CloseSettings, true));
+    }
 
     fn app() -> (tempfile::TempDir, App) {
         let dir = tempfile::tempdir().unwrap();
