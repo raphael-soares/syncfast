@@ -1,7 +1,7 @@
 //! The app that outlives its window: it owns the backend, the tray and the
 //! state the screens show, and applies the actions they emit.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use fastframe_shell::window::Geometry;
@@ -23,8 +23,15 @@ use crate::ui::settings::AppearanceView;
 use crate::ui::welcome::{self, WelcomeView};
 use crate::ui::{self, Action, DetailTab, PairRow, ViewModel};
 
-/// The window class the compositor and desktop entry know the app by.
-pub const APP_ID: &str = "syncfast-gui";
+const APP_ID: &str = "syncfast-gui";
+
+/// The window class the compositor and desktop entry know the app by: the
+/// Flatpak app id inside the sandbox, whose exported entry carries it.
+#[must_use]
+pub fn app_id() -> &'static str {
+    static ID: OnceLock<String> = OnceLock::new();
+    ID.get_or_init(|| fastframe_desktop::desktop_entry(APP_ID))
+}
 
 /// How long a hidden start waits for a panel to show the tray item before
 /// it gives up and opens the window, since nothing else could bring it back.
@@ -467,7 +474,7 @@ impl App {
         }
         actions.extend(self.sheets.show(&ctx, &vm.pairs, vm.filter_test.as_ref()));
         if self.screens.settings_open {
-            actions.extend(ui::settings::window(&ctx, &vm, APP_ID));
+            actions.extend(ui::settings::window(&ctx, &vm, app_id()));
         }
         actions.extend(ui::remove::show(&ctx, &vm));
         let (commands, wait) = self.sheets.tick(Instant::now());
