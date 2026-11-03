@@ -13,7 +13,6 @@ use syncfast_core::state::LastOutcome;
 use crate::backend::{Backend, Command, Event};
 use crate::gui_state::{self, GuiState, SettingsPane};
 use crate::instance::{Inbox, Request};
-use crate::runs::RunEntry;
 use crate::screens::Screens;
 use crate::sheets::{Sheets, Surroundings};
 use crate::snapshot::Snapshot;
@@ -22,6 +21,7 @@ use crate::tray::{IconLook, PairView, Summary, SyncTray, TrayView, action as tra
 use crate::ui::settings::AppearanceView;
 use crate::ui::welcome::{self, WelcomeView};
 use crate::ui::{self, Action, DetailTab, PairRow, ViewModel};
+use syncfast_core::runs::RunEntry;
 
 const APP_ID: &str = "syncfast-gui";
 

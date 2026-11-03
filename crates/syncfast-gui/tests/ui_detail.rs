@@ -7,8 +7,8 @@ use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use syncfast_core::bisync_log::{Progress, RunSummary};
+use syncfast_core::runs::RunEntry;
 use syncfast_core::state::{DisplayStatus, GateKind};
-use syncfast_gui::runs::RunEntry;
 use syncfast_gui::theme::{self, Palette};
 use syncfast_gui::ui::{self, Action, DetailTab, PairRow, ViewModel};
 

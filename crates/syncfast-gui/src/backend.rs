@@ -29,13 +29,13 @@ use crate::gui_state::{self, GuiState};
 use crate::instance::Inbox;
 use crate::notices::{Notices, notice_for};
 use crate::pair_tools;
-use crate::runs::{self, RunEntry};
 use crate::sheet_io::{self, PreviewFailure};
 use crate::snapshot::{self, Snapshot};
 use crate::theme::Themes;
 use crate::ui::RemoteRow;
 use crate::ui::account_sheet::{ConnectRequest, Secret};
 use crate::ui::add_sync::{LocalFacts, NewSync};
+use syncfast_core::runs::{self, RunEntry};
 
 const POLL_ACTIVE: Duration = Duration::from_secs(1);
 const POLL_VISIBLE: Duration = Duration::from_secs(2);
