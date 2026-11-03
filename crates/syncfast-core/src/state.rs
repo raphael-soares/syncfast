@@ -620,6 +620,39 @@ mod tests {
         ConfirmMarker::remove(&paths, "drive").await.unwrap();
     }
 
+    #[tokio::test]
+    async fn a_state_file_that_cannot_be_read_is_a_read_error_not_a_first_run() {
+        let (_dir, paths) = temp_paths();
+        std::fs::create_dir_all(paths.state_file("drive")).unwrap();
+
+        let result = State::load(&paths, "drive").await;
+
+        assert!(matches!(result, Err(StateError::Read { .. })), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn a_marker_that_cannot_be_read_is_a_read_error_not_no_marker() {
+        let (_dir, paths) = temp_paths();
+        std::fs::create_dir_all(paths.confirm_file("drive")).unwrap();
+
+        let result = ConfirmMarker::load(&paths, "drive").await;
+
+        assert!(matches!(result, Err(StateError::Read { .. })), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn a_marker_that_cannot_be_deleted_is_a_write_error() {
+        let (_dir, paths) = temp_paths();
+        std::fs::create_dir_all(paths.confirm_file("drive")).unwrap();
+
+        let result = ConfirmMarker::remove(&paths, "drive").await;
+
+        assert!(
+            matches!(result, Err(StateError::Write { .. })),
+            "{result:?}"
+        );
+    }
+
     #[test]
     fn a_pair_whose_lock_file_is_absent_is_not_running() {
         let (_dir, paths) = temp_paths();
@@ -722,6 +755,18 @@ mod tests {
         let (_dir, paths) = temp_paths();
 
         prune_runs(&paths, "drive").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn pruning_a_runs_folder_that_cannot_be_listed_is_a_read_error() {
+        let (_dir, paths) = temp_paths();
+        let runs = paths.runs_dir("drive");
+        std::fs::create_dir_all(runs.parent().unwrap()).unwrap();
+        std::fs::write(&runs, "").unwrap();
+
+        let result = prune_runs(&paths, "drive").await;
+
+        assert!(matches!(result, Err(StateError::Read { .. })), "{result:?}");
     }
 
     #[tokio::test]
