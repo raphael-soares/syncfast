@@ -133,7 +133,7 @@ Estado final da fase 1:
 
 ## Approach
 
-Os passos estão em ordem de dependência. Cada um termina com `just check` verde. Passos 2 a 9 são do `syncfast-core` e da CLI; 10 a 13 da GUI; 14 é a instalação.
+Os passos estão em ordem de dependência. Cada um termina com `just check` verde. Passos 2 a 9 são do `syncfast-core` e da CLI; 10 a 13 da GUI; 14 são os testes; 15 é a instalação; 16 é a interface para agentes de IA.
 
 ### 1. Bootstrap do repositório
 
@@ -886,6 +886,29 @@ Rodar depois de `just check` verde e do roteiro dev da Verification.
    - `rm ~/.cache/rclone/bisync/home_raphael_Notes..gdrive_Notes.*`
    - Se `/mnt/Drive` ainda estiver montado: `fusermount -u /mnt/Drive`. O diretório `/mnt/Drive` não é apagado (exige sudo); fica para o usuário.
 8. Quais pastas viram pares é decisão de uso, feita pela GUI depois.
+
+### 16. Interface para agentes de IA (`syncfast-core/src/ops/`, CLI, `syncfast mcp`)
+
+Decisão e limites em `docs/adr/0007-agent-interface.md`; guia em `docs/agents.md` (o mesmo texto que `syncfast agent-guide` imprime).
+
+- **Operações no core:** `ops::Ops` (caminhos, rclone, rede, notificação, systemctl, binário e `Trigger`) com um método por operação, cada um devolvendo structs `Serialize` ou `OpError` (`Invalid`, `NotFound`, `Busy`, `DeletesNeedUser`, `ReviewNotShown`, `Failed`). CLI e MCP só traduzem argumentos e imprimem. `runs.rs` (histórico de rodadas) passou da GUI para o core.
+- **O agente faz tudo que o usuário faz, menos autenticar:** nenhuma operação cria conta, troca credencial ou roda OAuth. `accounts` lista nome, tipo e o aviso de client_id compartilhado, nunca segredo.
+- **Subcomandos** (todos com `--json`, global; o texto humano é o padrão e a saída atual de `apply`, `run`, `watch`, `preview` e `status` não muda; `watch` não imprime nada, então `--json` não tem efeito nele): `status` (`--json`: tudo de cada sync), `show`, `add`, `remove [--delete-versions]`, `pause`/`resume` (`<id>` ou `--all`), `filters set`, `filters test`, `accounts`, `folders`, `mkdir`, `explore`, `sync [<id>|--all] [--wait <s>]`, `review show`, `review confirm --filters-hash`, `conflicts list`, `conflicts resolve --keep current|conflicted|both`, `activity`, `log`, `theme [<nome>]`, `mcp`, `agent-guide`. Com `--json`, erro sai no stdout como `{"error": {"code", "message"}}`.
+- **`add`:** valida pelo core (mesmas mensagens), exige pasta local existente (`--create-local` cria) e pasta remota existente (`--create-remote` cria), grava o config, roda `apply` e devolve o sync com o gate `needs_review_first_run`.
+- **`filters set`:** troca presets e regras; o que não for dado fica. Mesma regra da GUI: gate `too_many_deletes` ou `all_files_changed` vira `needs_review_filters_changed`; com o hash novo e sem gate, uma rodada curta grava o gate de revisão.
+- **`explore <local|remote:caminho> [--depth N] [--max-folders N]`:** `rclone lsjson -R` e agregação em memória: por pasta até a profundidade (padrão 2), arquivos, arquivos diretos, subpastas, bytes, extensões mais comuns e data do arquivo mais novo. Só metadados, nunca conteúdo. Saída limitada a `max-folders` (padrão 60, as maiores primeiro, `folders_omitted` diz quantas ficaram de fora). Tamanho desconhecido (Google Docs) conta 0 e aparece em `files_of_unknown_size`.
+- **Rodadas:** `sync` e `review confirm` disparam a rodada pelo `Trigger` (systemd, ou filho em `SYNCFAST_SYSTEMD=off`) e esperam até `--wait` segundos (padrão 60; 0 devolve logo). A rodada continua sozinha depois; `finished: false` diz que ainda corre.
+- **Revisão pelo agente:** `review show` roda o preview do gate e grava o que mostrou em `pairs/<id>/preview.json` (`kind`, `filters_hash`, `changes`). `review confirm` só aceita quando:
+  1. o gate espera revisão (`needs_review_*` pede `resync`; `too_many_deletes` e `all_files_changed` pedem `force`);
+  2. existe `preview.json` do mesmo `kind` do gate;
+  3. o preview não tem `DeleteLocal` nem `DeleteRemote`;
+  4. o `--filters-hash` é o do preview e é o hash atual dos filtros.
+  Aceito, grava `confirm.json`, apaga `preview.json` e dispara a rodada. Recusado, nada muda. Exclusão: exit 4 e `This review deletes files. Confirm it in syncfast.`; preview ausente, hash diferente ou filtros mudados: exit 5. Não há flag para contornar.
+- **Códigos de saída:** 0 ok, 1 falha, 2 pedido ou config a corrigir (inclui sync inexistente), 3 sync rodando, 4 só o usuário confirma, 5 mostrar a revisão de novo. Os de `run`, `preview`, `status` e `watch` continuam.
+- **GUI reflete o agente:** o backend relê `config.toml` e todos os `state.json` a cada ciclo (1, 2 ou 10 s), então par criado, pausado, filtrado ou removido pela CLI aparece sem reiniciar. `syncfast theme` grava `theme` em `gui.json` e manda `reload-themes`; a GUI relê o tema do arquivo ao receber esse pedido. O `watch` já recarrega quando o config muda (passo 9).
+- **`syncfast mcp`:** servidor MCP em stdio com `rmcp`. Ferramentas: `status`, `show_sync`, `add_sync`, `remove_sync`, `pause_sync`, `resume_sync`, `set_filters`, `test_filters`, `list_accounts`, `list_remote_folders`, `create_remote_folder`, `explore`, `sync_now`, `show_review`, `confirm_review`, `list_conflicts`, `resolve_conflict`, `list_activity`, `show_round_log`, `theme`, cada uma com descrição e JSON Schema. Erro do core vira resultado de ferramenta com `isError` e a mensagem do core. O `initialize` traz `instructions` com o fluxo: explorar, propor, adicionar, revisar, confirmar ou pedir ao usuário.
+- **`syncfast agent-guide`:** imprime `docs/agents.md` (embutido no binário): fluxo, comandos, regras de segurança, códigos de saída e como configurar o MCP no Claude Code e no omp, inclusive `flatpak run --command=syncfast io.github.raphael_soares.syncfast mcp`.
+- **Testes:** ops com rclone real local (`crates/syncfast-core/tests/ops.rs`: adicionar sync, revisão sem exclusão confirmada, revisão com exclusão recusada com nada alterado, hash velho e filtros mudados recusados, explorar com contagens e tamanhos exatos e sem conteúdo, contas sem segredo, conflitos, filtros, pausar, remover, atividade, tema); CLI e MCP de ponta a ponta com o binário (`crates/syncfast-cli/tests/agent.rs` e `mcp.rs`: initialize, tools/list, tools/call de `status`, `explore` e `confirm_review`).
 
 ## Processo de construção
 

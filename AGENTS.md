@@ -2,7 +2,7 @@
 
 ## Layout
 - `crates/syncfast-core`: library with all logic (paths, config, filters, bisync, state, units, rclone, network, notifications). No egui, eframe, winit or fastframe UI crates; `tests/boundary.rs` enforces it.
-- `crates/syncfast-cli`: binary `syncfast` (`apply`, `run`, `watch`, `preview`, `status`). The systemd units call it.
+- `crates/syncfast-cli`: binary `syncfast` (`apply`, `run`, `watch`, `preview`, `status`, the agent commands, `mcp`, `agent-guide`). The systemd units call it. Commands and MCP tools only translate to `syncfast_core::ops` (ADR 0007); the agent guide is `docs/agents.md`.
 - `crates/syncfast-gui`: binary `syncfast-gui` (egui + fastframe). Uses the core as a library and never calls the CLI binary, except in dev mode (`SYNCFAST_SYSTEMD=off`).
 
 ## Rules
