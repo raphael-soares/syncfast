@@ -192,9 +192,15 @@ pub fn show(ctx: &egui::Context, view: &AddSyncView<'_>, state: &mut AddSyncStat
     buttons.back = state.step != Step::Account;
 
     let mut actions = Vec::new();
-    let chosen = widgets::sheet(ctx, "add-sync", &title, &buttons, |ui| {
-        body(ui, view, state, &mut actions);
-    });
+    let (step, remote_title) = (state.step, remote_step_title(state));
+    let chosen = widgets::sheet_with_header(
+        ctx,
+        "add-sync",
+        &title,
+        &buttons,
+        |ui| step_indicator(ui, step, &remote_title),
+        |ui| body(ui, view, state, &mut actions),
+    );
     match chosen {
         Some(SheetAction::Cancel) => emit(&mut actions, AddSyncAction::Cancel),
         Some(SheetAction::Back) => {
@@ -222,7 +228,6 @@ fn emit(actions: &mut Vec<Action>, action: AddSyncAction) {
 }
 
 fn body(ui: &mut Ui, view: &AddSyncView<'_>, state: &mut AddSyncState, actions: &mut Vec<Action>) {
-    step_indicator(ui, state);
     match state.step {
         Step::Account => account_step(ui, view, state, actions),
         Step::RemoteFolder => remote_step(ui, view, state, actions),
@@ -267,19 +272,18 @@ fn remote_step_title(state: &AddSyncState) -> String {
     )
 }
 
-fn step_indicator(ui: &mut Ui, state: &AddSyncState) {
+fn step_indicator(ui: &mut Ui, step: Step, remote_title: &str) {
     let palette = theme::palette(ui.ctx());
-    let current = match state.step {
+    let current = match step {
         Step::Account => 0,
         Step::RemoteFolder => 1,
         Step::LocalFolder => 2,
         Step::Filters => 3,
         Step::Name => 4,
     };
-    let remote = remote_step_title(state);
     let names = [
         "Account",
-        remote.as_str(),
+        remote_title,
         "Folder on This Computer",
         "Filters",
         "Name",

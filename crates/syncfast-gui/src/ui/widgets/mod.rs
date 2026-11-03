@@ -30,7 +30,7 @@ pub use inline_error::inline_error;
 pub use list_row::list_row;
 pub use progress_bar::progress_bar;
 pub use segmented::segmented;
-pub use sheet::{PrimaryKind, SheetAction, SheetButtons, sheet};
+pub use sheet::{PrimaryKind, SheetAction, SheetButtons, sheet, sheet_with_header};
 pub use sidebar_row::{SidebarRow, sidebar_row};
 pub use status_badge::{BadgeSize, status_badge};
 pub use switch::switch;
