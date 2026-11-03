@@ -177,7 +177,7 @@ pub fn last_stats(lines: &[LogLine]) -> Option<Progress> {
     lines.iter().rev().find_map(|line| line.progress.clone())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChangeKind {
     Upload,
@@ -310,15 +310,15 @@ struct Tracker {
     detected: HashMap<(Side, String), Detected>,
     backed_up: HashSet<String>,
     changes: Vec<Change>,
+    seen: HashSet<(ChangeKind, String)>,
     conflicts: usize,
     completed: bool,
 }
 
 impl Tracker {
     fn push(&mut self, kind: ChangeKind, path: String) {
-        let change = Change { kind, path };
-        if !self.changes.contains(&change) {
-            self.changes.push(change);
+        if self.seen.insert((kind, path.clone())) {
+            self.changes.push(Change { kind, path });
         }
     }
 
@@ -347,10 +347,10 @@ impl Tracker {
             }
             (Op::Copy { replaced }, Some(target)) => {
                 let backed_up = self.backed_up.remove(object);
-                let changed_at_source = self
-                    .detected
-                    .get(&(target.opposite(), object.to_owned()))
-                    .is_some_and(|detected| *detected == Detected::Changed);
+                let detected_at =
+                    |side: Side| self.detected.get(&(side, object.to_owned())).copied();
+                let changed_at_source = detected_at(target.opposite()) == Some(Detected::Changed)
+                    && detected_at(target) != Some(Detected::Deleted);
                 let kind = match (target, replaced || backed_up || changed_at_source) {
                     (Side::Remote, false) => ChangeKind::Upload,
                     (Side::Remote, true) => ChangeKind::OverwriteRemote,
@@ -417,22 +417,8 @@ impl Tracker {
     }
 }
 
-/// What a run did, from its log (real or `--dry-run`).
-///
-/// bisync does not tag object events with a side. The side is the target of
-/// the last `Do queued copies to - PathN` or `Resync is copying files to -
-/// PathN` line: copies, replacements and deletions that follow happen on
-/// that side (`Path1` is local, `Path2` is remote). An overwrite is told
-/// from a plain copy by any of: rclone saying `Copied (replaced existing)`,
-/// the old file moving into `--backup-dir1` first, or the source side
-/// listing the file as `File changed`. A real log says `Deleted` or `Moved
-/// into backup dir` and a dry-run log says `Skipped delete` or `Skipped move
-/// into backup dir`; both map to the same kinds.
-///
-/// Counters are `None` unless the log ends in `Bisync successful`: a run
-/// that stopped early only has a partial picture. A dry run cannot tell a
-/// new file from a replacement on the remote during `--resync`, because
-/// nothing lists them as changed; those show as uploads.
+/// What a run did, from its log (real or `--dry-run`). Side attribution,
+/// overwrite detection and when counters are `None`: ADR 0005.
 #[must_use]
 pub fn summarize(lines: &[LogLine]) -> RunSummary {
     let mut tracker = Tracker::default();
@@ -732,6 +718,63 @@ mod tests {
         let summary = summarize(&fixture("critical"));
 
         assert_eq!(summary, RunSummary::default());
+    }
+
+    fn synthetic(entries: &[(&str, Option<&str>)]) -> Vec<LogLine> {
+        entries
+            .iter()
+            .map(|(msg, object)| {
+                let object = object.map_or(String::new(), |name| {
+                    format!(r#","object":"{name}","objectType":"*local.Object""#)
+                });
+                LogLine::parse(&format!(r#"{{"level":"info","msg":{msg:?}{object}}}"#))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_file_deleted_on_the_remote_and_changed_locally_is_copied_back_as_an_upload() {
+        let log = synthetic(&[
+            ("- Path1  File changed: size (larger)   - f.txt", None),
+            ("- Path2  File was deleted   - f.txt", None),
+            ("- Path1  Do queued copies to   - Path2", None),
+            ("Copied (new)", Some("f.txt")),
+            ("Bisync successful", None),
+        ]);
+
+        let summary = summarize(&log);
+
+        assert_eq!(summary.changes, [change(ChangeKind::Upload, "f.txt")]);
+    }
+
+    #[test]
+    fn a_file_deleted_locally_and_changed_on_the_remote_is_copied_back_as_a_download() {
+        let log = synthetic(&[
+            ("- Path1  File was deleted   - f.txt", None),
+            ("- Path2  File changed: size (larger)   - f.txt", None),
+            ("- Path2  Do queued copies to   - Path1", None),
+            ("Copied (new)", Some("f.txt")),
+            ("Bisync successful", None),
+        ]);
+
+        let summary = summarize(&log);
+
+        assert_eq!(summary.changes, [change(ChangeKind::Download, "f.txt")]);
+    }
+
+    #[test]
+    fn a_repeated_event_for_the_same_file_is_listed_once() {
+        let log = synthetic(&[
+            ("- Path1  Do queued copies to   - Path2", None),
+            ("Copied (new)", Some("a.txt")),
+            ("Copied (new)", Some("a.txt")),
+            ("Bisync successful", None),
+        ]);
+
+        let summary = summarize(&log);
+
+        assert_eq!(summary.changes, [change(ChangeKind::Upload, "a.txt")]);
+        assert_eq!(summary.uploaded, Some(1));
     }
 
     #[test]
