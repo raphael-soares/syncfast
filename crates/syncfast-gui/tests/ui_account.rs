@@ -272,3 +272,13 @@ fn cancel_and_escape_both_close_the_sheet() {
     assert_eq!(by_button.state().actions, cancel);
     assert_eq!(by_key.state().actions, cancel);
 }
+
+#[test]
+fn the_typed_state_never_shows_the_secret_in_debug_output() {
+    let mut state = AccountState::new(AccountMode::Add);
+    state.client_secret = "hunter2".into();
+
+    let shown = format!("{state:?}");
+
+    assert!(!shown.contains("hunter2"), "{shown}");
+}

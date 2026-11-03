@@ -67,12 +67,23 @@ pub enum AccountAction {
 }
 
 /// What the user typed. The app keeps it while the sheet is open.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct AccountState {
     pub mode: AccountMode,
     pub name: String,
     pub client_id: String,
     pub client_secret: String,
+}
+
+impl fmt::Debug for AccountState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AccountState")
+            .field("mode", &self.mode)
+            .field("name", &self.name)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &Secret::new(self.client_secret.clone()))
+            .finish()
+    }
 }
 
 impl AccountState {
