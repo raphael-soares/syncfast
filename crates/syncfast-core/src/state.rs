@@ -238,6 +238,30 @@ pub fn is_running(paths: &Paths, pair_id: &str) -> bool {
     }
 }
 
+/// Takes the pair's lock for a round or a preview, creating the runtime
+/// folder and the lock file. `None` when another round holds it. The lock
+/// is released when the returned file is dropped.
+///
+/// # Errors
+/// The lock file cannot be created or locked.
+pub fn try_lock_pair(paths: &Paths, pair_id: &str) -> Result<Option<File>, StateError> {
+    let path = paths.lock_file(pair_id);
+    let open = || -> std::io::Result<Option<File>> {
+        std::fs::create_dir_all(paths.runtime_subdir())?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(file)),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+            Err(std::fs::TryLockError::Error(err)) => Err(err),
+        }
+    };
+    open().map_err(|source| StateError::Write { path, source })
+}
+
 /// Keeps the [`RUNS_KEPT`] newest logs in the pair's `runs/` folder (names
 /// are timestamps, so the highest names are the newest) and deletes the
 /// rest. A missing folder is fine.
@@ -583,6 +607,21 @@ mod tests {
 
         assert!(while_held);
         assert!(!after);
+    }
+
+    #[test]
+    fn only_one_holder_gets_the_pair_lock_and_it_shows_as_running() {
+        let (_dir, paths) = temp_paths();
+
+        let first = try_lock_pair(&paths, "drive").unwrap();
+        let second = try_lock_pair(&paths, "drive").unwrap();
+        let running = is_running(&paths, "drive");
+        drop(first);
+        let after = try_lock_pair(&paths, "drive").unwrap();
+
+        assert!(second.is_none());
+        assert!(running);
+        assert!(after.is_some());
     }
 
     #[test]
