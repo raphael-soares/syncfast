@@ -325,6 +325,24 @@ impl Rclone {
             .map(str::to_owned)
             .collect())
     }
+
+    /// Every file and folder under `path` (`gdrive:Notes` or a local
+    /// folder), with name, size and modification time. Never the content.
+    ///
+    /// # Errors
+    /// rclone cannot run or fails (for example the folder does not exist).
+    pub async fn list_tree(&self, path: &str) -> Result<Vec<TreeEntry>, RcloneError> {
+        let stdout = self
+            .output(
+                "lsjson",
+                ["lsjson", "-R", "--no-mimetype", "--", path]
+                    .map(OsString::from)
+                    .to_vec(),
+                true,
+            )
+            .await?;
+        serde_json::from_slice(&stdout).map_err(|_| RcloneError::BadOutput("lsjson"))
+    }
 }
 
 #[derive(Deserialize)]
@@ -333,6 +351,21 @@ struct DumpedRemote {
     kind: Option<String>,
     client_id: Option<String>,
     client_secret: Option<String>,
+}
+
+/// One line of `rclone lsjson -R`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct TreeEntry {
+    /// Relative to the listed folder, with `/` between the parts.
+    #[serde(rename = "Path")]
+    pub path: String,
+    /// `-1` when the backend does not know it (Google Docs).
+    #[serde(rename = "Size", default)]
+    pub size: i64,
+    #[serde(rename = "ModTime", default)]
+    pub modified: Option<String>,
+    #[serde(rename = "IsDir", default)]
+    pub is_dir: bool,
 }
 
 #[derive(Deserialize)]

@@ -146,6 +146,12 @@ impl Paths {
         self.pair_state_dir(pair_id).join("confirm.json")
     }
 
+    /// The review an agent last looked at; `review confirm` only accepts it.
+    #[must_use]
+    pub fn preview_file(&self, pair_id: &str) -> PathBuf {
+        self.pair_state_dir(pair_id).join("preview.json")
+    }
+
     #[must_use]
     pub fn runs_dir(&self, pair_id: &str) -> PathBuf {
         self.pair_state_dir(pair_id).join("runs")
