@@ -6,6 +6,8 @@ pub mod icons;
 pub mod instance;
 pub mod notices;
 pub mod runs;
+pub mod sheet_io;
+pub mod sheets;
 pub mod snapshot;
 pub mod theme;
 pub mod tray;

@@ -52,6 +52,19 @@ pub fn sheet(
     buttons: &SheetButtons<'_>,
     body: impl FnOnce(&mut Ui),
 ) -> Option<SheetAction> {
+    sheet_with_header(ctx, id, title, buttons, |_| {}, body)
+}
+
+/// Like [`sheet`], with `header` drawn above the title (the steps of an
+/// assistant, for example).
+pub fn sheet_with_header(
+    ctx: &egui::Context,
+    id: &str,
+    title: &str,
+    buttons: &SheetButtons<'_>,
+    header: impl FnOnce(&mut Ui),
+    body: impl FnOnce(&mut Ui),
+) -> Option<SheetAction> {
     let palette = theme::palette(ctx);
     let id = Id::new(("syncfast-sheet", id));
     let screen = ctx.content_rect();
@@ -79,6 +92,7 @@ pub fn sheet(
                 .show(ui, |ui| {
                     ui.set_width(width - 40.0);
                     ui.spacing_mut().item_spacing.y = space::M;
+                    header(ui);
                     ui.label(
                         RichText::new(title)
                             .font(theme::title2())

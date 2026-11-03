@@ -76,6 +76,10 @@ pub struct RunEnv<'a> {
     pub network: &'a dyn Network,
     pub notifier: &'a dyn Notifier,
     pub clock: &'a (dyn Fn() -> Zoned + Send + Sync),
+    /// Pass SIGINT and SIGTERM to rclone and wait for it, instead of
+    /// leaving them to the process. Only the `run` command, which exists
+    /// for one round, wants this: the handler cannot be removed again.
+    pub forward_signals: bool,
 }
 
 impl std::fmt::Debug for RunEnv<'_> {
@@ -195,16 +199,46 @@ fn forward_interrupt(child: &Child) {
     }
 }
 
+/// SIGINT and SIGTERM of this process. tokio never undoes a signal
+/// handler, so only a process that exists for rounds installs them.
+struct Interrupts {
+    interrupt: tokio::signal::unix::Signal,
+    terminate: tokio::signal::unix::Signal,
+}
+
+impl Interrupts {
+    fn install() -> Result<Self, RunError> {
+        Ok(Self {
+            interrupt: signal(SignalKind::interrupt()).map_err(RunError::io("signal handler"))?,
+            terminate: signal(SignalKind::terminate()).map_err(RunError::io("signal handler"))?,
+        })
+    }
+
+    async fn next(&mut self) {
+        tokio::select! {
+            _ = self.interrupt.recv() => {}
+            _ = self.terminate.recv() => {}
+        }
+    }
+}
+
 /// Runs rclone with `args` and waits for it. rclone's own output is
-/// dropped (its log goes to `--log-file`). SIGINT and SIGTERM do not stop
-/// the round: they are passed to rclone as SIGINT, which makes bisync shut
-/// down cleanly, and the round waits for it.
+/// dropped (its log goes to `--log-file`). With `forward_signals`, SIGINT
+/// and SIGTERM do not stop the round: they are passed to rclone as SIGINT,
+/// which makes bisync shut down cleanly, and the round waits for it.
 ///
 /// # Errors
 /// rclone cannot be started or waited for.
-pub(crate) async fn execute(rclone: &Rclone, args: Vec<OsString>) -> Result<i32, RunError> {
-    let mut interrupt = signal(SignalKind::interrupt()).map_err(RunError::io("signal handler"))?;
-    let mut terminate = signal(SignalKind::terminate()).map_err(RunError::io("signal handler"))?;
+pub(crate) async fn execute(
+    rclone: &Rclone,
+    args: Vec<OsString>,
+    forward_signals: bool,
+) -> Result<i32, RunError> {
+    let mut interrupts = if forward_signals {
+        Some(Interrupts::install()?)
+    } else {
+        None
+    };
     let mut child = rclone
         .command(args)
         .stdout(Stdio::null())
@@ -217,8 +251,12 @@ pub(crate) async fn execute(rclone: &Rclone, args: Vec<OsString>) -> Result<i32,
                 let status = status.map_err(RunError::io("waiting for rclone"))?;
                 return Ok(status.code().unwrap_or(-1));
             }
-            _ = interrupt.recv() => forward_interrupt(&child),
-            _ = terminate.recv() => forward_interrupt(&child),
+            () = async {
+                match interrupts.as_mut() {
+                    Some(interrupts) => interrupts.next().await,
+                    None => std::future::pending().await,
+                }
+            } => forward_interrupt(&child),
         }
     }
 }
@@ -371,7 +409,7 @@ impl Round<'_> {
         let stamp = fresh_start(env.paths, id, mode, started.clone());
         let log_path = log_file(env.paths, id, mode, &stamp);
         let args = bisync_args(pair, self.behavior, env.paths, mode, &stamp);
-        let exit_code = execute(env.rclone, args).await?;
+        let exit_code = execute(env.rclone, args, env.forward_signals).await?;
         let finished = env.now().timestamp();
 
         let lines = read_log_or_empty(&log_path).await;
@@ -488,6 +526,7 @@ impl Round<'_> {
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::PermissionsExt as _;
+    use std::path::PathBuf;
     use std::time::Duration;
 
     use super::*;
@@ -504,9 +543,58 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let rclone = script(dir.path(), "exit 7");
 
-        let code = execute(&rclone, vec![]).await.unwrap();
+        let code = execute(&rclone, vec![], true).await.unwrap();
 
         assert_eq!(code, 7);
+    }
+
+    const SIGNAL_CHILD: &str = "SYNCFAST_TEST_SIGNAL_CHILD";
+
+    /// Runs as a child of the test below: a process that executed a round
+    /// without forwarding signals, then waits.
+    async fn signal_child(ready: PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let rclone = script(dir.path(), "exit 0");
+        execute(&rclone, vec![], false).await.unwrap();
+        std::fs::write(ready, "").unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+    }
+
+    #[tokio::test]
+    async fn a_process_that_ran_a_round_without_forwarding_still_dies_of_sigterm() {
+        if let Some(ready) = std::env::var_os(SIGNAL_CHILD) {
+            signal_child(PathBuf::from(ready)).await;
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let ready = dir.path().join("ready");
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "run::tests::a_process_that_ran_a_round_without_forwarding_still_dies_of_sigterm",
+                "--nocapture",
+            ])
+            .env(SIGNAL_CHILD, &ready)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            while !ready.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let pid = Pid::from_raw(i32::try_from(child.id()).unwrap()).unwrap();
+        rustix::process::kill_process(pid, Signal::TERM).unwrap();
+        let status = child.wait().unwrap();
+
+        assert_eq!(
+            std::os::unix::process::ExitStatusExt::signal(&status),
+            Some(15)
+        );
     }
 
     #[tokio::test]
@@ -529,7 +617,7 @@ mod tests {
             rustix::process::kill_process(own, Signal::INT).unwrap();
         };
 
-        let (code, ()) = tokio::join!(execute(&rclone, vec![]), interrupter);
+        let (code, ()) = tokio::join!(execute(&rclone, vec![], true), interrupter);
 
         assert_eq!(code.unwrap(), 42);
     }

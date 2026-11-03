@@ -1,6 +1,8 @@
 //! The dry run behind the Review sheet: what a resync or a forced round
 //! would change, without changing anything.
 
+use std::path::PathBuf;
+
 use serde::Serialize;
 
 use crate::behavior::Behavior;
@@ -101,6 +103,20 @@ impl PreviewError {
     }
 }
 
+/// The log of a dry run. It goes away with the guard, also when the caller
+/// gives up on the preview and the future is dropped.
+struct PreviewLog(PathBuf);
+
+impl Drop for PreviewLog {
+    fn drop(&mut self) {
+        if let Err(err) = std::fs::remove_file(&self.0)
+            && err.kind() != std::io::ErrorKind::NotFound
+        {
+            log::warn!("cannot delete {}: {err}", self.0.display());
+        }
+    }
+}
+
 /// Dry-runs `kind` for `pair_id`. Takes the pair's lock for the duration,
 /// so a running round makes it return [`PreviewError::Busy`].
 ///
@@ -131,13 +147,10 @@ pub async fn preview(
     let now = fresh_start(env.paths, pair_id, mode, env.now());
     let log_path = log_file(env.paths, pair_id, mode, &now);
     let args = bisync_args(&pair, &Behavior::for_pair(&pair), env.paths, mode, &now);
-    let exit_code = execute(env.rclone, args).await?;
-    let lines = read_log_or_empty(&log_path).await;
-    if let Err(err) = tokio::fs::remove_file(&log_path).await
-        && err.kind() != std::io::ErrorKind::NotFound
-    {
-        log::warn!("cannot delete {}: {err}", log_path.display());
-    }
+    let log = PreviewLog(log_path);
+    let exit_code = execute(env.rclone, args, env.forward_signals).await?;
+    let lines = read_log_or_empty(&log.0).await;
+    drop(log);
     if exit_code != 0 {
         let message = last_error_message(&lines).map_or_else(
             || format!("rclone exited with code {exit_code}"),
@@ -160,6 +173,42 @@ mod tests {
             kind,
             path: path.to_owned(),
         }
+    }
+
+    #[test]
+    fn the_dry_run_log_is_deleted_when_the_guard_goes_away() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("preview-1.jsonl");
+        std::fs::write(&path, "x").unwrap();
+
+        drop(PreviewLog(path.clone()));
+
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_log_that_is_already_gone_is_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+
+        drop(PreviewLog(dir.path().join("absent.jsonl")));
+    }
+
+    #[tokio::test]
+    async fn the_dry_run_log_is_deleted_when_the_preview_is_aborted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("preview-2.jsonl");
+        std::fs::write(&path, "x").unwrap();
+        let log = PreviewLog(path.clone());
+        let job = tokio::spawn(async move {
+            let _log = log;
+            std::future::pending::<()>().await;
+        });
+        tokio::task::yield_now().await;
+
+        job.abort();
+        let _ = job.await;
+
+        assert!(!path.exists());
     }
 
     #[test]

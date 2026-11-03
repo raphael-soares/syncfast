@@ -173,6 +173,7 @@ impl Bed {
             network: &self.online,
             notifier: &self.notices,
             clock: &clock,
+            forward_signals: true,
         };
         run(&env, PAIR).await.unwrap()
     }
@@ -196,6 +197,7 @@ impl Bed {
             network: &self.online,
             notifier: &self.notices,
             clock: &clock,
+            forward_signals: true,
         };
         preview(&env, PAIR, kind).await
     }

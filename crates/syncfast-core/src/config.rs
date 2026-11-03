@@ -417,7 +417,9 @@ fn reject_unknown_keys(document: &DocumentMut) -> Result<(), GlobalConfigError> 
     Ok(())
 }
 
-fn expand_tilde(path: &Path, home: &Path) -> PathBuf {
+/// `path` with a leading `~` replaced by `home`.
+#[must_use]
+pub fn expand_tilde(path: &Path, home: &Path) -> PathBuf {
     match path.strip_prefix("~") {
         Ok(rest) => home.join(rest),
         Err(_) => path.to_owned(),
@@ -427,6 +429,55 @@ fn expand_tilde(path: &Path, home: &Path) -> PathBuf {
 /// `syncfast-watch.service` already uses this name; a sync with it would
 /// share the unit file.
 pub const RESERVED_ID: &str = "watch";
+
+/// The id a sync named `name` gets: lowercase, every run of characters
+/// outside `a-z0-9` becomes one `-`, cut to 32. Without a letter or digit
+/// the id is `sync`.
+#[must_use]
+pub fn slugify(name: &str) -> String {
+    let mut slug = String::new();
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c.to_ascii_lowercase());
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    let slug = slug.trim_matches('-');
+    let slug = slug.get(..slug.len().min(MAX_ID_LEN)).unwrap_or(slug);
+    let slug = slug.trim_end_matches('-');
+    if slug.is_empty() {
+        "sync".to_owned()
+    } else {
+        slug.to_owned()
+    }
+}
+
+/// [`slugify`] of `name`, with `-2`, `-3`... added until no id in `taken`
+/// (and not the reserved one) is the same. The result stays within 32
+/// characters.
+#[must_use]
+pub fn unique_id<'a>(name: &str, taken: impl IntoIterator<Item = &'a str>) -> String {
+    let taken: Vec<&str> = taken.into_iter().collect();
+    let base = slugify(name);
+    let is_free = |id: &str| id != RESERVED_ID && !taken.contains(&id);
+    if is_free(&base) {
+        return base;
+    }
+    let mut number = 2_u32;
+    loop {
+        let suffix = format!("-{number}");
+        let room = MAX_ID_LEN.saturating_sub(suffix.len());
+        let head = base.get(..base.len().min(room)).unwrap_or(&base);
+        let id = format!("{}{suffix}", head.trim_end_matches('-'));
+        if is_free(&id) {
+            return id;
+        }
+        number += 1;
+    }
+}
+
+const MAX_ID_LEN: usize = 32;
 
 /// True for ids that name a sync: `a-z`, `0-9` and `-`, up to 32 characters.
 #[must_use]
@@ -476,14 +527,8 @@ fn problem_after_overlap(pair: &Pair, accounts: &HashSet<&str>) -> Option<String
         return Some(format!("account \"{account}\" is not set up in rclone"));
     }
     for (index, line) in pair.filters.iter().enumerate() {
-        let number = index + 1;
-        if !(line.starts_with("+ ") || line.starts_with("- ")) {
-            return Some(format!(
-                "filter line {number} must start with \"+ \" or \"- \""
-            ));
-        }
-        if line.contains(['\n', '\r']) {
-            return Some(format!("filter line {number} must be a single line"));
+        if let Some(problem) = filter_line_problem(index + 1, line) {
+            return Some(problem);
         }
     }
     pair.presets
@@ -492,7 +537,24 @@ fn problem_after_overlap(pair: &Pair, accounts: &HashSet<&str>) -> Option<String
         .map(|name| format!("unknown preset \"{name}\""))
 }
 
-fn remotes_overlap(a: &str, b: &str) -> bool {
+/// What is wrong with the custom filter line `number` (counting from 1).
+#[must_use]
+pub fn filter_line_problem(number: usize, line: &str) -> Option<String> {
+    if !(line.starts_with("+ ") || line.starts_with("- ")) {
+        return Some(format!(
+            "filter line {number} must start with \"+ \" or \"- \""
+        ));
+    }
+    if line.contains(['\n', '\r']) {
+        return Some(format!("filter line {number} must be a single line"));
+    }
+    None
+}
+
+/// True when two `account:folder` remotes cover the same files: same
+/// account and one folder is the other or inside it (the root covers all).
+#[must_use]
+pub fn remotes_overlap(a: &str, b: &str) -> bool {
     let (Some((account_a, path_a)), Some((account_b, path_b))) = (split_remote(a), split_remote(b))
     else {
         return false;
@@ -1214,5 +1276,61 @@ mod tests {
         let stowed = std::fs::read_to_string(&target).unwrap();
         assert!(stowed.starts_with("# stowed\nversion = 1\n"));
         assert!(stowed.contains("id = \"a\""));
+    }
+
+    #[test]
+    fn slug_lowercases_and_turns_each_run_of_other_characters_into_one_dash() {
+        assert_eq!(slugify("Google Drive"), "google-drive");
+        assert_eq!(slugify("  Meu  Drive!! "), "meu-drive");
+        assert_eq!(slugify("Notas/2026_final"), "notas-2026-final");
+    }
+
+    #[test]
+    fn slug_without_letters_or_digits_is_sync() {
+        assert_eq!(slugify("***"), "sync");
+        assert_eq!(slugify(""), "sync");
+    }
+
+    #[test]
+    fn slug_is_cut_to_32_characters_without_a_trailing_dash() {
+        let long = "a".repeat(31) + " b";
+
+        let slug = slugify(&long);
+
+        assert_eq!(slug, "a".repeat(31));
+        assert!(valid_id(&slugify(&"x".repeat(80))));
+    }
+
+    #[test]
+    fn unique_id_adds_the_first_free_number_after_a_collision() {
+        assert_eq!(unique_id("Notes", ["other"]), "notes");
+        assert_eq!(unique_id("Notes", ["notes"]), "notes-2");
+        assert_eq!(unique_id("Notes", ["notes", "notes-2"]), "notes-3");
+    }
+
+    #[test]
+    fn unique_id_keeps_within_32_characters_when_it_adds_a_number() {
+        let name = "a".repeat(40);
+        let full = "a".repeat(32);
+
+        let id = unique_id(&name, [full.as_str()]);
+
+        assert_eq!(id, format!("{}-2", "a".repeat(30)));
+        assert!(valid_id(&id));
+    }
+
+    #[test]
+    fn unique_id_never_uses_the_reserved_name() {
+        assert_eq!(unique_id("watch", []), "watch-2");
+    }
+
+    #[test]
+    fn filter_line_problem_names_the_line_and_the_rule_it_breaks() {
+        assert_eq!(filter_line_problem(1, "- a.tmp"), None);
+        assert_eq!(filter_line_problem(2, "+ keep/**"), None);
+        assert_eq!(
+            filter_line_problem(3, "a.tmp").as_deref(),
+            Some("filter line 3 must start with \"+ \" or \"- \"")
+        );
     }
 }

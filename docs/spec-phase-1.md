@@ -179,7 +179,7 @@ Arquivos na raiz:
   - `test`: `cargo nextest run --workspace`
   - `mutants`: `cargo mutants -p syncfast-core`
   - `capture-fixtures`: roda `crates/syncfast-core/tests/capture_fixtures.sh` (passo 2)
-  - `dev-env`: cria `./.dev/{config/syncfast,state,data,run,remote}` e grava `./.dev/rclone.conf` com `[devremote]\ntype = local\n`
+  - `dev-env`: cria `./.dev/{config/syncfast,state,data,run,remote}` e grava `./.dev/rclone.conf` com `[devremote]\ntype = alias\nremote = <repo>/.dev/remote\n`, para que `Entire devremote` seja `./.dev/remote`
   - `run-gui-dev`: `dev-env`, depois `env XDG_CONFIG_HOME=$PWD/.dev/config XDG_STATE_HOME=$PWD/.dev/state XDG_DATA_HOME=$PWD/.dev/data XDG_RUNTIME_DIR=$PWD/.dev/run RCLONE_CONFIG=$PWD/.dev/rclone.conf SYNCFAST_SYSTEMD=off SYNCFAST_CLI=$PWD/target/debug/syncfast cargo run -p syncfast-gui`
   - `run-cli-dev *args`: o mesmo `env`, com `cargo run -p syncfast-cli -- {{args}}`
   - `dev-reset`: `rm -rf .dev`

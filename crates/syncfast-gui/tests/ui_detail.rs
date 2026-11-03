@@ -48,6 +48,7 @@ fn view(pair: PairRow) -> ViewModel {
         now: now(),
         tab: DetailTab::Activity,
         runs: None,
+        remotes: Vec::new(),
     }
 }
 

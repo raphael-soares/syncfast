@@ -37,6 +37,7 @@ fn view(pairs: Vec<PairRow>, selected: Option<&str>) -> ViewModel {
         now: now(),
         tab: ui::DetailTab::Activity,
         runs: None,
+        remotes: Vec::new(),
     }
 }
 
