@@ -16,7 +16,8 @@ use syncfast_core::behavior::Behavior;
 use syncfast_core::config::Pair;
 use syncfast_core::network::BoxFuture;
 use syncfast_core::state::try_lock_pair;
-use syncfast_core::watch::{Trigger, WatchEnv, Watcher};
+use syncfast_core::units::{SystemdMode, UserSystemctl};
+use syncfast_core::watch::{Trigger, WatchEnv, Watcher, trigger_for};
 use tokio::sync::oneshot;
 
 const DEBOUNCE: Duration = Duration::from_millis(300);
@@ -81,13 +82,22 @@ impl Running {
 
 /// Starts the watcher over `pairs`; `prepare` runs before it starts.
 async fn start(pairs: &[(&str, bool)], prepare: impl FnOnce(&Bed)) -> Running {
+    start_with(|bed| {
+        bed.write_config(pairs);
+        prepare(bed);
+    })
+    .await
+}
+
+/// Starts the watcher after `prepare` has written the config.
+async fn start_with(prepare: impl FnOnce(&Bed)) -> Running {
     let bed = Bed::new();
-    bed.write_config(pairs);
     prepare(&bed);
     let recorder = Arc::new(Recorder::default());
     let mut env = WatchEnv::new(bed.paths.clone(), bed.rclone.clone(), recorder.clone());
     env.behavior_for = fast;
     env.lock_recheck = RECHECK;
+    env.root_recheck = RECHECK;
     let watcher = Watcher::start(env).await.unwrap();
     let (stop, stopped) = oneshot::channel();
     let task = tokio::spawn(async move {
@@ -368,9 +378,165 @@ async fn broken_config_keeps_the_previous_watches() {
     run.stop().await;
 }
 
-#[tokio::test]
-async fn watcher_stops_when_the_shutdown_future_completes() {
-    let run = start(&[("docs", true)], |_| {}).await;
+fn pair_block(id: &str, local: &Path, remote: &Path) -> String {
+    format!(
+        "\n[[pair]]\nid = \"{id}\"\nname = \"{id}\"\nlocal = \"{}\"\nremote = \"testremote:{}\"\n",
+        local.display(),
+        remote.display()
+    )
+}
 
+fn triggers_of(recorder: &Recorder, id: &str) -> usize {
+    recorder.ids().iter().filter(|got| *got == id).count()
+}
+
+#[tokio::test]
+async fn config_inside_a_synced_folder_serves_the_tree_and_the_reload() {
+    let run = start_with(|bed| {
+        let text = format!(
+            "version = 1\n{}",
+            pair_block("docs", &bed.paths.config_home, &bed.remote("docs"))
+        );
+        bed.write_config_text(&text);
+    })
+    .await;
+    let config_dir = run.bed.paths.config_dir();
+
+    write(&config_dir, "note.txt");
+    let from_tree = wait_for(&run.recorder, 1, Duration::from_secs(2)).await;
+    sleep(DEBOUNCE * 2).await;
+    let notes_local = run.bed.local("notes");
+    fs::create_dir_all(&notes_local).unwrap();
+    let text = format!(
+        "version = 1\n{}{}",
+        pair_block("docs", &run.bed.paths.config_home, &run.bed.remote("docs")),
+        pair_block("notes", &notes_local, &run.bed.remote("notes"))
+    );
+    run.bed.write_config_text(&text);
+    sleep(Duration::from_millis(1200)).await;
+    write(&notes_local, "n.txt");
+    let reloaded = wait_for_id(&run.recorder, "notes", Duration::from_secs(3)).await;
+    sleep(DEBOUNCE * 2).await;
+    let docs_before = triggers_of(&run.recorder, "docs");
+    write(&config_dir, "after.txt");
+    sleep(DEBOUNCE * 3).await;
+
+    assert!(from_tree);
+    assert!(reloaded);
+    assert_eq!(triggers_of(&run.recorder, "docs"), docs_before + 1);
     run.stop().await;
+}
+
+async fn wait_for_id(recorder: &Recorder, id: &str, limit: Duration) -> bool {
+    let deadline = Instant::now() + limit;
+    while Instant::now() < deadline {
+        if triggers_of(recorder, id) > 0 {
+            return true;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    triggers_of(recorder, id) > 0
+}
+
+#[tokio::test]
+async fn recreated_directory_with_the_same_name_is_watched_again() {
+    let run = start(&[("docs", true)], |bed| {
+        write(&bed.local("docs"), "sub/x.txt");
+    })
+    .await;
+
+    fs::remove_dir_all(run.local("docs").join("sub")).unwrap();
+    let removed = wait_for(&run.recorder, 1, Duration::from_secs(2)).await;
+    sleep(DEBOUNCE * 2).await;
+    write(&run.local("docs"), "sub/y.txt");
+    let recreated = wait_for(&run.recorder, 2, Duration::from_secs(2)).await;
+    sleep(DEBOUNCE * 2).await;
+    write(&run.local("docs"), "sub/z.txt");
+    let inside = wait_for(&run.recorder, 3, Duration::from_secs(2)).await;
+
+    assert!(removed);
+    assert!(recreated);
+    assert!(inside);
+    run.stop().await;
+}
+
+#[tokio::test]
+async fn folder_renamed_away_and_back_is_noticed_and_watched_again() {
+    let run = start(&[("docs", true)], |_| {}).await;
+    let local = run.local("docs");
+    let away = run.bed.root.join("away");
+
+    fs::rename(&local, &away).unwrap();
+    let left = wait_for(&run.recorder, 1, Duration::from_secs(2)).await;
+    sleep(DEBOUNCE * 2).await;
+    fs::rename(&away, &local).unwrap();
+    let back = wait_for(&run.recorder, 2, Duration::from_secs(2)).await;
+    sleep(DEBOUNCE * 2).await;
+    write(&local, "after.txt");
+    let after = wait_for(&run.recorder, 3, Duration::from_secs(2)).await;
+
+    assert!(left);
+    assert!(back);
+    assert!(after);
+    run.stop().await;
+}
+
+#[tokio::test]
+async fn folder_deleted_and_created_again_is_watched_again() {
+    let run = start(&[("docs", true)], |_| {}).await;
+    let local = run.local("docs");
+
+    fs::remove_dir_all(&local).unwrap();
+    let gone = wait_for(&run.recorder, 1, Duration::from_secs(2)).await;
+    sleep(DEBOUNCE * 2).await;
+    fs::create_dir(&local).unwrap();
+    let back = wait_for(&run.recorder, 2, Duration::from_secs(2)).await;
+    sleep(DEBOUNCE * 2).await;
+    write(&local, "after.txt");
+    let after = wait_for(&run.recorder, 3, Duration::from_secs(2)).await;
+
+    assert!(gone);
+    assert!(back);
+    assert!(after);
+    run.stop().await;
+}
+
+#[tokio::test]
+async fn folder_missing_at_start_is_watched_once_it_appears() {
+    let run = start(&[("docs", true)], |bed| {
+        fs::remove_dir_all(bed.local("docs")).unwrap();
+    })
+    .await;
+
+    fs::create_dir(run.local("docs")).unwrap();
+    let appeared = wait_for(&run.recorder, 1, Duration::from_secs(2)).await;
+    sleep(DEBOUNCE * 2).await;
+    write(&run.local("docs"), "first.txt");
+    let watched = wait_for(&run.recorder, 2, Duration::from_secs(2)).await;
+
+    assert!(appeared);
+    assert!(watched);
+    run.stop().await;
+}
+
+#[tokio::test]
+async fn child_trigger_runs_the_cli_binary_with_run_and_the_pair_id() {
+    let bed = Bed::new();
+    let out = bed.root.join("args.txt");
+    let bin = common::script(
+        &bed.root,
+        "syncfast",
+        &format!("echo \"$@\" > {}", out.display()),
+    );
+    let trigger = trigger_for(SystemdMode::Off, bin, Arc::new(UserSystemctl));
+
+    trigger.start("docs").await;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut args = String::new();
+    while args.is_empty() && Instant::now() < deadline {
+        sleep(Duration::from_millis(20)).await;
+        args = fs::read_to_string(&out).unwrap_or_default();
+    }
+
+    assert_eq!(args, "run docs\n");
 }

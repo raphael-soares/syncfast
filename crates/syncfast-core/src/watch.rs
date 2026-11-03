@@ -27,22 +27,30 @@ use crate::units::{Systemctl, SystemdMode, command_text, service_name};
 
 /// How often a trigger blocked by a running round looks at the lock again.
 pub const LOCK_RECHECK: Duration = Duration::from_secs(5);
+/// How often a sync whose folder has no watch (unmounted, renamed away)
+/// looks for the folder again.
+pub const ROOT_RECHECK: Duration = Duration::from_secs(10);
 /// Quiet time after `config.toml` changes before the watches are rebuilt.
 const CONFIG_RELOAD_DELAY: Duration = Duration::from_millis(500);
 const EVENT_BUFFER_BYTES: usize = 4096;
 
+/// The masks carry `MASK_ADD` because the folder that holds `config.toml`
+/// can also be a directory of a synced tree; both uses share one watch.
 const TREE_MASK: WatchMask = WatchMask::CREATE
     .union(WatchMask::DELETE)
     .union(WatchMask::MODIFY)
     .union(WatchMask::MOVED_FROM)
     .union(WatchMask::MOVED_TO)
     .union(WatchMask::CLOSE_WRITE)
-    .union(WatchMask::DELETE_SELF);
+    .union(WatchMask::DELETE_SELF)
+    .union(WatchMask::MOVE_SELF)
+    .union(WatchMask::MASK_ADD);
 const CONFIG_MASK: WatchMask = WatchMask::CLOSE_WRITE
     .union(WatchMask::MOVED_TO)
     .union(WatchMask::CREATE)
     .union(WatchMask::DELETE)
-    .union(WatchMask::MOVED_FROM);
+    .union(WatchMask::MOVED_FROM)
+    .union(WatchMask::MASK_ADD);
 
 #[derive(Debug, thiserror::Error)]
 pub enum WatchError {
@@ -158,6 +166,7 @@ pub struct WatchEnv {
     /// The timings (and `watch` switch) of a sync.
     pub behavior_for: fn(&Pair) -> Behavior,
     pub lock_recheck: Duration,
+    pub root_recheck: Duration,
 }
 
 impl WatchEnv {
@@ -169,6 +178,7 @@ impl WatchEnv {
             trigger,
             behavior_for: Behavior::for_pair,
             lock_recheck: LOCK_RECHECK,
+            root_recheck: ROOT_RECHECK,
         }
     }
 }
@@ -325,6 +335,10 @@ pub struct Watcher {
     schedules: HashMap<String, Schedule>,
     config_watch: Option<(WatchDescriptor, OsString)>,
     reload_at: Option<Instant>,
+    /// Syncs whose folder has no watch because it is gone; see
+    /// [`ROOT_RECHECK`].
+    missing_roots: HashSet<usize>,
+    roots_check_at: Option<Instant>,
 }
 
 impl std::fmt::Debug for Watcher {
@@ -359,6 +373,8 @@ impl Watcher {
             schedules: HashMap::new(),
             config_watch: None,
             reload_at: None,
+            missing_roots: HashSet::new(),
+            roots_check_at: None,
         };
         watcher.watch_config().await;
         watcher.watch_trees();
@@ -392,17 +408,41 @@ impl Watcher {
             .values()
             .filter_map(Schedule::deadline)
             .chain(self.reload_at)
+            .chain(self.roots_check_at)
             .min()
     }
 
-    fn is_running(&self, pair: usize) -> bool {
-        is_running(&self.env.paths, &self.pairs[pair].id)
+    fn mark(&mut self, pair: usize, now: Instant) {
+        let watched = &self.pairs[pair];
+        let paths = &self.env.paths;
+        if let Some(schedule) = self.schedules.get_mut(&watched.id) {
+            schedule.event(now, || is_running(paths, &watched.id));
+        }
     }
 
-    fn mark(&mut self, pair: usize, now: Instant) {
-        let running = self.is_running(pair);
-        if let Some(schedule) = self.schedules.get_mut(&self.pairs[pair].id) {
-            schedule.event(now, || running);
+    fn note_missing_root(&mut self, pair: usize) {
+        self.missing_roots.insert(pair);
+        self.roots_check_at
+            .get_or_insert(Instant::now() + self.env.root_recheck);
+    }
+
+    /// Watches again the syncs whose folder is back, and marks them: what
+    /// changed while the folder was away has not been synced.
+    fn rewatch_missing_roots(&mut self, now: Instant) {
+        let back: Vec<usize> = self
+            .missing_roots
+            .iter()
+            .copied()
+            .filter(|&pair| self.pairs[pair].root.is_dir())
+            .collect();
+        for pair in back {
+            self.missing_roots.remove(&pair);
+            self.watch_subtree(pair, PathBuf::new());
+            self.mark(pair, now);
+        }
+        if !self.missing_roots.is_empty() {
+            self.roots_check_at
+                .get_or_insert(now + self.env.root_recheck);
         }
     }
 
@@ -411,6 +451,10 @@ impl Watcher {
         if self.reload_at.is_some_and(|at| now >= at) {
             self.reload_at = None;
             self.reload().await;
+        }
+        if self.roots_check_at.is_some_and(|at| now >= at) {
+            self.roots_check_at = None;
+            self.rewatch_missing_roots(now);
         }
         let mut fire = Vec::new();
         for index in 0..self.pairs.len() {
@@ -439,22 +483,39 @@ impl Watcher {
             self.watch_trees();
             return;
         }
-        if let Some((config_wd, file)) = &self.config_watch
-            && wd == config_wd
+        let is_config = self
+            .config_watch
+            .as_ref()
+            .is_some_and(|(config, _)| config == wd);
+        if is_config
+            && let Some((_, file)) = &self.config_watch
+            && name == Some(file.as_os_str())
         {
-            if name == Some(file.as_os_str()) {
-                self.reload_at = Some(now + CONFIG_RELOAD_DELAY);
-            }
-            return;
+            self.reload_at = Some(now + CONFIG_RELOAD_DELAY);
         }
         if mask.contains(EventMask::IGNORED) {
-            self.dirs.remove(wd);
+            if is_config {
+                self.config_watch = None;
+            }
+            if let Some(dir) = self.dirs.remove(wd)
+                && dir.rel.is_empty()
+            {
+                self.note_missing_root(dir.pair);
+            }
             return;
         }
         let Some(dir) = self.dirs.get(wd) else {
             return;
         };
         let pair = dir.pair;
+        if mask.contains(EventMask::MOVE_SELF) {
+            if dir.rel.is_empty() {
+                self.forget_subtree(pair, Path::new(""));
+                self.note_missing_root(pair);
+                self.mark(pair, now);
+            }
+            return;
+        }
         let rel = name.map_or_else(|| dir.rel.clone(), |name| dir.rel.join(name));
         if name.is_some() && self.pairs[pair].matcher.is_excluded(&rel) {
             return;
@@ -471,10 +532,13 @@ impl Watcher {
 
     /// Puts a watch on every directory of every sync again.
     fn watch_trees(&mut self) {
-        for (wd, _) in self.dirs.drain() {
-            let _ = self.watches.remove(wd);
+        let stale: Vec<WatchDescriptor> = self.dirs.drain().map(|(wd, _)| wd).collect();
+        for wd in stale {
+            self.drop_watch(wd);
         }
         self.limit_hit.clear();
+        self.missing_roots.clear();
+        self.roots_check_at = None;
         let timings: Vec<(String, Timing)> = self
             .pairs
             .iter()
@@ -528,6 +592,9 @@ impl Watcher {
                 }
                 Err(err) => {
                     log::warn!("cannot watch {}: {err}", dir.display());
+                    if rel.as_os_str().is_empty() {
+                        self.note_missing_root(pair);
+                    }
                     continue;
                 }
             }
@@ -556,6 +623,17 @@ impl Watcher {
             .collect();
         for wd in gone {
             self.dirs.remove(&wd);
+            self.drop_watch(wd);
+        }
+    }
+
+    /// Removes a watch unless `config.toml`'s folder shares it.
+    fn drop_watch(&mut self, wd: WatchDescriptor) {
+        let shared = self
+            .config_watch
+            .as_ref()
+            .is_some_and(|(config, _)| *config == wd);
+        if !shared {
             let _ = self.watches.remove(wd);
         }
     }
