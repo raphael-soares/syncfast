@@ -15,8 +15,9 @@ anyhow.workspace = true
 clap.workspace = true
 fastframe-log.workspace = true
 jiff.workspace = true
+serde_json.workspace = true
 syncfast-core = { path = "../syncfast-core" }
-tokio = { workspace = true, features = ["rt", "macros"] }
+tokio = { workspace = true, features = ["rt", "macros", "signal"] }
 
 [lints]
 workspace = true
