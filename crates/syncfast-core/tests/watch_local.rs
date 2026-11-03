@@ -529,7 +529,7 @@ async fn child_trigger_runs_the_cli_binary_with_run_and_the_pair_id() {
         "syncfast",
         &format!("echo \"$@\" > {}", out.display()),
     );
-    let trigger = trigger_for(SystemdMode::Off, bin, Arc::new(UserSystemctl));
+    let trigger = trigger_for(SystemdMode::Off, bin, Arc::new(UserSystemctl::default()));
 
     trigger.start("docs").await.unwrap();
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -546,7 +546,11 @@ async fn child_trigger_runs_the_cli_binary_with_run_and_the_pair_id() {
 async fn child_trigger_reports_a_binary_that_cannot_be_started() {
     let bed = Bed::new();
     let missing = bed.root.join("no-such-syncfast");
-    let trigger = trigger_for(SystemdMode::Off, missing.clone(), Arc::new(UserSystemctl));
+    let trigger = trigger_for(
+        SystemdMode::Off,
+        missing.clone(),
+        Arc::new(UserSystemctl::default()),
+    );
 
     let err = trigger.start("docs").await.unwrap_err();
 

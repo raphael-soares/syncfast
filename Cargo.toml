@@ -36,6 +36,7 @@ toml = "0.9"
 toml_edit = "0.23"
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 
+fastframe-desktop = { git = "https://github.com/crmne/fastframe", tag = "v0.15.6" }
 fastframe-file = { git = "https://github.com/crmne/fastframe", tag = "v0.15.6" }
 fastframe-fonts = { git = "https://github.com/crmne/fastframe", tag = "v0.15.6" }
 fastframe-icons = { git = "https://github.com/crmne/fastframe", tag = "v0.15.6" }

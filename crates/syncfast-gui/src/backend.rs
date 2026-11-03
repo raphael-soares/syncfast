@@ -13,6 +13,7 @@ use syncfast_core::bisync::ReviewKind;
 use syncfast_core::config::Config;
 use syncfast_core::conflicts::{Conflict, Resolution};
 use syncfast_core::filters::ExclusionSummary;
+use syncfast_core::flatpak;
 use syncfast_core::paths::Paths;
 use syncfast_core::preview::Preview;
 use syncfast_core::rclone::Rclone;
@@ -491,8 +492,10 @@ async fn apply_config(paths: &Paths) -> Result<(), String> {
 async fn apply_deleting_versions(paths: &Paths, delete_versions: &[String]) -> Result<(), String> {
     let rclone = Rclone::from_env().map_err(|err| err.to_string())?;
     let bin = current_cli()?;
-    let systemctl = UserSystemctl;
-    let env = ApplyEnv::new(paths, &rclone, &bin, SystemdMode::from_env(), &systemctl);
+    let systemctl = UserSystemctl::detect();
+    let flatpak_id = flatpak::app_id();
+    let env = ApplyEnv::new(paths, &rclone, &bin, SystemdMode::from_env(), &systemctl)
+        .with_flatpak_id(flatpak_id.as_deref());
     let mut report = apply(&env, delete_versions).await;
     report.invalid_pairs.clear();
     if report.is_empty() {
@@ -623,7 +626,7 @@ async fn start_rounds(ids: &[String]) -> Result<(), String> {
     let trigger: Arc<dyn Trigger> = trigger_for(
         SystemdMode::from_env(),
         current_cli()?,
-        Arc::new(UserSystemctl),
+        Arc::new(UserSystemctl::detect()),
     );
     let mut failures = Vec::new();
     for id in ids {
