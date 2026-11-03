@@ -322,7 +322,7 @@ Cenários:
   --max-delete 50
   --create-empty-src-dirs
   --drive-skip-gdocs
-  --backup-dir1 <data>/versions/<id>/ --suffix -<AAAAMMDD-HHMMSS> --suffix-keep-extension
+  --backup-dir1 <data>/versions/<id>/<AAAAMMDD-HHMMSS>/
   --stats 2s --stats-log-level NOTICE
   --use-json-log --log-file <state>/pairs/<id>/runs/<AAAAMMDD-HHMMSS>.jsonl -v
   ```
@@ -464,7 +464,7 @@ Fluxo do `run`:
      - Se `summary.conflicts_new > 0`, notificar conflitos.
    - `TooManyDeletes`, `NeedsReview(CriticalError)`, `AuthError`, `ConfigError`: gravar o gate correspondente e notificar se for transição.
    - `Transient`: `last_outcome = error`, `consecutive_failures += 1`. Ao chegar em 3 sem `"failures"` em `notified`, notificar e acrescentar `"failures"`.
-8. Depois de `Ok`, podar versões: em `versions/<id>/`, apagar arquivos cujo nome contém `-(\d{8}-\d{6})` (última ocorrência) com data mais antiga que `versions_keep_days`. Arquivos sem esse padrão ficam intocados. Remover diretórios que ficarem vazios. Podar `runs/`.
+8. Depois de `Ok`, podar versões: em `versions/<id>/`, apagar os subdiretórios diretos cujo nome casa `^\d{8}-\d{6}$` e cuja data é mais antiga que `versions_keep_days`. Tudo o mais em `versions/<id>/` fica intocado. Remover diretórios datados que ficarem vazios. Podar `runs/`.
 9. Sair 0. Erro interno do próprio syncfast (I/O de estado, por exemplo): log e sair 1.
 
 Notificações (`notify.rs`, no core):
@@ -727,9 +727,9 @@ Toda tela é função de um `ViewModel` imutável e devolve `Vec<Action>`. O `ap
   - Cada linha: caminho relativo, "Current" (tamanho e mtime) e "Conflicted copy" (tamanho e mtime).
   - Ações:
     - `Keep Current`: apaga o `.conflictN`.
-    - `Keep Conflicted Copy`: move o atual para `versions/<id>/<dir relativo>/<stem>-<AAAAMMDD-HHMMSS><.ext>` e renomeia o `.conflictN` para o nome original.
+    - `Keep Conflicted Copy`: move o atual para `versions/<id>/<AAAAMMDD-HHMMSS>/<caminho relativo>` e renomeia o `.conflictN` para o nome original.
     - `Keep Both`: renomeia para `<stem> (conflict <N>)<.ext>`.
-  - Regra de nome:
+  - Regra de nome do `Keep Both`:
     - `.ext` é tudo a partir do último `.` do nome original, exceto quando o único `.` está na posição 0 (dotfile) ou não há ponto; nesses casos `.ext` é vazio.
     - Se o destino existir, acrescentar ` 2`, ` 3`… antes de `.ext`.
   - Nenhuma ação usa alert: todas são reversíveis via versions/ ou pelo arquivo mantido (HIG: sem alert para ação comum desfazível).
@@ -759,7 +759,6 @@ Toda tela é função de um `ViewModel` imutável e devolve `Vec<Action>`. O `ap
 - Confirmar grava `confirm.json` com o `kind` e o `filters_hash` do preview, dispara `Sync Now` e fecha.
 - Preview ocupado (exit 3): `This sync is running. The review opens when it finishes.` A sheet tenta de novo a cada 5 s.
 - Erro do preview: `inline_error` com a última linha ERROR e `Try Again`.
-- Se o fixture `overwrite_local` do passo 2, rodado com `--resync`, mostrar que `--backup-dir1` não age no resync, o rótulo vira `Would replace on this computer (no copy kept)` só para `kind = resync`.
 
 **Sheet Add Sync** (assistente; Back e Continue no rodapé, Cancel à esquerda; nunca Cancel, Back e Done juntos):
 
@@ -825,7 +824,7 @@ Toda tela é função de um `ViewModel` imutável e devolve `Vec<Action>`. O `ap
   - `display_status`: precedência
   - render de units com escapes
   - nomes de conflito: com extensão, sem extensão, dotfile, `a.tar.gz`, colisão
-  - poda de versões pelo sufixo
+  - poda de versões pelo diretório datado
   - slug do id
 - **Integração** (`crates/syncfast-core/tests/bisync_local.rs`):
   - Ignorado com aviso se não houver `rclone` no PATH.
@@ -835,7 +834,7 @@ Toda tela é função de um `ViewModel` imutável e devolve `Vec<Action>`. O `ap
     1. Primeira rodada → gate `needs_review_first_run`, sem tocar arquivos. Preview `resync` lista upload e download esperados. Marker e `run` → `ok`, e os lados ficam iguais.
     2. Arquivo novo local → `run` → aparece no remoto, `uploaded = 1`.
     3. Mesmo arquivo alterado nos dois lados → vence o mais novo, existe `.conflict1`, `conflicts_new = 1`, `conflicts_pending = 1`.
-    4. Arquivo alterado no remoto → versão local antiga em `versions/<id>/` com sufixo de data.
+    4. Arquivo alterado no remoto → versão local antiga em `versions/<id>/<AAAAMMDD-HHMMSS>/`.
     5. Apagar 3 de 4 arquivos locais → gate `too_many_deletes`, remoto intacto. Marker `force` → remoto apagado, `ok`.
     6. Mudar `filters` → gate `needs_review_filters_changed`, nada sincronizado.
     7. Pasta local renomeada → gate `local_missing`. Pasta de volta → `run` normal, `ok`.
