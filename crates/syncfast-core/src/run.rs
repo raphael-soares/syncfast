@@ -3,7 +3,7 @@
 //! into the pair's state and, when the user must act, a notification.
 
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use jiff::{SignedDuration, Timestamp, Zoned};
@@ -12,7 +12,7 @@ use tokio::process::Child;
 use tokio::signal::unix::{SignalKind, signal};
 
 use crate::behavior::Behavior;
-use crate::bisync::{Mode, Outcome, bisync_args, classify, log_file};
+use crate::bisync::{Mode, Outcome, bisync_args, classify, is_empty_prior_listing, log_file};
 use crate::bisync_log::{LogLine, read_log, summarize};
 use crate::config::{Config, GlobalConfigError, Pair, PairError};
 use crate::conflicts::find_conflicts;
@@ -381,10 +381,16 @@ pub async fn run(env: &RunEnv<'_>, pair_id: &str) -> Result<RunReport, RunError>
                 behavior: &behavior,
                 filters_hash: &filters_file.hash,
             };
-            let outcome = round.execute(&mut state, mode).await?;
+            let (mode, outcome) = round.execute(&mut state, mode).await?;
             Ok(RunReport::Ran { mode, outcome })
         }
     }
+}
+
+struct Attempt {
+    exit_code: i32,
+    log_path: PathBuf,
+    lines: Vec<LogLine>,
 }
 
 struct Round<'a> {
@@ -395,7 +401,11 @@ struct Round<'a> {
 }
 
 impl Round<'_> {
-    async fn execute(&self, state: &mut State, mode: Mode) -> Result<Outcome, RunError> {
+    async fn execute(
+        &self,
+        state: &mut State,
+        mut mode: Mode,
+    ) -> Result<(Mode, Outcome), RunError> {
         let (env, pair) = (self.env, self.pair);
         let id = pair.id.as_str();
         let started = env.now();
@@ -406,13 +416,21 @@ impl Round<'_> {
         tokio::fs::create_dir_all(env.paths.runs_dir(id))
             .await
             .map_err(RunError::io("creating the runs folder"))?;
-        let stamp = fresh_start(env.paths, id, mode, started.clone());
-        let log_path = log_file(env.paths, id, mode, &stamp);
-        let args = bisync_args(pair, self.behavior, env.paths, mode, &stamp);
-        let exit_code = execute(env.rclone, args, env.forward_signals).await?;
+        let mut attempt = self.attempt(mode, started.clone()).await?;
+        if mode == Mode::Normal && is_empty_prior_listing(attempt.exit_code, &attempt.lines) {
+            mode = Mode::Resync;
+            let refused = attempt.log_path;
+            attempt = self.attempt(mode, env.now()).await?;
+            if let Err(err) = tokio::fs::remove_file(&refused).await {
+                log::warn!("cannot delete {}: {err}", refused.display());
+            }
+        }
+        let Attempt {
+            exit_code,
+            log_path,
+            lines,
+        } = attempt;
         let finished = env.now().timestamp();
-
-        let lines = read_log_or_empty(&log_path).await;
         let outcome = classify(exit_code, &lines, &env.paths.bisync_workdir(id));
         let mut summary = summarize(&lines);
         let conflicts_new = summary.conflicts_new;
@@ -440,7 +458,21 @@ impl Round<'_> {
                 .map_err(RunError::io("pruning old versions"))?;
         }
         prune_runs(env.paths, id).await?;
-        Ok(outcome)
+        Ok((mode, outcome))
+    }
+
+    async fn attempt(&self, mode: Mode, at: Zoned) -> Result<Attempt, RunError> {
+        let (env, pair) = (self.env, self.pair);
+        let stamp = fresh_start(env.paths, &pair.id, mode, at);
+        let log_path = log_file(env.paths, &pair.id, mode, &stamp);
+        let args = bisync_args(pair, self.behavior, env.paths, mode, &stamp);
+        let exit_code = execute(env.rclone, args, env.forward_signals).await?;
+        let lines = read_log_or_empty(&log_path).await;
+        Ok(Attempt {
+            exit_code,
+            log_path,
+            lines,
+        })
     }
 
     async fn apply_outcome(

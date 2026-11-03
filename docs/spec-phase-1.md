@@ -460,7 +460,7 @@ Fluxo do `run`:
    - Em todos esses casos, sair 0.
 6. `Run(mode)`: gravar `last_attempt` e `offline = false`, iniciar o rclone como filho (stdout e stderr descartados, o log vai para `--log-file`), esperar.
    - SIGINT/SIGTERM via `tokio::signal::unix`: o `run` não morre; repassa SIGINT ao filho (o systemd já manda ao cgroup inteiro) e espera.
-7. `classify` e `summarize`. Depois:
+7. `classify` e `summarize`. Se a rodada `Normal` saiu 7 com `Empty prior Path1 listing` ou `Empty prior Path2 listing`, refazer na mesma execução uma rodada `Resync` (uma tentativa só, sem revisão: o resync só copia) e classificar a segunda. Depois:
    - `Ok`:
      - `gate = null`, `last_outcome = ok`, `consecutive_failures = 0`.
      - `applied_filters_hash = current`, `last_success = agora`.
