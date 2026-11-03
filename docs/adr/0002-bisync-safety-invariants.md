@@ -11,6 +11,7 @@
 - A confirmed marker survives a `Transient` failure and stays valid while its `filters_hash` matches; any other outcome that sets a gate deletes it.
 - A pending gate is never replaced by `local_missing`: the review survives the folder going away and coming back. `config_error` ends by itself once the pair is valid again (a pair that never synced goes back to its first review).
 - The "all files were changed" abort (every file of a side changed at once, typical of a one-file folder) is cleared like a mass deletion: a `--force` round after a confirmed preview.
+- A normal round that fails with `Empty prior Path1 listing` or `Empty prior Path2 listing` (the pair was empty on both sides at its last sync, so rclone keeps empty listings and refuses to continue) is retried once in the same `run` as a `--resync`. It needs no review: a resync only copies, and an empty prior listing leaves no known deletion to propagate.
 - Google Docs are skipped (`--drive-skip-gdocs`).
 
 ## Consequences

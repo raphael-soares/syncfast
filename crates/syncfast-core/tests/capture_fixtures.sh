@@ -217,6 +217,13 @@ done
 put "$root/local/after.txt" "after" "$mid"
 capture critical_retryable
 
+# empty_prior_listing: both sides were empty at the first resync, so the
+# listings bisync keeps are empty and the next normal run refuses to start.
+setup
+prepare
+put "$root/local/after.txt" "after" "$mid"
+capture empty_prior_listing
+
 # critical: a copy fails mid-run (read-only remote), which bisync treats as
 # not recoverable without --resync and leaves *.lst-err in the workdir.
 setup

@@ -24,6 +24,7 @@ const AUTH_PATTERNS: [&str; 4] = [
 const TOO_MANY_DELETES: &str = "too many deletes";
 const ALL_FILES_CHANGED: &str = "Safety abort: all files were changed";
 const MUST_RESYNC: &str = "Must run --resync to recover";
+const EMPTY_PRIOR_LISTINGS: [&str; 2] = ["Empty prior Path1 listing", "Empty prior Path2 listing"];
 const FAILED_TO_BISYNC: &str = "Failed to bisync";
 const EXIT_NOT_CRITICAL: i32 = 1;
 const EXIT_USAGE: i32 = 2;
@@ -223,6 +224,19 @@ pub fn classify(exit_code: i32, lines: &[LogLine], workdir: &Path) -> Outcome {
         return Outcome::ConfigError;
     }
     Outcome::Transient
+}
+
+/// True when a normal round stopped because the listings it keeps from the
+/// last sync are empty (both sides were empty then). rclone refuses to
+/// sync from that state, so the caller retries once as a resync.
+#[must_use]
+pub fn is_empty_prior_listing(exit_code: i32, lines: &[LogLine]) -> bool {
+    exit_code == EXIT_CRITICAL
+        && failure_msgs(lines).any(|msg| {
+            EMPTY_PRIOR_LISTINGS
+                .iter()
+                .any(|pattern| msg.starts_with(pattern))
+        })
 }
 
 #[cfg(test)]
@@ -605,5 +619,52 @@ mod tests {
         let outcome = classify(5, &[], &dir.path().join("absent"));
 
         assert_eq!(outcome, Outcome::Transient);
+    }
+
+    #[test]
+    fn the_empty_prior_listing_fixture_is_recognised() {
+        let log = fixture("empty_prior_listing");
+
+        assert!(is_empty_prior_listing(
+            exit_code("empty_prior_listing"),
+            &log
+        ));
+    }
+
+    #[test]
+    fn an_empty_prior_path2_listing_is_recognised() {
+        let log = lines(&[(
+            "error",
+            "Empty prior Path2 listing. Cannot sync to an empty directory: x",
+        )]);
+
+        assert!(is_empty_prior_listing(7, &log));
+    }
+
+    #[test]
+    fn other_critical_failures_are_not_an_empty_prior_listing() {
+        let retryable = fixture("critical_retryable");
+
+        assert!(!is_empty_prior_listing(
+            exit_code("critical_retryable"),
+            &retryable
+        ));
+    }
+
+    #[test]
+    fn an_empty_prior_listing_message_with_another_exit_code_is_not_recognised() {
+        let log = lines(&[(
+            "error",
+            "Empty prior Path1 listing. Cannot sync to an empty directory: x",
+        )]);
+
+        assert!(!is_empty_prior_listing(1, &log));
+    }
+
+    #[test]
+    fn a_file_named_like_the_message_in_an_info_line_is_not_recognised() {
+        let log = lines(&[("info", "Empty prior Path1 listing.txt: Copied")]);
+
+        assert!(!is_empty_prior_listing(7, &log));
     }
 }

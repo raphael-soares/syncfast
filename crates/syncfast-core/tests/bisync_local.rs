@@ -398,6 +398,43 @@ async fn new_local_file_is_uploaded_and_counted() {
 }
 
 #[tokio::test]
+async fn new_local_file_in_a_pair_that_started_empty_on_both_sides_reaches_the_remote() {
+    let Some(bed) = bed() else { return };
+    assert_eq!(
+        bed.run().await,
+        RunReport::Skipped(SkipReason::Gated),
+        "the first round waits for review"
+    );
+    bed.first_sync().await;
+    write(&bed.local, "new.txt", "hello");
+
+    let report = bed.run().await;
+
+    assert_eq!(
+        report,
+        RunReport::Ran {
+            mode: Mode::Resync,
+            outcome: Outcome::Ok
+        }
+    );
+    assert_eq!(read(&bed.remote, "new.txt"), "hello");
+    let state = bed.state().await;
+    assert_eq!(state.last_outcome, Some(LastOutcome::Ok));
+    assert!(state.gate.is_none());
+    assert_eq!(state.consecutive_failures, 0);
+    write(&bed.local, "second.txt", "again");
+    assert_eq!(
+        bed.run().await,
+        RunReport::Ran {
+            mode: Mode::Normal,
+            outcome: Outcome::Ok
+        },
+        "later rounds are normal again"
+    );
+    assert_eq!(read(&bed.remote, "second.txt"), "again");
+}
+
+#[tokio::test]
 async fn same_file_changed_on_both_sides_keeps_the_newer_and_leaves_a_conflict_copy() {
     let Some(bed) = bed() else { return };
     write(&bed.local, "doc.txt", "base");
