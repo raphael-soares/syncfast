@@ -13,7 +13,6 @@ use syncfast_core::state::LastOutcome;
 use crate::backend::{Backend, Command, Event};
 use crate::gui_state::{self, GuiState, SettingsPane};
 use crate::instance::{Inbox, Request};
-use crate::runs::RunEntry;
 use crate::screens::Screens;
 use crate::sheets::{Sheets, Surroundings};
 use crate::snapshot::Snapshot;
@@ -22,6 +21,7 @@ use crate::tray::{IconLook, PairView, Summary, SyncTray, TrayView, action as tra
 use crate::ui::settings::AppearanceView;
 use crate::ui::welcome::{self, WelcomeView};
 use crate::ui::{self, Action, DetailTab, PairRow, ViewModel};
+use syncfast_core::runs::RunEntry;
 
 const APP_ID: &str = "syncfast-gui";
 
@@ -325,6 +325,7 @@ impl App {
             }
             Event::Runs { pair, runs } => self.runs = Some((pair, runs)),
             Event::Themes(themes) => self.themes = themes,
+            Event::Theme(choice) => self.gui.theme = choice,
             Event::SystemDark(dark) => self.system_dark = Some(dark),
             Event::Failed(text) => self.error = Some(text),
             event @ (Event::Conflicts { .. }
@@ -947,6 +948,16 @@ mod tests {
 
         app.handle_event(Event::Snapshot(Snapshot::default()));
         assert!(app.gui.welcome_done, "it never comes back");
+    }
+
+    #[test]
+    fn a_theme_changed_from_outside_the_window_becomes_the_chosen_one_without_a_save() {
+        let (_dir, mut app) = app();
+
+        app.handle_event(Event::Theme(crate::theme::ThemeChoice::Light));
+
+        assert_eq!(app.gui.theme, crate::theme::ThemeChoice::Light);
+        assert!(app.gui_dirty_since.is_none());
     }
 
     #[test]

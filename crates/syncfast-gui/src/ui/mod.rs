@@ -25,8 +25,8 @@ use syncfast_core::conflicts::{Conflict, Resolution};
 use syncfast_core::state::{DisplayStatus, GateKind};
 
 use crate::gui_state::SettingsPane;
-use crate::runs::RunEntry;
 use crate::snapshot::PairSnapshot;
+use syncfast_core::runs::RunEntry;
 
 use crate::theme::ThemeChoice;
 pub use detail::DetailTab;

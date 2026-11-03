@@ -15,9 +15,15 @@ anyhow.workspace = true
 clap.workspace = true
 fastframe-log.workspace = true
 jiff.workspace = true
+rmcp.workspace = true
+schemars.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 syncfast-core = { path = "../syncfast-core" }
 tokio = { workspace = true, features = ["rt", "macros", "signal"] }
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

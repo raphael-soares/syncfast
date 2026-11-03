@@ -7,8 +7,8 @@ use super::format::{duration, started};
 use super::widgets::{BadgeSize, empty_state, list_row, status_badge};
 use super::{Action, PairRow, ViewModel};
 use crate::icons::Icon;
-use crate::runs::RunEntry;
 use crate::theme::{self, Palette, radius, size, space};
+use syncfast_core::runs::RunEntry;
 
 const WHEN_WIDTH: f32 = 140.0;
 const DURATION_WIDTH: f32 = 60.0;

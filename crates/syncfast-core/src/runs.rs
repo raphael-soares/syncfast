@@ -4,14 +4,14 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::bisync::{Outcome, classify};
+use crate::bisync_log::{LogLine, RunSummary, parse_log, summarize};
+use crate::notify::last_error_message;
+use crate::paths::Paths;
+use crate::state::{DisplayStatus, LastRun, RUNS_KEPT, State};
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, Zoned};
 use serde::Deserialize;
-use syncfast_core::bisync::{Outcome, classify};
-use syncfast_core::bisync_log::{LogLine, RunSummary, parse_log, summarize};
-use syncfast_core::notify::last_error_message;
-use syncfast_core::paths::Paths;
-use syncfast_core::state::{DisplayStatus, LastRun, RUNS_KEPT, State};
 
 /// How many messages of a round's log the expanded row shows.
 pub const MESSAGES_KEPT: usize = 200;

@@ -4,13 +4,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use jiff::{Timestamp, Zoned};
+use jiff::Zoned;
 use syncfast_core::config::{Config, Pair};
 use syncfast_core::conflicts::{self, Conflict, Resolution};
 use syncfast_core::filters::{self, DirMatcher, ExclusionSummary};
+use syncfast_core::ops;
 use syncfast_core::paths::Paths;
 use syncfast_core::rclone::Rclone;
-use syncfast_core::state::{Gate, GateKind, State};
 
 static TEST_FILES: AtomicU64 = AtomicU64::new(0);
 
@@ -144,30 +144,15 @@ pub async fn write_filters(
     config.save(paths).await.map_err(|err| err.to_string())
 }
 
-/// After the filters changed: a sync held for too many deletions or for every
-/// file changing is held for the review of the new filters instead, since
-/// the old confirmation no longer applies. Returns whether the sync had no
-/// gate at all.
+/// After the filters changed: see [`ops::after_filters_saved`]. Returns whether
+/// the sync had no gate at all.
 ///
 /// # Errors
 /// The state of the sync cannot be read or written.
 pub async fn after_filters_saved(paths: &Paths, id: &str) -> Result<bool, String> {
-    let mut state = State::load(paths, id)
+    ops::after_filters_saved(paths, id)
         .await
-        .map_err(|err| err.to_string())?;
-    match state.gate.as_ref().map(|gate| gate.kind) {
-        None => Ok(true),
-        Some(kind) if kind.is_force_review() => {
-            state.gate = Some(Gate {
-                kind: GateKind::NeedsReviewFiltersChanged,
-                since: Timestamp::now(),
-                detail: String::new(),
-            });
-            state.save(paths, id).await.map_err(|err| err.to_string())?;
-            Ok(false)
-        }
-        Some(_) => Ok(false),
-    }
+        .map_err(|err| err.to_string())
 }
 
 /// Takes the sync out of the config. Its units go with the next `apply`.
@@ -184,6 +169,9 @@ pub async fn remove_from_config(paths: &Paths, id: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use jiff::Timestamp;
+    use syncfast_core::state::{Gate, GateKind, State};
+
     use super::*;
 
     fn paths(dir: &Path) -> Paths {
