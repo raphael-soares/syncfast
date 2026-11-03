@@ -325,6 +325,7 @@ impl App {
             }
             Event::Runs { pair, runs } => self.runs = Some((pair, runs)),
             Event::Themes(themes) => self.themes = themes,
+            Event::Theme(choice) => self.gui.theme = choice,
             Event::SystemDark(dark) => self.system_dark = Some(dark),
             Event::Failed(text) => self.error = Some(text),
             event @ (Event::Conflicts { .. }
@@ -947,6 +948,16 @@ mod tests {
 
         app.handle_event(Event::Snapshot(Snapshot::default()));
         assert!(app.gui.welcome_done, "it never comes back");
+    }
+
+    #[test]
+    fn a_theme_changed_from_outside_the_window_becomes_the_chosen_one_without_a_save() {
+        let (_dir, mut app) = app();
+
+        app.handle_event(Event::Theme(crate::theme::ThemeChoice::Light));
+
+        assert_eq!(app.gui.theme, crate::theme::ThemeChoice::Light);
+        assert!(app.gui_dirty_since.is_none());
     }
 
     #[test]

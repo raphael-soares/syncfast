@@ -31,7 +31,7 @@ use crate::notices::{Notices, notice_for};
 use crate::pair_tools;
 use crate::sheet_io::{self, PreviewFailure};
 use crate::snapshot::{self, Snapshot};
-use crate::theme::Themes;
+use crate::theme::{ThemeChoice, Themes};
 use crate::ui::RemoteRow;
 use crate::ui::account_sheet::{ConnectRequest, Secret};
 use crate::ui::add_sync::{LocalFacts, NewSync};
@@ -135,6 +135,9 @@ pub enum Event {
     Snapshot(Snapshot),
     /// The user's palette files, read in the backend.
     Themes(Themes),
+    /// The theme `gui.json` names now: `syncfast theme` changed it from
+    /// outside the window.
+    Theme(ThemeChoice),
     SystemDark(bool),
     /// An action did not work; the text is shown near the sync list.
     Failed(String),
@@ -439,6 +442,11 @@ fn spawn_reload_themes(context: &Arc<Context>) {
         match tokio::task::spawn_blocking(move || Themes::load(&dir)).await {
             Ok(themes) => context.emitter.send(Event::Themes(themes)),
             Err(err) => log::warn!("cannot read the theme files: {err}"),
+        }
+        let file = gui_state::file(&context.paths);
+        match tokio::task::spawn_blocking(move || GuiState::load(&file).theme).await {
+            Ok(choice) => context.emitter.send(Event::Theme(choice)),
+            Err(err) => log::warn!("cannot read the chosen theme: {err}"),
         }
     });
 }
