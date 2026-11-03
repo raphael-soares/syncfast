@@ -37,7 +37,7 @@ bisync() {
     --max-delete 50 \
     --create-empty-src-dirs \
     --drive-skip-gdocs \
-    --backup-dir1 "$root/data/versions/x/" --suffix "-$stamp" --suffix-keep-extension \
+    --backup-dir1 "$root/data/versions/x/$stamp/" \
     --stats 2s --stats-log-level NOTICE \
     --use-json-log --log-file "$log" -v \
     "$@"
@@ -111,7 +111,7 @@ prepare
 put "$root/remote/doc.txt" "remote edit" "$new"
 capture overwrite_local
 
-# overwrite_remote: the old remote copy is renamed beside the file (--backup-dir1 only covers Path1).
+# overwrite_remote: the remote copy is overwritten in place (no --suffix).
 setup
 put "$root/local/doc.txt" "base" "$old"
 put "$root/local/keep.txt" "unchanged" "$old"
