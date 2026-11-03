@@ -18,7 +18,7 @@ use crate::config::{Config, GlobalConfigError, Pair, PairError};
 use crate::conflicts::find_conflicts;
 use crate::filters::{self, DirMatcher, FiltersError};
 use crate::network::Network;
-use crate::notify::{Alert, Notifier, last_error_message, notice};
+use crate::notify::{Alert, Notice, Notifier, last_error_message, notice};
 use crate::paths::Paths;
 use crate::rclone::{Rclone, RcloneError};
 use crate::run_decision::{DecideInput, Decision, SkipReason, decide};
@@ -150,29 +150,36 @@ pub(crate) fn set_gate(state: &mut State, kind: GateKind, detail: String, now: T
     });
 }
 
-/// Notifies once per transition: the key stays in `state.notified` until a
-/// round succeeds (or the gate is cleared).
-fn announce(env: &RunEnv<'_>, pair: &Pair, state: &mut State, key: String, alert: &Alert) {
+/// Records one notification per transition: the key stays in
+/// `state.notified` until a round succeeds (or the gate is cleared). The
+/// notice is returned, not sent: callers send it after saving the state, so
+/// whoever is told can already read why.
+fn announce(pair: &Pair, state: &mut State, key: String, alert: &Alert) -> Option<Notice> {
     if state.notified.contains(&key) {
-        return;
+        return None;
     }
-    env.notifier.notify(&notice(pair, alert));
     state.notified.push(key);
+    Some(notice(pair, alert))
 }
 
-fn announce_gate(env: &RunEnv<'_>, pair: &Pair, state: &mut State, kind: GateKind) {
+fn announce_gate(pair: &Pair, state: &mut State, kind: GateKind) -> Option<Notice> {
     let detail = state
         .gate
         .as_ref()
         .map(|gate| gate.detail.clone())
         .unwrap_or_default();
     announce(
-        env,
         pair,
         state,
         kind.notified_key(),
         &Alert::Gate { kind, detail },
-    );
+    )
+}
+
+fn send(env: &RunEnv<'_>, notices: impl IntoIterator<Item = Notice>) {
+    for notice in notices {
+        env.notifier.notify(&notice);
+    }
 }
 
 fn forward_interrupt(child: &Child) {
@@ -256,8 +263,9 @@ pub async fn run(env: &RunEnv<'_>, pair_id: &str) -> Result<RunReport, RunError>
                 error.message,
                 env.now().timestamp(),
             );
-            announce_gate(env, &pair, &mut state, GateKind::ConfigError);
+            let notice = announce_gate(&pair, &mut state, GateKind::ConfigError);
             state.save(env.paths, pair_id).await?;
+            send(env, notice);
             return Ok(RunReport::ConfigInvalid);
         }
     };
@@ -306,14 +314,16 @@ pub async fn run(env: &RunEnv<'_>, pair_id: &str) -> Result<RunReport, RunError>
         Decision::Skip(SkipReason::Gated) => {
             // A gate nobody wrote through this code path (first run, or one
             // set by the GUI) is announced the first time a round sees it.
-            if let Some(kind) = state.gate.as_ref().map(|gate| gate.kind) {
-                let before = state.notified.len();
-                announce_gate(env, &pair, &mut state, kind);
-                dirty |= state.notified.len() != before;
-            }
+            let notice = state
+                .gate
+                .as_ref()
+                .map(|gate| gate.kind)
+                .and_then(|kind| announce_gate(&pair, &mut state, kind));
+            dirty |= notice.is_some();
             if dirty {
                 state.save(env.paths, pair_id).await?;
             }
+            send(env, notice);
             Ok(RunReport::Skipped(SkipReason::Gated))
         }
         Decision::SetGate(kind) => {
@@ -321,8 +331,9 @@ pub async fn run(env: &RunEnv<'_>, pair_id: &str) -> Result<RunReport, RunError>
             if !unchanged {
                 set_gate(&mut state, kind, String::new(), env.now().timestamp());
             }
-            announce_gate(env, &pair, &mut state, kind);
+            let notice = announce_gate(&pair, &mut state, kind);
             state.save(env.paths, pair_id).await?;
+            send(env, notice);
             Ok(RunReport::GateSet(kind))
         }
         Decision::Run(mode) => {
@@ -376,9 +387,11 @@ impl Round<'_> {
             log_file: log_path,
         });
         let detail = last_error_message(&lines).map(str::to_owned);
-        self.apply_outcome(state, outcome, exit_code, conflicts_new, detail, finished)
-            .await?;
+        let notice = self
+            .apply_outcome(state, outcome, exit_code, conflicts_new, detail, finished)
+            .await;
         state.save(env.paths, id).await?;
+        send(env, notice);
 
         if outcome != Outcome::Transient {
             ConfirmMarker::remove(env.paths, id).await?;
@@ -400,8 +413,8 @@ impl Round<'_> {
         conflicts_new: Option<u32>,
         detail: Option<String>,
         finished: Timestamp,
-    ) -> Result<(), RunError> {
-        let (env, pair) = (self.env, self.pair);
+    ) -> Option<Notice> {
+        let pair = self.pair;
         let gate = match outcome {
             Outcome::Ok => {
                 state.gate = None;
@@ -413,11 +426,9 @@ impl Round<'_> {
                     .notified
                     .retain(|key| key != NOTIFIED_FAILURES && !key.starts_with("gate:"));
                 state.conflicts_pending = self.count_conflicts(state.conflicts_pending).await;
-                if let Some(count) = conflicts_new.filter(|count| *count > 0) {
-                    env.notifier
-                        .notify(&notice(pair, &Alert::NewConflicts(count)));
-                }
-                return Ok(());
+                return conflicts_new
+                    .filter(|count| *count > 0)
+                    .map(|count| notice(pair, &Alert::NewConflicts(count)));
             }
             Outcome::TooManyDeletes => (GateKind::TooManyDeletes, String::new()),
             Outcome::AllFilesChanged => (GateKind::AllFilesChanged, String::new()),
@@ -439,20 +450,18 @@ impl Round<'_> {
                 if state.consecutive_failures >= NOTIFY_FAILURES_AFTER {
                     let message =
                         detail.unwrap_or_else(|| format!("rclone exited with code {exit_code}."));
-                    announce(
-                        env,
+                    return announce(
                         pair,
                         state,
                         NOTIFIED_FAILURES.to_owned(),
                         &Alert::Failing(message),
                     );
                 }
-                return Ok(());
+                return None;
             }
         };
         set_gate(state, gate.0, gate.1, finished);
-        announce_gate(env, pair, state, gate.0);
-        Ok(())
+        announce_gate(pair, state, gate.0)
     }
 
     /// Conflict files in the local tree; the previous count when the tree

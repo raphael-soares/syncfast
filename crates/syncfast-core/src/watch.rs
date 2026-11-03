@@ -75,7 +75,8 @@ impl WatchError {
 
 /// Starts a round of a sync. Never waits for the round to end.
 pub trait Trigger: Send + Sync {
-    fn start<'a>(&'a self, pair_id: &'a str) -> BoxFuture<'a, ()>;
+    /// `Err` says why the round could not be started.
+    fn start<'a>(&'a self, pair_id: &'a str) -> BoxFuture<'a, Result<(), String>>;
 }
 
 /// `systemctl --user start --no-block syncfast-<id>.service`.
@@ -97,13 +98,14 @@ impl std::fmt::Debug for SystemdTrigger {
 }
 
 impl Trigger for SystemdTrigger {
-    fn start<'a>(&'a self, pair_id: &'a str) -> BoxFuture<'a, ()> {
+    fn start<'a>(&'a self, pair_id: &'a str) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
             let service = service_name(pair_id);
             let args = ["start", "--no-block", service.as_str()];
-            if let Err(stderr) = self.systemctl.run(&args).await {
-                log::warn!("{}: {stderr}", command_text(&args));
-            }
+            self.systemctl
+                .run(&args)
+                .await
+                .map_err(|stderr| format!("{}: {stderr}", command_text(&args)))
         })
     }
 }
@@ -122,25 +124,24 @@ impl ChildTrigger {
 }
 
 impl Trigger for ChildTrigger {
-    fn start<'a>(&'a self, pair_id: &'a str) -> BoxFuture<'a, ()> {
+    fn start<'a>(&'a self, pair_id: &'a str) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
-            let spawned = Command::new(&self.bin)
+            let mut child = Command::new(&self.bin)
                 .arg("run")
                 .arg(pair_id)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
-                .spawn();
-            match spawned {
-                Ok(mut child) => {
-                    // Reaps the child; its outcome is in the sync's state.
-                    tokio::spawn(async move {
-                        if let Err(err) = child.wait().await {
-                            log::warn!("cannot wait for a round: {err}");
-                        }
-                    });
+                .spawn()
+                .map_err(|err| {
+                    format!("cannot start {} run {pair_id}: {err}", self.bin.display())
+                })?;
+            // Reaps the child; its outcome is in the sync's state.
+            tokio::spawn(async move {
+                if let Err(err) = child.wait().await {
+                    log::warn!("cannot wait for a round: {err}");
                 }
-                Err(err) => log::warn!("cannot start {} run {pair_id}: {err}", self.bin.display()),
-            }
+            });
+            Ok(())
         })
     }
 }
@@ -469,7 +470,9 @@ impl Watcher {
             }
         }
         for id in fire {
-            self.env.trigger.start(&id).await;
+            if let Err(err) = self.env.trigger.start(&id).await {
+                log::warn!("{err}");
+            }
         }
     }
 

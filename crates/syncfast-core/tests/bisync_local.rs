@@ -32,18 +32,39 @@ impl Network for FakeNetwork {
     }
 }
 
-#[derive(Default)]
-struct Recorder(Mutex<Vec<Notice>>);
+/// Keeps every notice with what `state.json` held when it was sent.
+struct Recorder {
+    notices: Mutex<Vec<Notice>>,
+    state_file: PathBuf,
+    on_disk: Mutex<Vec<Option<State>>>,
+}
 
 impl Notifier for Recorder {
     fn notify(&self, notice: &Notice) {
-        self.0.lock().unwrap().push(notice.clone());
+        self.notices.lock().unwrap().push(notice.clone());
+        let state = fs::read_to_string(&self.state_file)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok());
+        self.on_disk.lock().unwrap().push(state);
     }
 }
 
 impl Recorder {
+    fn new(state_file: PathBuf) -> Self {
+        Self {
+            notices: Mutex::default(),
+            state_file,
+            on_disk: Mutex::default(),
+        }
+    }
+
+    /// The state file as it was on disk at each notification.
+    fn states_when_sent(&self) -> Vec<Option<State>> {
+        self.on_disk.lock().unwrap().clone()
+    }
+
     fn titles(&self) -> Vec<String> {
-        self.0
+        self.notices
             .lock()
             .unwrap()
             .iter()
@@ -52,7 +73,7 @@ impl Recorder {
     }
 
     fn bodies(&self) -> Vec<String> {
-        self.0
+        self.notices
             .lock()
             .unwrap()
             .iter()
@@ -92,12 +113,12 @@ fn bed() -> Option<Bed> {
     fs::create_dir_all(&local).unwrap();
     fs::create_dir_all(&remote).unwrap();
     let bed = Bed {
-        paths,
         rclone: Rclone::new(found.bin().to_owned()).with_config(rclone_conf),
         local,
         remote,
         online: FakeNetwork(AtomicBool::new(true)),
-        notices: Recorder::default(),
+        notices: Recorder::new(paths.state_file(PAIR)),
+        paths,
         _dir: dir,
     };
     bed.write_config(true, &[]);
@@ -735,6 +756,43 @@ async fn invalid_pair_gets_the_config_error_gate_and_one_notification() {
     );
 }
 
+#[tokio::test]
+async fn a_gate_is_on_disk_by_the_time_its_notification_is_sent() {
+    let Some(bed) = bed() else { return };
+    bed.break_config();
+
+    bed.run().await;
+
+    let sent = bed.notices.states_when_sent();
+    assert_eq!(sent.len(), 1);
+    let on_disk = sent[0].as_ref().expect("state.json was readable");
+    assert_eq!(on_disk.gate.as_ref().unwrap().kind, GateKind::ConfigError);
+    assert_eq!(on_disk.notified, ["gate:config_error"]);
+}
+
+#[tokio::test]
+async fn new_conflicts_are_on_disk_by_the_time_their_notification_is_sent() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "doc.txt", "base");
+    write(&bed.local, "untouched.txt", "same");
+    bed.first_sync().await;
+    write(&bed.local, "doc.txt", "local edit");
+    write(&bed.remote, "doc.txt", "remote edit, newer");
+    set_age(&bed.local, "doc.txt", 3600);
+    set_age(&bed.remote, "doc.txt", 60);
+
+    bed.run().await;
+
+    let sent = bed.notices.states_when_sent();
+    assert_eq!(sent.len(), 1);
+    let on_disk = sent[0].as_ref().expect("state.json was readable");
+    assert_eq!(on_disk.conflicts_pending, 1);
+    assert_eq!(
+        on_disk.last_run.as_ref().unwrap().summary.conflicts_new,
+        Some(1)
+    );
+}
+
 /// An rclone stand-in: lists `testremote`, and every bisync appends `log`
 /// to the `--log-file` and exits with `code`.
 fn fake_rclone(bed: &Bed, log: &str, code: i32) -> Rclone {
@@ -785,7 +843,7 @@ async fn third_failure_in_a_row_notifies_once_with_the_last_error_line() {
     assert_eq!(state.last_outcome, Some(LastOutcome::Error));
     assert!(state.gate.is_none());
     assert_eq!(
-        *bed.notices.0.lock().unwrap(),
+        *bed.notices.notices.lock().unwrap(),
         [Notice {
             pair_id: PAIR.to_owned(),
             title: "Docs: sync failing".to_owned(),

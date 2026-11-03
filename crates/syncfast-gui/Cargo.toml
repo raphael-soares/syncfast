@@ -6,6 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[lib]
+name = "syncfast_gui"
+path = "src/lib.rs"
+
 [[bin]]
 name = "syncfast-gui"
 path = "src/main.rs"
@@ -15,20 +19,30 @@ anyhow.workspace = true
 eframe.workspace = true
 egui.workspace = true
 egui_extras.workspace = true
+fastframe-file.workspace = true
 fastframe-fonts.workspace = true
 fastframe-icons.workspace = true
+fastframe-instance.workspace = true
 fastframe-log.workspace = true
+fastframe-notifications.workspace = true
 fastframe-shell.workspace = true
 fastframe-text.workspace = true
 fastframe-theme.workspace = true
 fastframe-tray.workspace = true
+futures-util.workspace = true
+jiff.workspace = true
+log.workspace = true
 resvg.workspace = true
 rfd.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 syncfast-core = { path = "../syncfast-core" }
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
+zbus.workspace = true
 
 [dev-dependencies]
 egui_kittest.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true
