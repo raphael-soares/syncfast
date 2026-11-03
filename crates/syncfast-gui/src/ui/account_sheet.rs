@@ -47,6 +47,22 @@ pub enum AccountMode {
     Update {
         name: String,
     },
+    /// Give the remote `name` the user's own client ID and secret, which
+    /// must both be filled in.
+    ChangeClientId {
+        name: String,
+    },
+}
+
+impl AccountMode {
+    /// The existing remote this mode works on; `None` when it adds one.
+    #[must_use]
+    pub fn remote(&self) -> Option<&str> {
+        match self {
+            Self::Add => None,
+            Self::Update { name } | Self::ChangeClientId { name } => Some(name),
+        }
+    }
 }
 
 /// What `Connect` asks the backend to run.
@@ -91,7 +107,7 @@ impl AccountState {
     pub fn new(mode: AccountMode) -> Self {
         let name = match &mode {
             AccountMode::Add => String::new(),
-            AccountMode::Update { name } => name.clone(),
+            AccountMode::Update { name } | AccountMode::ChangeClientId { name } => name.clone(),
         };
         Self {
             mode,
@@ -135,12 +151,11 @@ fn can_connect(state: &AccountState, view: &AccountView<'_>) -> bool {
     if view.connecting {
         return false;
     }
+    let has_credentials =
+        !state.client_id.trim().is_empty() && !state.client_secret.trim().is_empty();
     match state.mode {
-        AccountMode::Add => {
-            name_problem(&state.name, view.existing).is_none()
-                && !state.client_id.trim().is_empty()
-                && !state.client_secret.trim().is_empty()
-        }
+        AccountMode::Add => name_problem(&state.name, view.existing).is_none() && has_credentials,
+        AccountMode::ChangeClientId { .. } => has_credentials,
         AccountMode::Update { .. } => true,
     }
 }
@@ -149,6 +164,7 @@ fn title(mode: &AccountMode) -> String {
     match mode {
         AccountMode::Add => "Add Google Drive Account".to_owned(),
         AccountMode::Update { name } => format!("Reconnect \"{name}\""),
+        AccountMode::ChangeClientId { name } => format!("Use My Client ID for \"{name}\""),
     }
 }
 
@@ -193,7 +209,7 @@ pub fn show(ctx: &egui::Context, view: &AccountView<'_>, state: &mut AccountStat
                     inline_error(ui, &problem);
                 }
             }
-            AccountMode::Update { .. } => {}
+            AccountMode::Update { .. } | AccountMode::ChangeClientId { .. } => {}
         }
         text_field(
             ui,

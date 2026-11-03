@@ -15,6 +15,7 @@ use crate::ui::account_sheet::{self, AccountAction, AccountMode, AccountState, A
 use crate::ui::add_sync::{
     self, AddSyncAction, AddSyncState, AddSyncView, DirListing, LocalFacts, NewSync,
 };
+use crate::ui::filters::FilterTest;
 use crate::ui::review::{self, ReviewAction, ReviewPhase, ReviewView};
 use crate::ui::{Action, PairRow, RemoteRow};
 
@@ -107,11 +108,11 @@ impl Sheets {
             Action::AddSync => self.open_add_sync(AddSyncState::default()),
             Action::OpenReview(id) => self.open_review(id, around),
             Action::AddAccount => self.open_account(AccountMode::Add, around),
-            Action::EditAccount(name) => {
-                let mut commands =
-                    self.open_account(AccountMode::Update { name: name.clone() }, around);
-                commands.push(Command::LoadCredentials(name.clone()));
-                commands
+            Action::ReconnectAccount(name) => {
+                self.edit_account(AccountMode::Update { name: name.clone() }, around)
+            }
+            Action::ChangeClientId(name) => {
+                self.edit_account(AccountMode::ChangeClientId { name: name.clone() }, around)
             }
             Action::AddSyncSheet(action) => self.add_sync_action(action),
             Action::Review(action) => self.review_action(*action),
@@ -179,6 +180,14 @@ impl Sheets {
             return Vec::new();
         };
         self.open_review_of(pair.id.clone(), pair.name.clone(), &pair.remote, gate)
+    }
+
+    /// The sheet of an existing remote, with the credentials it already has.
+    fn edit_account(&mut self, mode: AccountMode, around: &Surroundings<'_>) -> Vec<Command> {
+        let name = mode.remote().map(str::to_owned);
+        let mut commands = self.open_account(mode, around);
+        commands.extend(name.map(Command::LoadCredentials));
+        commands
     }
 
     fn open_account(&mut self, mode: AccountMode, around: &Surroundings<'_>) -> Vec<Command> {
@@ -326,7 +335,7 @@ impl Sheets {
                 client_secret,
             } => {
                 if let Current::Account(session) = &mut self.current
-                    && session.state.mode == (AccountMode::Update { name: name.clone() })
+                    && session.state.mode.remote() == Some(name.as_str())
                     && session.state.client_id.is_empty()
                     && session.state.client_secret.is_empty()
                 {
@@ -477,7 +486,12 @@ impl Sheets {
     }
 
     /// Draws the open sheet and returns what the user did.
-    pub fn show(&mut self, ctx: &egui::Context, pairs: &[PairRow]) -> Vec<Action> {
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        pairs: &[PairRow],
+        filter_test: Option<&FilterTest>,
+    ) -> Vec<Action> {
         match &mut self.current {
             Current::Closed => Vec::new(),
             Current::AddSync(session) => {
@@ -492,6 +506,7 @@ impl Sheets {
                     home: &self.home,
                     data_dir: &self.data_dir,
                     local_error: session.local_error.as_deref(),
+                    filter_test,
                 };
                 add_sync::show(ctx, &view, &mut session.state)
             }

@@ -48,7 +48,7 @@ pub enum Mode {
     DryRun(ReviewKind),
 }
 
-fn stamp(now: &Zoned) -> String {
+pub(crate) fn stamp(now: &Zoned) -> String {
     now.strftime(STAMP_FORMAT).to_string()
 }
 

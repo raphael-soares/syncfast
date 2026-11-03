@@ -11,15 +11,20 @@ use syncfast_core::paths::Paths;
 use syncfast_core::state::LastOutcome;
 
 use crate::backend::{Backend, Command, Event};
-use crate::gui_state::{self, GuiState};
+use crate::gui_state::{self, GuiState, SettingsPane};
 use crate::instance::{Inbox, Request};
 use crate::runs::RunEntry;
+use crate::screens::Screens;
 use crate::sheets::{Sheets, Surroundings};
 use crate::snapshot::Snapshot;
 use crate::theme::{self, Palette, Themes};
 use crate::tray::{IconLook, PairView, Summary, SyncTray, TrayView, action as tray_action};
+use crate::ui::settings::AppearanceView;
 use crate::ui::welcome::{self, WelcomeView};
 use crate::ui::{self, Action, DetailTab, PairRow, ViewModel};
+
+/// The window class the compositor and desktop entry know the app by.
+pub const APP_ID: &str = "syncfast-gui";
 
 /// How long a hidden start waits for a panel to show the tray item before
 /// it gives up and opens the window, since nothing else could bring it back.
@@ -77,6 +82,7 @@ pub struct App {
     /// round that starts and ends between two polls included), not on every poll.
     runs_key: Option<RunsKey>,
     sheets: Sheets,
+    screens: Screens,
 }
 
 impl App {
@@ -119,6 +125,7 @@ impl App {
             runs: None,
             runs_key: None,
             sheets: Sheets::new(paths.home.clone(), paths.data_dir()),
+            screens: Screens::default(),
         };
         if with_tray {
             app.tray = SyncTray::spawn(waker, app.tray_view());
@@ -152,7 +159,7 @@ impl App {
     }
 
     fn view_model(&self) -> ViewModel {
-        ViewModel {
+        let mut vm = ViewModel {
             pairs: self.snapshot.pairs.iter().map(PairRow::from).collect(),
             selected: self.selected_id(),
             sidebar_width: self.gui.sidebar_width,
@@ -161,7 +168,19 @@ impl App {
             tab: self.tab,
             runs: self.runs_of_selected(),
             remotes: self.sheets.remotes().to_vec(),
-        }
+            appearance: AppearanceView {
+                choice: self.gui.theme.clone(),
+                themes: self.themes.names(),
+                errors: self.themes.errors().to_vec(),
+            },
+            settings_pane: self.gui.settings_pane,
+            conflicts: Vec::new(),
+            filter_test: None,
+            filters_saved: false,
+            removing: None,
+        };
+        self.screens.fill(&mut vm);
+        vm
     }
 
     fn runs_of_selected(&self) -> Option<Arc<[RunEntry]>> {
@@ -289,11 +308,21 @@ impl App {
                 self.snapshot = snapshot;
                 self.finish_welcome();
                 self.load_runs_if_stale();
+                let selected = self.selected_id();
+                if let Some(command) = self
+                    .screens
+                    .on_snapshot(&self.snapshot, selected.as_deref())
+                {
+                    self.backend.send(command);
+                }
             }
             Event::Runs { pair, runs } => self.runs = Some((pair, runs)),
             Event::Themes(themes) => self.themes = themes,
             Event::SystemDark(dark) => self.system_dark = Some(dark),
             Event::Failed(text) => self.error = Some(text),
+            event @ (Event::Conflicts { .. }
+            | Event::FilterTest { .. }
+            | Event::FiltersSaved(_)) => self.screens.on_event(event),
             other => {
                 for command in self.sheets.handle_event(&other) {
                     self.backend.send(command);
@@ -436,7 +465,11 @@ impl App {
         } else {
             actions.extend(ui::root(ui, &vm));
         }
-        actions.extend(self.sheets.show(&ctx, &vm.pairs));
+        actions.extend(self.sheets.show(&ctx, &vm.pairs, vm.filter_test.as_ref()));
+        if self.screens.settings_open {
+            actions.extend(ui::settings::window(&ctx, &vm, APP_ID));
+        }
+        actions.extend(ui::remove::show(&ctx, &vm));
         let (commands, wait) = self.sheets.tick(Instant::now());
         for command in commands {
             self.backend.send(command);
@@ -495,15 +528,37 @@ impl App {
                     self.mark_gui_dirty();
                 }
             }
-            // TODO(#9): Settings (also Accounts) and the Remove alert.
-            Action::OpenSettings | Action::RemoveSync(_) | Action::OpenAccounts => {}
             Action::AddSync
             | Action::OpenReview(_)
             | Action::AddAccount
-            | Action::EditAccount(_)
+            | Action::ReconnectAccount(_)
+            | Action::ChangeClientId(_)
             | Action::Review(_)
             | Action::AddSyncSheet(_)
-            | Action::Account(_) => self.apply_to_sheets(&action),
+            | Action::Account(_) => {
+                if brings_main_window(&action, self.screens.settings_open) {
+                    self.show_window(ctx);
+                }
+                self.apply_to_sheets(&action);
+            }
+            Action::OpenSettings
+            | Action::OpenAccounts
+            | Action::CloseSettings
+            | Action::SetSettingsPane(_)
+            | Action::SetTheme(_) => self.apply_to_settings(action, ctx),
+            action @ (Action::RemoveSync(_)
+            | Action::CancelRemove
+            | Action::ConfirmRemove { .. }
+            | Action::RefreshConflicts(_)
+            | Action::ResolveConflict { .. }
+            | Action::TestFilters { .. }
+            | Action::SaveFilters { .. }
+            | Action::DismissFiltersSaved(_)) => {
+                if let Some(command) = self.screens.act(action) {
+                    self.error = None;
+                    self.backend.send(command);
+                }
+            }
             Action::SyncNow(id) => {
                 self.error = None;
                 self.backend.send(Command::SyncNow(id));
@@ -562,6 +617,37 @@ impl App {
         }
     }
 
+    fn apply_to_settings(&mut self, action: Action, ctx: &egui::Context) {
+        match action {
+            Action::OpenSettings => self.open_settings(ctx),
+            Action::OpenAccounts => {
+                self.remember_pane(SettingsPane::Accounts);
+                self.open_settings(ctx);
+            }
+            Action::CloseSettings => self.screens.settings_open = false,
+            Action::SetSettingsPane(pane) => self.remember_pane(pane),
+            Action::SetTheme(choice) if self.gui.theme != choice => {
+                self.gui.theme = choice;
+                self.mark_gui_dirty();
+            }
+            _ => {}
+        }
+    }
+
+    fn remember_pane(&mut self, pane: SettingsPane) {
+        if self.gui.settings_pane != pane {
+            self.gui.settings_pane = pane;
+            self.mark_gui_dirty();
+        }
+    }
+
+    fn open_settings(&mut self, ctx: &egui::Context) {
+        self.screens.settings_open = true;
+        if self.window_hidden {
+            self.show_window(ctx);
+        }
+    }
+
     fn show_window(&mut self, ctx: &egui::Context) {
         if self.window_hidden {
             // The shell's headless loop makes the window.
@@ -616,6 +702,17 @@ enum CloseRequest {
     Minimize,
 }
 
+/// Sheets draw in the main window, so a sheet opened from the Settings
+/// window must bring the main window forward: it may be minimized, behind
+/// another window, or hidden in the tray.
+fn brings_main_window(action: &Action, settings_open: bool) -> bool {
+    settings_open
+        && matches!(
+            action,
+            Action::AddAccount | Action::ReconnectAccount(_) | Action::ChangeClientId(_)
+        )
+}
+
 fn on_close_requested(intent: CloseIntent, tray_shown: bool) -> CloseRequest {
     match (intent, tray_shown) {
         (CloseIntent::Unplanned, true) => CloseRequest::Hide,
@@ -635,6 +732,7 @@ impl Resident for App {
 
     fn window_gone(&mut self) {
         self.window_hidden = true;
+        self.screens.settings_open = false;
         self.wants_show = false;
         self.close = CloseIntent::Unplanned;
         self.save_gui();
@@ -681,6 +779,29 @@ mod tests {
 
     use super::*;
     use crate::snapshot::PairSnapshot;
+
+    #[test]
+    fn an_account_sheet_asked_from_settings_brings_the_main_window() {
+        let accounts = [
+            Action::AddAccount,
+            Action::ReconnectAccount("gdrive".into()),
+            Action::ChangeClientId("gdrive".into()),
+        ];
+
+        for action in &accounts {
+            assert!(brings_main_window(action, true), "{action:?}");
+            assert!(!brings_main_window(action, false), "{action:?}");
+        }
+    }
+
+    #[test]
+    fn actions_that_open_no_account_sheet_do_not_bring_the_main_window() {
+        assert!(!brings_main_window(
+            &Action::SetTheme(crate::theme::ThemeChoice::Dark),
+            true
+        ));
+        assert!(!brings_main_window(&Action::CloseSettings, true));
+    }
 
     fn app() -> (tempfile::TempDir, App) {
         let dir = tempfile::tempdir().unwrap();

@@ -7,8 +7,9 @@ use std::path::{Path, PathBuf};
 use egui::text::{LayoutJob, TextFormat};
 use egui::{Id, Rect, RichText, Sense, Ui, UiBuilder, Vec2};
 use syncfast_core::config::{filter_line_problem, remotes_overlap, unique_id};
-use syncfast_core::filters::{self, PRESETS};
+use syncfast_core::filters::PRESETS;
 
+use super::filters::{self as tab, FilterDraft, FilterTest};
 use super::widgets::{
     self, ButtonKind, FolderNode, FolderTree, NodeState, SheetAction, SheetButtons, TreeAction,
 };
@@ -95,6 +96,8 @@ pub struct AddSyncView<'a> {
     /// Why `Create Folder` failed; shown under the folder field. It does not
     /// disable `Continue` by itself.
     pub local_error: Option<&'a str>,
+    /// The last `Test Filters`, whichever sync or wizard it ran for.
+    pub filter_test: Option<&'a FilterTest>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -232,7 +235,7 @@ fn body(ui: &mut Ui, view: &AddSyncView<'_>, state: &mut AddSyncState, actions: 
         Step::Account => account_step(ui, view, state, actions),
         Step::RemoteFolder => remote_step(ui, view, state, actions),
         Step::LocalFolder => local_step(ui, view, state, actions),
-        Step::Filters => filters_step(ui, state),
+        Step::Filters => filters_step(ui, view, state, actions),
         Step::Name => name_step(ui, view, state),
     }
 }
@@ -772,44 +775,44 @@ fn rule_lines(rules: &str) -> Vec<String> {
         .collect()
 }
 
-fn filters_step(ui: &mut Ui, state: &mut AddSyncState) {
-    preset_row(
-        ui,
-        "System junk files",
-        "system_junk",
-        &mut state.system_junk,
-    );
-    preset_row(ui, "Developer folders", "dev_dirs", &mut state.dev_dirs);
-    ui.add_space(space::S);
-    if widgets::text_area(ui, "Custom rules", &mut state.rules, 5, "- *.bak").changed() {
-        ui.ctx().request_repaint();
-    }
-    for problem in rule_problems(&state.rules) {
-        widgets::inline_error(ui, &problem);
-    }
-}
-
-fn preset_row(ui: &mut Ui, label: &str, preset: &str, on: &mut bool) {
-    let palette = theme::palette(ui.ctx());
-    if widgets::switch(ui, on, label).changed() {
-        ui.ctx().request_repaint();
-    }
-    let rules = filters::preset(preset).map_or(&[][..], |preset| preset.rules);
-    egui::CollapsingHeader::new(
-        RichText::new("Show rules")
-            .font(theme::callout())
-            .color(palette.secondary),
-    )
-    .id_salt(preset)
-    .show(ui, |ui| {
-        for rule in rules {
-            ui.label(
-                RichText::new(*rule)
-                    .font(theme::monospace())
-                    .color(palette.text),
-            );
-        }
+fn filters_step(
+    ui: &mut Ui,
+    view: &AddSyncView<'_>,
+    state: &mut AddSyncState,
+    actions: &mut Vec<Action>,
+) {
+    let presets = |system_junk: bool, dev_dirs: bool| {
+        [("system_junk", system_junk), ("dev_dirs", dev_dirs)]
+            .into_iter()
+            .filter(|(_, on)| *on)
+            .map(|(name, _)| name.to_owned())
+            .collect::<Vec<_>>()
+    };
+    let mut draft = FilterDraft {
+        presets: presets(state.system_junk, state.dev_dirs),
+        rules: state.rules.clone(),
+    };
+    let before = draft.clone();
+    let tested = view.filter_test.filter(|test| {
+        test.id == tab::NEW_SYNC
+            && test.rules.presets == draft.presets
+            && test.rules.custom == draft.custom_rules()
     });
+    let test_clicked = tab::form(ui, "add-sync", &mut draft, tested, |_| {});
+    if draft != before {
+        state.system_junk = draft.presets.iter().any(|name| name == "system_junk");
+        state.dev_dirs = draft.presets.iter().any(|name| name == "dev_dirs");
+        state.rules.clone_from(&draft.rules);
+        ui.ctx().request_repaint();
+    }
+    if test_clicked && let Some(local) = local_target(view, state) {
+        actions.push(Action::TestFilters {
+            id: tab::NEW_SYNC.to_owned(),
+            local,
+            presets: draft.presets.clone(),
+            rules: draft.custom_rules(),
+        });
+    }
 }
 
 fn default_name(view: &AddSyncView<'_>, state: &AddSyncState) -> String {

@@ -11,6 +11,8 @@ use std::time::Duration;
 use fastframe_shell::Waker;
 use syncfast_core::bisync::ReviewKind;
 use syncfast_core::config::Config;
+use syncfast_core::conflicts::{Conflict, Resolution};
+use syncfast_core::filters::ExclusionSummary;
 use syncfast_core::paths::Paths;
 use syncfast_core::preview::Preview;
 use syncfast_core::rclone::Rclone;
@@ -25,12 +27,13 @@ use tokio::task::AbortHandle;
 use crate::gui_state::{self, GuiState};
 use crate::instance::Inbox;
 use crate::notices::{Notices, notice_for};
+use crate::pair_tools;
 use crate::runs::{self, RunEntry};
 use crate::sheet_io::{self, PreviewFailure};
 use crate::snapshot::{self, Snapshot};
 use crate::theme::Themes;
 use crate::ui::RemoteRow;
-use crate::ui::account_sheet::{AccountMode, ConnectRequest, Secret};
+use crate::ui::account_sheet::{ConnectRequest, Secret};
 use crate::ui::add_sync::{LocalFacts, NewSync};
 
 const POLL_ACTIVE: Duration = Duration::from_secs(1);
@@ -58,6 +61,33 @@ pub enum Command {
     SaveGuiState(GuiState),
     /// Read the theme files again, after `reload-themes`.
     ReloadThemes,
+    /// Look for `.conflict<N>` files in the folder of a sync.
+    ScanConflicts(String),
+    /// Settle one conflict, look again and start a round.
+    ResolveConflict {
+        id: String,
+        path: PathBuf,
+        resolution: Resolution,
+    },
+    /// List what the rules would leave out of `local`.
+    TestFilters {
+        id: String,
+        local: PathBuf,
+        presets: Vec<String>,
+        rules: Vec<String>,
+    },
+    /// Save the filters of a sync, `apply` and review the new filters.
+    SaveFilters {
+        id: String,
+        presets: Vec<String>,
+        rules: Vec<String>,
+    },
+    /// Take a sync out of the config and `apply`, deleting its saved
+    /// versions when asked.
+    RemoveSync {
+        id: String,
+        delete_versions: bool,
+    },
     Shutdown,
     /// Read the rounds of a sync from its logs, for Activity.
     LoadRuns(String),
@@ -139,6 +169,20 @@ pub enum Event {
     /// The sign-in ended: the account's name, or rclone's last error line.
     /// A cancelled sign-in sends nothing.
     Connected(Result<String, String>),
+    /// The conflicts found in the folder of a sync.
+    Conflicts {
+        id: String,
+        found: Vec<Conflict>,
+    },
+    /// The outcome of `Test Filters` for exactly these rules.
+    FilterTest {
+        id: String,
+        presets: Vec<String>,
+        rules: Vec<String>,
+        outcome: Result<ExclusionSummary, String>,
+    },
+    /// The filters of a sync were saved and applied.
+    FiltersSaved(String),
 }
 
 #[derive(Clone)]
@@ -350,6 +394,25 @@ async fn run(
                     Command::LoadCredentials(name) => spawn_load_credentials(&context, name),
                     Command::ConnectAccount(request) => spawn_connect(&context, request),
                     Command::CancelConnect => cancel_connect(&context),
+                    Command::ScanConflicts(id) => spawn_scan_conflicts(&context, id),
+                    Command::ResolveConflict {
+                        id,
+                        path,
+                        resolution,
+                    } => spawn_resolve_conflict(&context, id, path, resolution),
+                    Command::TestFilters {
+                        id,
+                        local,
+                        presets,
+                        rules,
+                    } => spawn_test_filters(&context, id, local, presets, rules),
+                    Command::SaveFilters { id, presets, rules } => {
+                        spawn_save_filters(&context, id, presets, rules);
+                    }
+                    Command::RemoveSync {
+                        id,
+                        delete_versions,
+                    } => spawn_remove_sync(&context, id, delete_versions),
                 }
             }
             () = context.refresh.notified() => {}
@@ -420,17 +483,127 @@ fn spawn_apply(context: &Arc<Context>) {
 /// `syncfast apply`, as a function of the core. Invalid syncs are not a
 /// failure here: their own status already says so.
 async fn apply_config(paths: &Paths) -> Result<(), String> {
+    apply_deleting_versions(paths, &[]).await
+}
+
+/// [`apply_config`], also deleting the saved versions of the removed syncs
+/// in `delete_versions`.
+async fn apply_deleting_versions(paths: &Paths, delete_versions: &[String]) -> Result<(), String> {
     let rclone = Rclone::from_env().map_err(|err| err.to_string())?;
     let bin = current_cli()?;
     let systemctl = UserSystemctl;
     let env = ApplyEnv::new(paths, &rclone, &bin, SystemdMode::from_env(), &systemctl);
-    let mut report = apply(&env, &[]).await;
+    let mut report = apply(&env, delete_versions).await;
     report.invalid_pairs.clear();
     if report.is_empty() {
         Ok(())
     } else {
         Err(report.to_string().trim().to_owned())
     }
+}
+
+fn spawn_scan_conflicts(context: &Arc<Context>, id: String) {
+    let context = Arc::clone(context);
+    tokio::spawn(async move { scan_conflicts(&context, id).await });
+}
+
+async fn scan_conflicts(context: &Context, id: String) {
+    match pair_tools::scan_conflicts(&context.paths, &id).await {
+        Ok(found) => context.emitter.send(Event::Conflicts { id, found }),
+        Err(text) => fail(context, text),
+    }
+}
+
+fn spawn_resolve_conflict(
+    context: &Arc<Context>,
+    id: String,
+    path: PathBuf,
+    resolution: Resolution,
+) {
+    let context = Arc::clone(context);
+    tokio::spawn(async move {
+        match pair_tools::resolve_conflict(&context.paths, &id, path, resolution).await {
+            Ok(()) => {
+                scan_conflicts(&context, id.clone()).await;
+                spawn_sync(&context, vec![id]);
+            }
+            Err(text) => fail(&context, text),
+        }
+    });
+}
+
+fn spawn_test_filters(
+    context: &Arc<Context>,
+    id: String,
+    local: PathBuf,
+    presets: Vec<String>,
+    rules: Vec<String>,
+) {
+    let context = Arc::clone(context);
+    tokio::spawn(async move {
+        let outcome = pair_tools::test_filters(&context.paths, &local, &presets, &rules).await;
+        context.emitter.send(Event::FilterTest {
+            id,
+            presets,
+            rules,
+            outcome,
+        });
+    });
+}
+
+fn spawn_save_filters(
+    context: &Arc<Context>,
+    id: String,
+    presets: Vec<String>,
+    rules: Vec<String>,
+) {
+    let context = Arc::clone(context);
+    tokio::spawn(async move {
+        match save_filters(&context.paths, &id, &presets, &rules).await {
+            Ok(was_clear) => {
+                context.emitter.send(Event::FiltersSaved(id.clone()));
+                if was_clear {
+                    // A round only checks the new filters and holds the sync for
+                    // review, so the status says so right away.
+                    spawn_sync(&context, vec![id]);
+                }
+            }
+            Err(text) => fail(&context, text),
+        }
+        context.refresh.notify_one();
+    });
+}
+
+async fn save_filters(
+    paths: &Paths,
+    id: &str,
+    presets: &[String],
+    rules: &[String],
+) -> Result<bool, String> {
+    pair_tools::write_filters(paths, id, presets, rules).await?;
+    let was_clear = pair_tools::after_filters_saved(paths, id).await?;
+    apply_config(paths).await?;
+    Ok(was_clear)
+}
+
+fn spawn_remove_sync(context: &Arc<Context>, id: String, delete_versions: bool) {
+    let context = Arc::clone(context);
+    tokio::spawn(async move {
+        if let Err(text) = remove_sync(&context.paths, &id, delete_versions).await {
+            fail(&context, text);
+        }
+        context.refresh.notify_one();
+    });
+}
+
+async fn remove_sync(paths: &Paths, id: &str, delete_versions: bool) -> Result<(), String> {
+    pair_tools::remove_from_config(paths, id).await?;
+    let versions = if delete_versions {
+        vec![id.to_owned()]
+    } else {
+        Vec::new()
+    };
+    apply_deleting_versions(paths, &versions).await
 }
 
 fn spawn_sync(context: &Arc<Context>, ids: Vec<String>) {
@@ -723,10 +896,10 @@ fn spawn_connect(context: &Arc<Context>, request: ConnectRequest) {
     context.tasks().connect = Some(cancel);
     let context = Arc::clone(context);
     tokio::spawn(async move {
-        let account = match &request.mode {
-            AccountMode::Add => request.name.clone(),
-            AccountMode::Update { name } => name.clone(),
-        };
+        let account = request
+            .mode
+            .remote()
+            .map_or_else(|| request.name.clone(), str::to_owned);
         let signed_in = match rclone() {
             Ok(rclone) => sheet_io::connect(&rclone, &request, cancelled).await,
             Err(text) => Err(text),

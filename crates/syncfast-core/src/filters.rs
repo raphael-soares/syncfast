@@ -197,6 +197,47 @@ impl DirMatcher {
     }
 }
 
+/// How many top-level folders [`summarize_exclusions`] lists.
+pub const TOP_FOLDERS: usize = 20;
+
+/// What a filter test found: how many of the files the rules leave out and
+/// where.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExclusionSummary {
+    pub total: usize,
+    pub excluded: usize,
+    /// Top-level folders with the most excluded files, most first and then
+    /// by name, at most [`TOP_FOLDERS`]. Files at the top level are only in
+    /// `excluded`.
+    pub folders: Vec<(String, usize)>,
+}
+
+/// Compares the files of a folder (`all`) with the ones the filters keep
+/// (`kept`), both as `rclone lsf -R` lists them.
+#[must_use]
+pub fn summarize_exclusions(all: &[String], kept: &[String]) -> ExclusionSummary {
+    let kept: std::collections::HashSet<&str> = kept.iter().map(String::as_str).collect();
+    let mut excluded = 0;
+    let mut per_folder: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for file in all.iter().filter(|file| !kept.contains(file.as_str())) {
+        excluded += 1;
+        if let Some((folder, _)) = file.split_once('/') {
+            *per_folder.entry(folder).or_default() += 1;
+        }
+    }
+    let mut folders: Vec<(String, usize)> = per_folder
+        .into_iter()
+        .map(|(folder, count)| (folder.to_owned(), count))
+        .collect();
+    folders.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+    folders.truncate(TOP_FOLDERS);
+    ExclusionSummary {
+        total: all.len(),
+        excluded,
+        folders,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -454,5 +495,53 @@ mod tests {
         let m = matcher(&["- **/"]);
 
         assert!(!excluded(&m, ""));
+    }
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|name| (*name).to_owned()).collect()
+    }
+
+    #[test]
+    fn summary_counts_what_the_filters_dropped_and_groups_it_by_top_folder() {
+        let all = names(&[
+            "a.txt",
+            "tmp.log",
+            "src/a.rs",
+            "src/b.log",
+            "src/c.log",
+            "docs/x.log",
+        ]);
+        let kept = names(&["a.txt", "src/a.rs"]);
+
+        let summary = summarize_exclusions(&all, &kept);
+
+        assert_eq!(summary.total, 6);
+        assert_eq!(summary.excluded, 4);
+        assert_eq!(
+            summary.folders,
+            vec![("src".to_owned(), 2), ("docs".to_owned(), 1)]
+        );
+    }
+
+    #[test]
+    fn summary_breaks_ties_by_name_and_lists_at_most_twenty_folders() {
+        let all: Vec<String> = (0..25).map(|n| format!("d{n:02}/f")).collect();
+
+        let summary = summarize_exclusions(&all, &[]);
+
+        assert_eq!(summary.excluded, 25);
+        assert_eq!(summary.folders.len(), TOP_FOLDERS);
+        assert_eq!(summary.folders[0], ("d00".to_owned(), 1));
+        assert_eq!(summary.folders[19], ("d19".to_owned(), 1));
+    }
+
+    #[test]
+    fn summary_of_an_untouched_folder_excludes_nothing() {
+        let all = names(&["a", "b/c"]);
+
+        let summary = summarize_exclusions(&all, &all);
+
+        assert_eq!(summary.excluded, 0);
+        assert!(summary.folders.is_empty());
     }
 }
