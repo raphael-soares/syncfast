@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=syncfast
+GenericName=Folder Sync
+Comment=Keep folders in sync with Google Drive
+Exec=syncfast-gui
+Icon=io.github.raphael_soares.syncfast
+Terminal=false
+Categories=Utility;FileTools;
+StartupWMClass=io.github.raphael_soares.syncfast

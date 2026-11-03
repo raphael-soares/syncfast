@@ -7,6 +7,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+fastframe-desktop.workspace = true
 fastframe-file.workspace = true
 fastframe-instance.workspace = true
 fastframe-notifications.workspace = true

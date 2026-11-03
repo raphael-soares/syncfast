@@ -44,7 +44,10 @@ impl Paths {
     }
 
     /// Reads `HOME` and the `XDG_*` variables, with the XDG fallbacks for the
-    /// ones that are unset, empty or relative.
+    /// ones that are unset, empty or relative. Inside the Flatpak sandbox the
+    /// `XDG_*` variables point into `~/.var/app`, so the host's values
+    /// (`HOST_XDG_*`, else the defaults) are used to keep the config, state
+    /// and versions where the unpackaged app kept them (ADR 0006).
     ///
     /// # Errors
     /// `HOME` is unset or relative, or the runtime directory needs the
@@ -62,15 +65,28 @@ impl Paths {
                 .map(PathBuf::from)
                 .filter(|path| path.is_absolute())
         };
+        let flatpak_id = crate::flatpak::app_id_from(lookup("FLATPAK_ID"));
+        let xdg = |key: &str| {
+            if flatpak_id.is_some() {
+                absolute(&format!("HOST_{key}"))
+            } else {
+                absolute(key)
+            }
+        };
         let home = absolute("HOME").ok_or(PathsError::HomeNotSet)?;
         let runtime_dir = match absolute("XDG_RUNTIME_DIR") {
             Some(dir) => dir,
             None => PathBuf::from(format!("/run/user/{}", uid().map_err(PathsError::Uid)?)),
         };
+        // The sandbox keeps only this folder across the instances of the app.
+        let runtime_dir = match &flatpak_id {
+            Some(id) => runtime_dir.join("app").join(id),
+            None => runtime_dir,
+        };
         Ok(Self {
-            config_home: absolute("XDG_CONFIG_HOME").unwrap_or_else(|| home.join(".config")),
-            state_home: absolute("XDG_STATE_HOME").unwrap_or_else(|| home.join(".local/state")),
-            data_home: absolute("XDG_DATA_HOME").unwrap_or_else(|| home.join(".local/share")),
+            config_home: xdg("XDG_CONFIG_HOME").unwrap_or_else(|| home.join(".config")),
+            state_home: xdg("XDG_STATE_HOME").unwrap_or_else(|| home.join(".local/state")),
+            data_home: xdg("XDG_DATA_HOME").unwrap_or_else(|| home.join(".local/share")),
             runtime_dir,
             home,
         })
@@ -255,6 +271,44 @@ mod tests {
         assert_eq!(
             paths.units_preview_dir(),
             Path::new("/s/syncfast/units-preview")
+        );
+    }
+
+    #[test]
+    fn inside_flatpak_the_sandbox_xdg_variables_are_ignored_and_the_host_ones_win() {
+        let vars = [
+            ("FLATPAK_ID", "io.example.App"),
+            ("HOME", "/home/ada"),
+            (
+                "XDG_CONFIG_HOME",
+                "/home/ada/.var/app/io.example.App/config",
+            ),
+            ("XDG_STATE_HOME", "/home/ada/.var/app/io.example.App/state"),
+            ("XDG_DATA_HOME", "/home/ada/.var/app/io.example.App/data"),
+            ("HOST_XDG_STATE_HOME", "/srv/state"),
+            ("XDG_RUNTIME_DIR", "/run/user/1000"),
+        ];
+
+        let paths = Paths::from_lookup(lookup(&vars), unreachable_uid).unwrap();
+
+        assert_eq!(paths.config_home, Path::new("/home/ada/.config"));
+        assert_eq!(paths.state_home, Path::new("/srv/state"));
+        assert_eq!(paths.data_home, Path::new("/home/ada/.local/share"));
+    }
+
+    #[test]
+    fn inside_flatpak_the_runtime_folder_is_the_one_shared_by_the_app_instances() {
+        let vars = [
+            ("FLATPAK_ID", "io.example.App"),
+            ("HOME", "/home/ada"),
+            ("XDG_RUNTIME_DIR", "/run/user/1000"),
+        ];
+
+        let paths = Paths::from_lookup(lookup(&vars), unreachable_uid).unwrap();
+
+        assert_eq!(
+            paths.lock_file("drive"),
+            Path::new("/run/user/1000/app/io.example.App/syncfast/drive.lock")
         );
     }
 

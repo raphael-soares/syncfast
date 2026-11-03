@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.raphael_soares.syncfast</id>
+  <name>syncfast</name>
+  <summary>Keep folders in sync with Google Drive</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="io.github.raphael_soares">
+    <name>Raphael Soares</name>
+  </developer>
+  <description>
+    <p>Keeps folders on this computer in sync with Google Drive, in both directions, from one tray-resident window. It runs rclone bisync on a schedule and whenever local files change, with systemd user units that it generates.</p>
+  </description>
+  <launchable type="desktop-id">io.github.raphael_soares.syncfast.desktop</launchable>
+  <icon type="stock">io.github.raphael_soares.syncfast</icon>
+  <categories>
+    <category>Utility</category>
+    <category>FileTools</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-11-03"/>
+  </releases>
+</component>

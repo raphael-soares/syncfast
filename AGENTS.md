@@ -6,6 +6,7 @@
 - `crates/syncfast-gui`: binary `syncfast-gui` (egui + fastframe). Uses the core as a library and never calls the CLI binary, except in dev mode (`SYNCFAST_SYSTEMD=off`).
 
 ## Rules
+- Flatpak is the only distribution channel (ADR 0006). Code that behaves differently in the sandbox is gated on `FLATPAK_ID` and nothing else.
 - `ui/` only draws and emits `Action`. All I/O goes through the backend (`Command`/`Event`).
 - No literal colour outside `theme.rs`, except the two tray badge colours.
 - Never log a token or the output of `rclone config dump`.

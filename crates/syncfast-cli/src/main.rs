@@ -7,6 +7,7 @@ use anyhow::Context as _;
 use clap::{CommandFactory as _, Parser, Subcommand, ValueEnum};
 use jiff::Zoned;
 use syncfast_core::bisync::ReviewKind;
+use syncfast_core::flatpak;
 use syncfast_core::network::NetworkManager;
 use syncfast_core::notify::DesktopNotifier;
 use syncfast_core::paths::Paths;
@@ -164,13 +165,10 @@ async fn apply_units(delete_versions: &[String]) -> anyhow::Result<ExitCode> {
     let paths = paths()?;
     let rclone = Rclone::from_env()?;
     let bin = current_binary().context("cannot locate the syncfast binary")?;
-    let env = ApplyEnv::new(
-        &paths,
-        &rclone,
-        &bin,
-        SystemdMode::from_env(),
-        &UserSystemctl,
-    );
+    let flatpak_id = flatpak::app_id();
+    let systemctl = UserSystemctl::detect();
+    let env = ApplyEnv::new(&paths, &rclone, &bin, SystemdMode::from_env(), &systemctl)
+        .with_flatpak_id(flatpak_id.as_deref());
     let report = apply(&env, delete_versions).await;
     if !report.is_empty() {
         eprint!("{report}");
@@ -182,7 +180,11 @@ async fn watch_folders() -> anyhow::Result<()> {
     let paths = paths()?;
     let rclone = Rclone::from_env()?;
     let bin = current_binary().context("cannot locate the syncfast binary")?;
-    let trigger = trigger_for(SystemdMode::from_env(), bin, Arc::new(UserSystemctl));
+    let trigger = trigger_for(
+        SystemdMode::from_env(),
+        bin,
+        Arc::new(UserSystemctl::detect()),
+    );
     let watcher = Watcher::start(WatchEnv::new(paths, rclone, trigger)).await?;
     let mut interrupt = signal(SignalKind::interrupt()).context("signal handler")?;
     let mut terminate = signal(SignalKind::terminate()).context("signal handler")?;

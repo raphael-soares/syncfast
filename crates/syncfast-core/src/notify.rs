@@ -114,9 +114,10 @@ pub struct NativeNotifier;
 
 impl Notifier for NativeNotifier {
     fn notify(&self, notice: &Notice) {
+        let entry = fastframe_desktop::desktop_entry("syncfast");
         let app = App::new("syncfast", "syncfast")
-            .desktop_entry("syncfast")
-            .icon("syncfast");
+            .desktop_entry(&entry)
+            .icon(&entry);
         let client = match Client::new(app) {
             Ok(client) => client,
             Err(err) => {

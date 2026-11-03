@@ -16,6 +16,7 @@ use tokio::time::Instant;
 
 use crate::behavior::Behavior;
 use crate::config::{Config, Pair, PairError, RESERVED_ID, valid_id};
+use crate::flatpak;
 use crate::network::BoxFuture;
 use crate::paths::Paths;
 use crate::rclone::Rclone;
@@ -76,22 +77,36 @@ pub trait Systemctl: Send + Sync {
     fn run<'a>(&'a self, args: &'a [&'a str]) -> BoxFuture<'a, Result<(), String>>;
 }
 
+/// `systemctl --user`, on the host's systemd when running in the Flatpak
+/// sandbox (ADR 0006).
 #[derive(Debug, Clone, Copy, Default)]
-pub struct UserSystemctl;
+pub struct UserSystemctl {
+    on_host: bool,
+}
+
+impl UserSystemctl {
+    /// Goes through `flatpak-spawn --host` exactly when `FLATPAK_ID` is set.
+    #[must_use]
+    pub fn detect() -> Self {
+        Self {
+            on_host: flatpak::app_id().is_some(),
+        }
+    }
+}
 
 impl Systemctl for UserSystemctl {
     fn run<'a>(&'a self, args: &'a [&'a str]) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
-            let output = Command::new("systemctl")
-                .arg("--user")
-                .args(args)
+            let (program, full_args) = flatpak::systemctl_command(self.on_host, args);
+            let output = Command::new(program)
+                .args(full_args)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::piped())
                 .kill_on_drop(true)
                 .output()
                 .await
-                .map_err(|err| format!("cannot run systemctl: {err}"))?;
+                .map_err(|err| format!("cannot run {program}: {err}"))?;
             if output.status.success() {
                 return Ok(());
             }
@@ -145,14 +160,45 @@ fn quoted(text: &str) -> String {
     out
 }
 
-fn rclone_environment(rclone: &str) -> String {
-    quoted(&format!("SYNCFAST_RCLONE={rclone}"))
+/// How a unit starts syncfast.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Launcher {
+    /// The binary and the rclone it must use, by absolute path.
+    Native { bin: String, rclone: String },
+    /// `flatpak run` of the app: the sandbox brings its own rclone, found on
+    /// its `PATH` (ADR 0006).
+    Flatpak { app_id: String },
+}
+
+impl Launcher {
+    /// The value of `ExecStart=` for `syncfast <args>`.
+    fn exec(&self, args: &str) -> String {
+        match self {
+            Self::Native { bin, .. } => format!("{} {args}", quoted(bin)),
+            Self::Flatpak { app_id } => {
+                format!("flatpak run --die-with-parent --command=syncfast {app_id} {args}")
+            }
+        }
+    }
+
+    /// The `Environment=` line, with its newline, or nothing.
+    fn environment_line(&self) -> String {
+        match self {
+            Self::Native { rclone, .. } => {
+                format!(
+                    "Environment={}\n",
+                    quoted(&format!("SYNCFAST_RCLONE={rclone}"))
+                )
+            }
+            Self::Flatpak { .. } => String::new(),
+        }
+    }
 }
 
 /// `syncfast-<id>.service`: one oneshot round, started by the timer, the
 /// watcher or `Sync Now`.
 #[must_use]
-pub fn pair_service(pair: &Pair, bin: &str, rclone: &str) -> String {
+pub fn pair_service(pair: &Pair, launcher: &Launcher) -> String {
     format!(
         "{UNIT_HEADER}\n\
          [Unit]\n\
@@ -160,17 +206,16 @@ pub fn pair_service(pair: &Pair, bin: &str, rclone: &str) -> String {
          \n\
          [Service]\n\
          Type=oneshot\n\
-         ExecStart={bin} run {id}\n\
-         Environment={env}\n\
+         ExecStart={exec}\n\
+         {env}\
          KillSignal=SIGINT\n\
          TimeoutStartSec=infinity\n\
          TimeoutStopSec=180\n\
          Nice=10\n\
          IOSchedulingClass=idle\n",
         name = pair.name.replace('%', "%%"),
-        bin = quoted(bin),
-        id = pair.id,
-        env = rclone_environment(rclone),
+        exec = launcher.exec(&format!("run {}", pair.id)),
+        env = launcher.environment_line(),
     )
 }
 
@@ -198,22 +243,22 @@ pub fn pair_timer(pair: &Pair, behavior: &Behavior) -> String {
 
 /// `syncfast-watch.service`: the inotify watcher for every sync.
 #[must_use]
-pub fn watch_service(bin: &str, rclone: &str) -> String {
+pub fn watch_service(launcher: &Launcher) -> String {
     format!(
         "{UNIT_HEADER}\n\
          [Unit]\n\
          Description=syncfast local change watcher\n\
          \n\
          [Service]\n\
-         ExecStart={bin} watch\n\
-         Environment={env}\n\
+         ExecStart={exec}\n\
+         {env}\
          Restart=on-failure\n\
          RestartSec=10\n\
          \n\
          [Install]\n\
          WantedBy=default.target\n",
-        bin = quoted(bin),
-        env = rclone_environment(rclone),
+        exec = launcher.exec("watch"),
+        env = launcher.environment_line(),
     )
 }
 
@@ -234,6 +279,9 @@ pub struct ApplyEnv<'a> {
     pub bin: &'a Path,
     pub mode: SystemdMode,
     pub systemctl: &'a dyn Systemctl,
+    /// The Flatpak app id when running in the sandbox: the units then call
+    /// `flatpak run` instead of `bin` (ADR 0006).
+    pub flatpak_id: Option<&'a str>,
     /// How long a removal waits for a running round.
     pub pair_lock_timeout: Duration,
 }
@@ -253,8 +301,15 @@ impl<'a> ApplyEnv<'a> {
             bin,
             mode,
             systemctl,
+            flatpak_id: None,
             pair_lock_timeout: PAIR_LOCK_TIMEOUT,
         }
+    }
+
+    #[must_use]
+    pub fn with_flatpak_id(mut self, flatpak_id: Option<&'a str>) -> Self {
+        self.flatpak_id = flatpak_id;
+        self
     }
 }
 
@@ -413,10 +468,10 @@ impl Applier<'_, '_> {
                 return;
             }
         };
-        let (bin, rclone) = match resolve_binaries(env).await {
-            Ok(resolved) => resolved,
+        let launcher = match resolve_launcher(env).await {
+            Ok(launcher) => launcher,
             Err(err) => {
-                self.fail(None, "resolve binaries", err);
+                self.fail(None, "resolve the launcher", err);
                 return;
             }
         };
@@ -478,7 +533,7 @@ impl Applier<'_, '_> {
             }
         }
 
-        self.write_units(&validation.pairs, &bin, &rclone).await;
+        self.write_units(&validation.pairs, &launcher).await;
         if self.units_changed {
             self.systemctl(None, &["daemon-reload"]).await;
         }
@@ -607,10 +662,10 @@ impl Applier<'_, '_> {
         }
     }
 
-    async fn write_units(&mut self, pairs: &[Pair], bin: &str, rclone: &str) {
-        let mut units = vec![(watch_service_name(), watch_service(bin, rclone))];
+    async fn write_units(&mut self, pairs: &[Pair], launcher: &Launcher) {
+        let mut units = vec![(watch_service_name(), watch_service(launcher))];
         for pair in pairs {
-            units.push((service_name(&pair.id), pair_service(pair, bin, rclone)));
+            units.push((service_name(&pair.id), pair_service(pair, launcher)));
             let behavior = Behavior::for_pair(pair);
             units.push((timer_name(&pair.id), pair_timer(pair, &behavior)));
         }
@@ -635,8 +690,14 @@ async fn path_exists(path: &Path) -> bool {
     tokio::fs::try_exists(path).await.unwrap_or(false)
 }
 
-/// The syncfast binary and rclone as the units must name them.
-async fn resolve_binaries(env: &ApplyEnv<'_>) -> Result<(String, String), String> {
+/// How the units must start syncfast: the binary and rclone by absolute
+/// path, or `flatpak run` inside the sandbox.
+async fn resolve_launcher(env: &ApplyEnv<'_>) -> Result<Launcher, String> {
+    if let Some(app_id) = env.flatpak_id {
+        return Ok(Launcher::Flatpak {
+            app_id: app_id.to_owned(),
+        });
+    }
     let rclone = tokio::fs::canonicalize(env.rclone.bin())
         .await
         .map_err(|err| format!("{}: {err}", env.rclone.bin().display()))?;
@@ -645,7 +706,10 @@ async fn resolve_binaries(env: &ApplyEnv<'_>) -> Result<(String, String), String
             .map(str::to_owned)
             .ok_or_else(|| format!("{} is not valid UTF-8", path.display()))
     };
-    Ok((as_text(env.bin)?, as_text(&rclone)?))
+    Ok(Launcher::Native {
+        bin: as_text(env.bin)?,
+        rclone: as_text(&rclone)?,
+    })
 }
 
 /// Writes `contents` unless the file already holds exactly that. True when
@@ -711,12 +775,24 @@ mod tests {
         }
     }
 
+    fn native(bin: &str, rclone: &str) -> Launcher {
+        Launcher::Native {
+            bin: bin.to_owned(),
+            rclone: rclone.to_owned(),
+        }
+    }
+
+    fn flatpak_launcher() -> Launcher {
+        Launcher::Flatpak {
+            app_id: "io.example.App".to_owned(),
+        }
+    }
+
     #[test]
     fn service_unit_matches_the_spec_text() {
         let unit = pair_service(
             &pair("drive", "Google Drive"),
-            "/home/ada/.local/bin/syncfast",
-            "/usr/bin/rclone",
+            &native("/home/ada/.local/bin/syncfast", "/usr/bin/rclone"),
         );
 
         assert_eq!(
@@ -764,7 +840,7 @@ mod tests {
 
     #[test]
     fn watch_unit_matches_the_spec_text() {
-        let unit = watch_service("/opt/syncfast", "/usr/bin/rclone");
+        let unit = watch_service(&native("/opt/syncfast", "/usr/bin/rclone"));
 
         assert_eq!(
             unit,
@@ -784,8 +860,40 @@ mod tests {
     }
 
     #[test]
+    fn flatpak_service_unit_runs_the_app_command_and_names_no_rclone() {
+        let unit = pair_service(&pair("drive", "Google Drive"), &flatpak_launcher());
+
+        assert_eq!(
+            unit,
+            "# Generated by syncfast. Do not edit; run \"syncfast apply\".\n\
+             [Unit]\n\
+             Description=syncfast: Google Drive\n\
+             \n\
+             [Service]\n\
+             Type=oneshot\n\
+             ExecStart=flatpak run --die-with-parent --command=syncfast io.example.App run drive\n\
+             KillSignal=SIGINT\n\
+             TimeoutStartSec=infinity\n\
+             TimeoutStopSec=180\n\
+             Nice=10\n\
+             IOSchedulingClass=idle\n"
+        );
+    }
+
+    #[test]
+    fn flatpak_watch_unit_runs_the_app_command_and_names_no_rclone() {
+        let unit = watch_service(&flatpak_launcher());
+
+        assert!(unit.contains(
+            "ExecStart=flatpak run --die-with-parent --command=syncfast io.example.App watch\n"
+        ));
+        assert!(!unit.contains("Environment="));
+        assert!(!unit.contains("SYNCFAST_RCLONE"));
+    }
+
+    #[test]
     fn percent_in_a_name_is_doubled_in_descriptions() {
-        let service = pair_service(&pair("p", "100% sync"), "/b", "/r");
+        let service = pair_service(&pair("p", "100% sync"), &native("/b", "/r"));
         let timer = pair_timer(&pair("p", "100% sync"), &Behavior::default());
 
         assert!(service.contains("Description=syncfast: 100%% sync\n"));
@@ -796,8 +904,10 @@ mod tests {
     fn paths_with_spaces_quotes_backslashes_and_percent_are_quoted_and_escaped() {
         let bin = "/home/ada/my apps/sync\"fast\\x%h/syncfast";
 
-        let service = pair_service(&pair("p", "P"), bin, "/opt/r clone/rclone");
-        let watcher = watch_service(bin, "/opt/r clone/rclone");
+        let launcher = native(bin, "/opt/r clone/rclone");
+
+        let service = pair_service(&pair("p", "P"), &launcher);
+        let watcher = watch_service(&launcher);
 
         let exec = "ExecStart=\"/home/ada/my apps/sync\\\"fast\\\\x%%h/syncfast\"";
         assert!(service.contains(&format!("{exec} run p\n")));

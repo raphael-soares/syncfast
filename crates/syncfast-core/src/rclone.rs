@@ -11,8 +11,12 @@ use std::process::{ExitStatus, Stdio};
 use serde::Deserialize;
 use tokio::process::{Child, Command};
 
+use crate::flatpak;
+use crate::paths::Paths;
+
 const BINARY_NAME: &str = "rclone";
 const BINARY_OVERRIDE_VAR: &str = "SYNCFAST_RCLONE";
+const CONFIG_VAR: &str = "RCLONE_CONFIG";
 const DRIVE_TYPE: &str = "drive";
 
 #[derive(Debug, thiserror::Error)]
@@ -53,7 +57,10 @@ impl Rclone {
     }
 
     /// `SYNCFAST_RCLONE` if set, otherwise `rclone` on `PATH`. The rest of
-    /// the environment, `RCLONE_CONFIG` included, is inherited.
+    /// the environment, `RCLONE_CONFIG` included, is inherited. Inside the
+    /// Flatpak sandbox, where the config folder is remapped, an unset
+    /// `RCLONE_CONFIG` becomes the host's `~/.config/rclone/rclone.conf`
+    /// (ADR 0006).
     ///
     /// # Errors
     /// [`RcloneError::RcloneNotFound`].
@@ -62,7 +69,15 @@ impl Rclone {
             std::env::var_os(BINARY_OVERRIDE_VAR).as_deref(),
             std::env::var_os("PATH").as_deref(),
         )?;
-        Ok(Self::new(bin))
+        let rclone = Self::new(bin);
+        let configured = std::env::var_os(CONFIG_VAR).is_some_and(|value| !value.is_empty());
+        let config = Paths::from_env()
+            .ok()
+            .and_then(|paths| sandbox_config(flatpak::app_id().as_deref(), configured, &paths));
+        Ok(match config {
+            Some(config) => rclone.with_config(config),
+            None => rclone,
+        })
     }
 
     #[must_use]
@@ -341,6 +356,12 @@ fn exit_detail(status: ExitStatus) -> String {
     }
 }
 
+/// The host's rclone config, for a sandbox whose `RCLONE_CONFIG` is unset.
+fn sandbox_config(flatpak_id: Option<&str>, configured: bool, paths: &Paths) -> Option<PathBuf> {
+    (flatpak_id.is_some() && !configured)
+        .then(|| paths.config_home.join("rclone").join("rclone.conf"))
+}
+
 fn is_executable_file(path: &Path) -> bool {
     std::fs::metadata(path)
         .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
@@ -372,6 +393,32 @@ fn resolve_binary(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn paths() -> Paths {
+        Paths::new(
+            "/home/ada".into(),
+            "/home/ada/.config".into(),
+            "/s".into(),
+            "/d".into(),
+            "/r".into(),
+        )
+    }
+
+    #[test]
+    fn inside_flatpak_an_unset_rclone_config_is_the_host_one() {
+        let config = sandbox_config(Some("io.example.App"), false, &paths());
+
+        assert_eq!(
+            config.as_deref(),
+            Some(Path::new("/home/ada/.config/rclone/rclone.conf"))
+        );
+    }
+
+    #[test]
+    fn an_explicit_rclone_config_or_no_sandbox_leaves_the_environment_alone() {
+        assert_eq!(sandbox_config(Some("io.example.App"), true, &paths()), None);
+        assert_eq!(sandbox_config(None, false, &paths()), None);
+    }
 
     fn executable(dir: &Path, name: &str) -> PathBuf {
         let path = dir.join(name);

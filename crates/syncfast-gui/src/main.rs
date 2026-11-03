@@ -4,12 +4,13 @@ use anyhow::Context as _;
 use fastframe_instance::Claim;
 use fastframe_shell::{Lease, Shell, Waker};
 use syncfast_core::paths::Paths;
-use syncfast_gui::app::{APP_ID, App};
+use syncfast_gui::app::{App, app_id};
 use syncfast_gui::backend;
 use syncfast_gui::gui_state::{self, GuiState};
 use syncfast_gui::instance::{self, Inbox};
 use syncfast_gui::theme::{Themes, size};
 
+const WINDOW_ICON: &[u8] = include_bytes!("../assets/app-icon/syncfast-256.png");
 const LOG_FILTER: &str = "warn,syncfast_gui=info,syncfast_core=info";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,10 +118,14 @@ fn run(start_hidden: bool) -> anyhow::Result<ExitCode> {
 }
 
 fn native_options(geometry: fastframe_shell::window::Geometry) -> eframe::NativeOptions {
-    let viewport = egui::ViewportBuilder::default()
+    let mut viewport = egui::ViewportBuilder::default()
         .with_title("Syncs")
-        .with_app_id(APP_ID)
+        .with_app_id(app_id())
         .with_inner_size(size::WINDOW_DEFAULT);
+    match eframe::icon_data::from_png_bytes(WINDOW_ICON) {
+        Ok(icon) => viewport = viewport.with_icon(icon),
+        Err(err) => log::warn!("cannot load the window icon: {err}"),
+    }
     let viewport = geometry
         .apply(viewport)
         .with_min_inner_size(size::WINDOW_MIN);
@@ -165,6 +170,13 @@ mod tests {
 
     fn parse(args: &[&str]) -> Result<Launch, String> {
         parse_args(args.iter().map(|arg| (*arg).to_owned()))
+    }
+
+    #[test]
+    fn the_embedded_window_icon_is_a_square_png() {
+        let icon = eframe::icon_data::from_png_bytes(WINDOW_ICON).unwrap();
+
+        assert_eq!((icon.width, icon.height), (256, 256));
     }
 
     #[test]
