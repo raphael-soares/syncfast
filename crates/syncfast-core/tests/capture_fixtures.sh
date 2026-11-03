@@ -3,6 +3,11 @@
 # Usage: just capture-fixtures (needs rclone on PATH; touches only a tempdir).
 set -euo pipefail
 
+if [[ "$(id -u)" -eq 0 ]]; then
+  echo "refusing to run as root: chmod 555 does not block root" >&2
+  exit 1
+fi
+
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 version="$(rclone version | head -n 1 | sed -E 's/^rclone v?//')"
 out="$here/fixtures/rclone-$version"
@@ -111,7 +116,6 @@ prepare
 put "$root/remote/doc.txt" "remote edit" "$new"
 capture overwrite_local
 
-# overwrite_remote: the remote copy is overwritten in place (no --suffix).
 setup
 put "$root/local/doc.txt" "base" "$old"
 put "$root/local/keep.txt" "unchanged" "$old"
@@ -157,6 +161,7 @@ put "$root/local/after.txt" "after" "$mid"
 chmod 555 "$root/remote"
 capture critical
 chmod 755 "$root/remote"
+find "$root/state/bisync/x" -name '*.lst-err' -printf '%f\n' | sort > "$out/critical.lst-err"
 
 setup
 put "$root/local/base.txt" "base" "$old"
