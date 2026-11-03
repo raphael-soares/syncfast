@@ -11,8 +11,8 @@ test:
 mutants:
     cargo mutants -p syncfast-core
 
-capture-fixtures:
-    crates/syncfast-core/tests/capture_fixtures.sh
+capture-fixtures *scenarios:
+    crates/syncfast-core/tests/capture_fixtures.sh {{scenarios}}
 
 dev-env:
     mkdir -p .dev/config/syncfast .dev/state .dev/data .dev/run .dev/remote

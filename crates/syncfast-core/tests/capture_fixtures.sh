@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Captures real `rclone bisync` JSON logs and exit codes for the parser tests.
-# Usage: just capture-fixtures (needs rclone on PATH; touches only a tempdir).
+# Usage: just capture-fixtures [scenario...] (needs rclone on PATH; touches only
+# a tempdir). With scenario names, only those fixtures are rewritten.
 set -euo pipefail
 
 if [[ "$(id -u)" -eq 0 ]]; then
@@ -12,6 +13,16 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 version="$(rclone version | head -n 1 | sed -E 's/^rclone v?//')"
 out="$here/fixtures/rclone-$version"
 mkdir -p "$out"
+only=("$@")
+
+wanted() {
+  [[ ${#only[@]} -eq 0 ]] && return 0
+  local name
+  for name in "${only[@]}"; do
+    [[ "$name" == "$1" ]] && return 0
+  done
+  return 1
+}
 
 root="$(mktemp -d)"
 trap 'rm -rf "$root"' EXIT
@@ -55,6 +66,7 @@ prepare() {
 capture() {
   local name="$1"
   shift
+  wanted "$name" || return 0
   local code=0
   rm -f "$out/$name.jsonl"
   bisync "$out/$name.jsonl" "$@" || code=$?
@@ -98,6 +110,25 @@ capture upload
 setup
 put "$root/local/base.txt" "base" "$old"
 prepare
+capture no_changes
+
+setup
+put "$root/local/base.txt" "base" "$old"
+prepare
+mkdir -p "$root/local/empty/inner"
+put "$root/local/dir/nested.txt" "nested" "$mid"
+capture new_dirs
+
+setup
+put "$root/local/base.txt" "base" "$old"
+prepare
+mkdir -p "$root/local/empty/inner"
+put "$root/local/dir/nested.txt" "nested" "$mid"
+capture new_dirs_dry_run --force --dry-run
+
+setup
+put "$root/local/base.txt" "base" "$old"
+prepare
 put "$root/remote/down.txt" "new remote file" "$mid"
 capture download
 
@@ -132,6 +163,35 @@ capture too_many_deletes
 setup
 seed_four
 prepare
+rm "$root/local/f1.txt"
+capture delete_remote
+
+setup
+seed_four
+prepare
+rm "$root/remote/f1.txt"
+capture delete_local
+
+# Every change kind at once: delete and replace on each side, new on each side.
+mixed_changes() {
+  setup
+  seed_four
+  prepare
+  rm "$root/local/f1.txt"
+  put "$root/local/f2.txt" "file 2 edited locally" "$new"
+  put "$root/local/n1.txt" "new local file" "$mid"
+  rm "$root/remote/f3.txt"
+  put "$root/remote/f4.txt" "file 4 edited remotely" "$new"
+  put "$root/remote/n2.txt" "new remote file" "$mid"
+}
+mixed_changes
+capture mixed_dry_run --force --dry-run
+mixed_changes
+capture mixed
+
+setup
+seed_four
+prepare
 rm "$root/local/f1.txt" "$root/local/f2.txt" "$root/local/f3.txt"
 capture force_dry_run --force --dry-run
 
@@ -161,7 +221,9 @@ put "$root/local/after.txt" "after" "$mid"
 chmod 555 "$root/remote"
 capture critical
 chmod 755 "$root/remote"
-find "$root/state/bisync/x" -name '*.lst-err' -printf '%f\n' | sort > "$out/critical.lst-err"
+if wanted critical; then
+  find "$root/state/bisync/x" -name '*.lst-err' -printf '%f\n' | sort > "$out/critical.lst-err"
+fi
 
 setup
 put "$root/local/base.txt" "base" "$old"

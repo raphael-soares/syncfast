@@ -16,7 +16,7 @@ just run-gui-dev
 
 If the build reports a missing native library, install the one named in the error with `pacman -S --needed`. Likely candidates: `libxkbcommon wayland libx11 libxcursor libxrandr libxi mesa fontconfig dbus`.
 
-The rclone log fixtures under `crates/syncfast-core/tests/fixtures/` come from the installed rclone. Regenerate them with `just capture-fixtures` after an rclone upgrade.
+The rclone log fixtures under `crates/syncfast-core/tests/fixtures/` come from the installed rclone. Regenerate them with `just capture-fixtures` after an rclone upgrade (`just capture-fixtures mixed upload` rewrites only those scenarios).
 
 Design and decisions: `docs/spec-phase-1.md`, `docs/adr/`, and the visual reference `docs/ui-mock.html`.
 
