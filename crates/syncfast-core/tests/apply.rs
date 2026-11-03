@@ -578,3 +578,24 @@ async fn apply_waits_for_another_apply_to_finish() {
             .exists()
     );
 }
+
+#[tokio::test]
+async fn delete_versions_of_the_reserved_watch_id_is_refused() {
+    let bed = Bed::new();
+    bed.write_config(&[]);
+    leave_traces(&bed, "watch");
+    let systemctl = FakeSystemctl::default();
+
+    let report = apply_with(&bed, SystemdMode::Off, &systemctl, &["watch"]).await;
+
+    assert_eq!(report.exit_code(), 1);
+    assert_eq!(report.failures.len(), 1);
+    assert_eq!(
+        report.failures[0].detail,
+        "\"watch\" is reserved for the watcher"
+    );
+    assert_eq!(
+        traces_left(&bed, "watch"),
+        ["state", "filters", "md5", "workdir", "versions"]
+    );
+}

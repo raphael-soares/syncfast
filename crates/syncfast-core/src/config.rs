@@ -426,7 +426,7 @@ fn expand_tilde(path: &Path, home: &Path) -> PathBuf {
 
 /// `syncfast-watch.service` already uses this name; a sync with it would
 /// share the unit file.
-const RESERVED_ID: &str = "watch";
+pub const RESERVED_ID: &str = "watch";
 
 /// True for ids that name a sync: `a-z`, `0-9` and `-`, up to 32 characters.
 #[must_use]
