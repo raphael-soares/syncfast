@@ -2,7 +2,7 @@ name: Flatpak
 
 on:
   push:
-    branches: [main, flatpak-packaging]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
