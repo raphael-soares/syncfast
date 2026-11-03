@@ -11,6 +11,8 @@ pub mod filters;
 pub mod format;
 pub mod relative;
 pub mod review;
+pub mod remove;
+pub mod settings;
 pub mod sidebar;
 pub mod welcome;
 pub mod widgets;
@@ -19,11 +21,14 @@ use std::sync::Arc;
 
 use jiff::Timestamp;
 use syncfast_core::bisync_log::Progress;
+use syncfast_core::conflicts::{Conflict, Resolution};
 use syncfast_core::state::{DisplayStatus, GateKind};
 
+use crate::gui_state::SettingsPane;
 use crate::runs::RunEntry;
 use crate::snapshot::PairSnapshot;
 
+use crate::theme::ThemeChoice;
 pub use detail::DetailTab;
 
 /// The window title when no sync is selected.
@@ -45,6 +50,10 @@ pub struct PairRow {
     /// What the gate says about itself; empty without a gate.
     pub gate_detail: String,
     pub consecutive_failures: u32,
+    /// The preset names that are on.
+    pub presets: Vec<String>,
+    /// The custom filter lines.
+    pub filters: Vec<String>,
 }
 
 impl PairRow {
@@ -75,6 +84,8 @@ impl From<&PairSnapshot> for PairRow {
                 .map(|gate| gate.detail.clone())
                 .unwrap_or_default(),
             consecutive_failures: snapshot.state.consecutive_failures,
+            presets: snapshot.pair.presets.clone(),
+            filters: snapshot.pair.filters.clone(),
         }
     }
 }
@@ -103,7 +114,7 @@ impl RemoteRow {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ViewModel {
     pub pairs: Vec<PairRow>,
     pub selected: Option<String>,
@@ -115,6 +126,16 @@ pub struct ViewModel {
     /// The rounds of the selected sync; `None` until they are read.
     pub runs: Option<Arc<[RunEntry]>>,
     pub remotes: Vec<RemoteRow>,
+    pub appearance: settings::AppearanceView,
+    pub settings_pane: SettingsPane,
+    /// The conflicts of the selected sync.
+    pub conflicts: Vec<Conflict>,
+    /// The last `Test Filters` of the selected sync.
+    pub filter_test: Option<filters::FilterTest>,
+    /// The filters of the selected sync were just saved.
+    pub filters_saved: bool,
+    /// The sync the `Remove Sync` alert asks about.
+    pub removing: Option<String>,
 }
 
 impl ViewModel {
@@ -168,6 +189,32 @@ pub enum Action {
     Review(review::ReviewAction),
     AddSyncSheet(add_sync::AddSyncAction),
     Account(account_sheet::AccountAction),
+    SetSettingsPane(SettingsPane),
+    CloseSettings,
+    SetTheme(ThemeChoice),
+    CancelRemove,
+    ConfirmRemove {
+        id: String,
+        delete_versions: bool,
+    },
+    /// Look for the conflicts of a sync again.
+    RefreshConflicts(String),
+    ResolveConflict {
+        id: String,
+        path: std::path::PathBuf,
+        resolution: Resolution,
+    },
+    TestFilters {
+        id: String,
+        local: std::path::PathBuf,
+        presets: Vec<String>,
+        rules: Vec<String>,
+    },
+    SaveFilters {
+        id: String,
+        presets: Vec<String>,
+        rules: Vec<String>,
+    },
 }
 
 /// The whole window: sidebar and detail.

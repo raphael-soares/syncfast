@@ -41,6 +41,28 @@ impl From<WindowRecord> for Geometry {
     }
 }
 
+/// The panes of the Settings window.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingsPane {
+    #[default]
+    Accounts,
+    Appearance,
+}
+
+impl SettingsPane {
+    pub const ALL: [Self; 2] = [Self::Accounts, Self::Appearance];
+
+    /// The pane's name, which is also the title of the Settings window.
+    #[must_use]
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Accounts => "Accounts",
+            Self::Appearance => "Appearance",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GuiState {
@@ -50,6 +72,8 @@ pub struct GuiState {
     pub sidebar_width: f32,
     pub theme: ThemeChoice,
     pub window: WindowRecord,
+    /// The pane the Settings window opens on.
+    pub settings_pane: SettingsPane,
 }
 
 impl Default for GuiState {
@@ -60,6 +84,7 @@ impl Default for GuiState {
             sidebar_width: SIDEBAR_DEFAULT_WIDTH,
             theme: ThemeChoice::System,
             window: WindowRecord::default(),
+            settings_pane: SettingsPane::Accounts,
         }
     }
 }
@@ -134,6 +159,7 @@ mod tests {
                 position: Some([10.0, 20.0]),
                 maximized: true,
             },
+            settings_pane: SettingsPane::Appearance,
         };
         std::fs::write(&path, saved.to_json().unwrap()).unwrap();
 

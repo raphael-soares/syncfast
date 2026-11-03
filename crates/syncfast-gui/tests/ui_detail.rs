@@ -29,6 +29,8 @@ fn pair(status: DisplayStatus) -> PairRow {
         progress: None,
         gate_detail: String::new(),
         consecutive_failures: 0,
+        presets: Vec::new(),
+        filters: Vec::new(),
     }
 }
 
@@ -48,7 +50,7 @@ fn view(pair: PairRow) -> ViewModel {
         now: now(),
         tab: DetailTab::Activity,
         runs: None,
-        remotes: Vec::new(),
+        ..ViewModel::default()
     }
 }
 

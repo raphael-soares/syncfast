@@ -4,13 +4,12 @@ use anyhow::Context as _;
 use fastframe_instance::Claim;
 use fastframe_shell::{Lease, Shell, Waker};
 use syncfast_core::paths::Paths;
-use syncfast_gui::app::App;
+use syncfast_gui::app::{APP_ID, App};
 use syncfast_gui::backend;
 use syncfast_gui::gui_state::{self, GuiState};
 use syncfast_gui::instance::{self, Inbox};
 use syncfast_gui::theme::{Themes, size};
 
-const APP_ID: &str = "syncfast-gui";
 const LOG_FILTER: &str = "warn,syncfast_gui=info,syncfast_core=info";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
