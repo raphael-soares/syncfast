@@ -20,6 +20,20 @@ The rclone log fixtures under `crates/syncfast-core/tests/fixtures/` come from t
 
 Design and decisions: `docs/spec-phase-1.md`, `docs/adr/`, and the visual reference `docs/ui-mock.html`.
 
+## Install
+
+```sh
+just install
+```
+
+This runs `cargo install` for `syncfast` and `syncfast-gui` into `~/.local/bin`. Run `syncfast-gui --start-hidden` once (or log in again) and the app stays in the tray; it runs `syncfast apply` on start, which writes the units under `~/.config/systemd/user/` and enables `syncfast-watch.service`.
+
+To start it with the session on Hyprland, add `hl.exec_cmd("/home/<user>/.local/bin/syncfast-gui --start-hidden")` to `autostart.lua` with the absolute path: Hyprland's `PATH` does not include `~/.local/bin`.
+
+### Noctalia theme
+
+Copy `contrib/noctalia/syncfast/` to `~/.local/state/noctalia/community-templates/syncfast/` and add `"syncfast"` to `community_ids` under `[theme.templates]` in Noctalia's `settings.toml`. Noctalia applies templates that are not in the community catalog: it writes `~/.config/syncfast/themes/noctalia.json` and runs `syncfast-gui reload-themes`.
+
 ## License
 
 MIT
