@@ -29,8 +29,23 @@ run-cli-dev *args: dev-env
 dev-reset:
     rm -rf .dev
 
-install:
-    cargo install --locked --path crates/syncfast-cli --root ~/.local && cargo install --locked --path crates/syncfast-gui --root ~/.local
+flatpak_id := "io.github.raphael_soares.syncfast"
+cargo_generator_rev := "9d86d336a39b9af38b86f114b6ce5820fe260f91"
+
+# Builds the Flatpak from the working tree and installs it for this user.
+flatpak:
+    nice -n 19 flatpak run org.flatpak.Builder --user --install --install-deps-from=flathub --force-clean --jobs=4 --state-dir=target/flatpak/state --repo=target/flatpak/repo target/flatpak/build packaging/flatpak/{{flatpak_id}}.yml
+
+# Exports the Flatpak as syncfast.flatpak, for `flatpak install --user syncfast.flatpak` on another machine.
+flatpak-bundle: flatpak
+    flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo target/flatpak/repo syncfast.flatpak {{flatpak_id}}
+
+# Regenerates the offline crate sources the Flatpak build needs; run it after Cargo.lock changes.
+flatpak-sources:
+    python3 -m venv target/flatpak-tools
+    target/flatpak-tools/bin/pip install --quiet aiohttp PyYAML tomlkit
+    curl -fsSL https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/{{cargo_generator_rev}}/cargo/flatpak-cargo-generator.py -o target/flatpak-tools/flatpak-cargo-generator.py
+    target/flatpak-tools/bin/python target/flatpak-tools/flatpak-cargo-generator.py Cargo.lock -o packaging/flatpak/cargo-sources.json
 
 hooks:
     lefthook install
