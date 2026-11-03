@@ -1,0 +1,35 @@
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "OFL-1.1",
+    "MPL-2.0",
+    "CC0-1.0",
+    "BSL-1.0",
+    "Ubuntu-font-1.0",
+    "Unlicense",
+]
+
+[advisories]
+ignore = [
+    { id = "RUSTSEC-2026-0370", reason = "zvariant: unmaintained, pulled by zbus 5 (fastframe and accesskit)" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names: unmaintained, pulled by zbus 5 (fastframe and accesskit)" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: unmaintained, pulled by zbus 5 (fastframe and accesskit)" },
+]
+
+[bans]
+multiple-versions = "warn"
+
+[sources]
+unknown-git = "deny"
+allow-git = [
+    "https://github.com/crmne/fastframe",
+    "https://github.com/crmne/egui",
+    "https://github.com/crmne/winit",
+]

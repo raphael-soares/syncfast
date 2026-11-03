@@ -1,0 +1,32 @@
+[package]
+name = "syncfast-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+fastframe-file.workspace = true
+fastframe-instance.workspace = true
+fastframe-notifications.workspace = true
+globset.workspace = true
+inotify.workspace = true
+jiff.workspace = true
+log.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "process", "fs", "io-util", "time", "signal", "macros", "sync"] }
+toml.workspace = true
+toml_edit.workspace = true
+zbus.workspace = true
+
+[dev-dependencies]
+cargo_metadata.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

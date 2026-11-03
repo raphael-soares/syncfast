@@ -1,0 +1,34 @@
+[package]
+name = "syncfast-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "syncfast-gui"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+eframe.workspace = true
+egui.workspace = true
+egui_extras.workspace = true
+fastframe-fonts.workspace = true
+fastframe-icons.workspace = true
+fastframe-log.workspace = true
+fastframe-shell.workspace = true
+fastframe-text.workspace = true
+fastframe-theme.workspace = true
+fastframe-tray.workspace = true
+resvg.workspace = true
+rfd.workspace = true
+syncfast-core = { path = "../syncfast-core" }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[dev-dependencies]
+egui_kittest.workspace = true
+
+[lints]
+workspace = true
