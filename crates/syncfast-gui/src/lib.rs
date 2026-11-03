@@ -5,6 +5,7 @@ pub mod gui_state;
 pub mod icons;
 pub mod instance;
 pub mod notices;
+pub mod runs;
 pub mod snapshot;
 pub mod theme;
 pub mod tray;
