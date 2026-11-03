@@ -53,11 +53,7 @@ impl Paths {
         Self::from_lookup(|key| std::env::var_os(key), current_uid)
     }
 
-    /// [`Paths::from_env`] over an arbitrary variable source and uid reader.
-    ///
-    /// # Errors
-    /// Same as [`Paths::from_env`].
-    pub fn from_lookup(
+    pub(crate) fn from_lookup(
         lookup: impl Fn(&str) -> Option<OsString>,
         uid: impl FnOnce() -> std::io::Result<u32>,
     ) -> Result<Self, PathsError> {
