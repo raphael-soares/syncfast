@@ -10,6 +10,7 @@ The review sheet, Activity and the notifications need per-file changes and count
 - Counters are `None` unless the log ends with `Bisync successful`; an interrupted run has only a partial picture.
 - `Other` holds dry-run skips with no mapping, folder creation and removal (shown with a trailing `/`), and notice or warning events about filesystem objects. Errors are never changes. Folder timestamp updates are ignored.
 - Repeated events for the same kind and path are listed once.
+- `state.json` keeps only the first 100 changes of the last run (counters stay complete): the GUI rereads the file every second or two. The full list stays in the run's log.
 
 ## Consequences
 - A dry-run `--resync` cannot tell a new file from a replacement on the remote, because nothing lists it as changed: it shows as an upload.

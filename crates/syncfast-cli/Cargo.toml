@@ -14,6 +14,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 clap.workspace = true
 fastframe-log.workspace = true
+jiff.workspace = true
 syncfast-core = { path = "../syncfast-core" }
 tokio = { workspace = true, features = ["rt", "macros"] }
 
