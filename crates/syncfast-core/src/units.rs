@@ -176,7 +176,7 @@ impl Launcher {
         match self {
             Self::Native { bin, .. } => format!("{} {args}", quoted(bin)),
             Self::Flatpak { app_id } => {
-                format!("flatpak run --command=syncfast {app_id} {args}")
+                format!("flatpak run --die-with-parent --command=syncfast {app_id} {args}")
             }
         }
     }
@@ -871,7 +871,7 @@ mod tests {
              \n\
              [Service]\n\
              Type=oneshot\n\
-             ExecStart=flatpak run --command=syncfast io.example.App run drive\n\
+             ExecStart=flatpak run --die-with-parent --command=syncfast io.example.App run drive\n\
              KillSignal=SIGINT\n\
              TimeoutStartSec=infinity\n\
              TimeoutStopSec=180\n\
@@ -884,7 +884,9 @@ mod tests {
     fn flatpak_watch_unit_runs_the_app_command_and_names_no_rclone() {
         let unit = watch_service(&flatpak_launcher());
 
-        assert!(unit.contains("ExecStart=flatpak run --command=syncfast io.example.App watch\n"));
+        assert!(unit.contains(
+            "ExecStart=flatpak run --die-with-parent --command=syncfast io.example.App watch\n"
+        ));
         assert!(!unit.contains("Environment="));
         assert!(!unit.contains("SYNCFAST_RCLONE"));
     }
