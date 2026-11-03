@@ -1,0 +1,646 @@
+//! Finding and running rclone. Every call uses explicit arguments, no shell
+//! and a null stdin. The output of `rclone config dump` holds secrets: it is
+//! parsed in memory and never logged, stored or put in an error.
+
+use std::collections::BTreeMap;
+use std::ffi::{OsStr, OsString};
+use std::os::unix::fs::PermissionsExt as _;
+use std::path::{Path, PathBuf};
+use std::process::{ExitStatus, Stdio};
+
+use serde::Deserialize;
+use tokio::process::{Child, Command};
+
+const BINARY_NAME: &str = "rclone";
+const BINARY_OVERRIDE_VAR: &str = "SYNCFAST_RCLONE";
+const DRIVE_TYPE: &str = "drive";
+
+#[derive(Debug, thiserror::Error)]
+pub enum RcloneError {
+    #[error("rclone not found; install rclone or reinstall syncfast units")]
+    RcloneNotFound,
+    #[error("cannot run rclone: {0}")]
+    Spawn(#[source] std::io::Error),
+    #[error("rclone {command} failed: {detail}")]
+    Failed {
+        command: &'static str,
+        detail: String,
+    },
+    #[error("unexpected output from rclone {0}")]
+    BadOutput(&'static str),
+}
+
+/// A resolved rclone binary and, optionally, the config file it must use.
+/// Tests and the dev mode pass the config here instead of through process
+/// environment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rclone {
+    bin: PathBuf,
+    config: Option<PathBuf>,
+}
+
+impl Rclone {
+    #[must_use]
+    pub fn new(bin: PathBuf) -> Self {
+        Self { bin, config: None }
+    }
+
+    /// Runs rclone with this `RCLONE_CONFIG`, whatever the environment says.
+    #[must_use]
+    pub fn with_config(mut self, config: PathBuf) -> Self {
+        self.config = Some(config);
+        self
+    }
+
+    /// `SYNCFAST_RCLONE` if set, otherwise `rclone` on `PATH`. The rest of
+    /// the environment, `RCLONE_CONFIG` included, is inherited.
+    ///
+    /// # Errors
+    /// [`RcloneError::RcloneNotFound`].
+    pub fn from_env() -> Result<Self, RcloneError> {
+        let bin = resolve_binary(
+            std::env::var_os(BINARY_OVERRIDE_VAR).as_deref(),
+            std::env::var_os("PATH").as_deref(),
+        )?;
+        Ok(Self::new(bin))
+    }
+
+    #[must_use]
+    pub fn bin(&self) -> &Path {
+        &self.bin
+    }
+
+    /// A command for `rclone <args>` with a null stdin. The caller decides
+    /// where stdout and stderr go and spawns it.
+    pub fn command<I, S>(&self, args: I) -> Command
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let mut command = Command::new(&self.bin);
+        command.args(args).stdin(Stdio::null()).kill_on_drop(true);
+        if let Some(config) = &self.config {
+            command.env("RCLONE_CONFIG", config);
+        }
+        command
+    }
+
+    async fn output(
+        &self,
+        name: &'static str,
+        args: Vec<OsString>,
+        keep_stderr: bool,
+    ) -> Result<Vec<u8>, RcloneError> {
+        let output = self
+            .command(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(RcloneError::Spawn)?;
+        if output.status.success() {
+            return Ok(output.stdout);
+        }
+        let detail = if keep_stderr {
+            last_line(&output.stderr).unwrap_or_else(|| exit_detail(output.status))
+        } else {
+            exit_detail(output.status)
+        };
+        Err(RcloneError::Failed {
+            command: name,
+            detail,
+        })
+    }
+
+    /// Remote names, without the trailing `:`.
+    ///
+    /// # Errors
+    /// rclone cannot run or fails.
+    pub async fn listremotes(&self) -> Result<Vec<String>, RcloneError> {
+        let stdout = self
+            .output("listremotes", vec!["listremotes".into()], true)
+            .await?;
+        Ok(String::from_utf8_lossy(&stdout)
+            .lines()
+            .map(str::trim)
+            .filter_map(|line| line.strip_suffix(':'))
+            .map(str::to_owned)
+            .collect())
+    }
+
+    /// Names of `drive` remotes whose `client_id` is absent or empty, so they
+    /// use rclone's shared one. Sorted.
+    ///
+    /// # Errors
+    /// rclone cannot run or fails, or prints something that is not the
+    /// expected JSON. The dump itself is never part of the error.
+    pub async fn drive_remotes_without_own_client_id(&self) -> Result<Vec<String>, RcloneError> {
+        let stdout = self
+            .output("config dump", vec!["config".into(), "dump".into()], false)
+            .await?;
+        let remotes: BTreeMap<String, DumpedRemote> =
+            serde_json::from_slice(&stdout).map_err(|_| RcloneError::BadOutput("config dump"))?;
+        Ok(remotes
+            .into_iter()
+            .filter(|(_, remote)| {
+                remote.kind.as_deref() == Some(DRIVE_TYPE)
+                    && remote.client_id.as_deref().is_none_or(str::is_empty)
+            })
+            .map(|(name, _)| name)
+            .collect())
+    }
+
+    /// Starts `rclone config create`, which opens the browser for the OAuth
+    /// consent and returns when it finishes. stdout and stderr are piped;
+    /// dropping the child kills it.
+    ///
+    /// # Errors
+    /// rclone cannot be started.
+    pub fn create_drive_remote(
+        &self,
+        name: &str,
+        client_id: &str,
+        client_secret: &str,
+    ) -> Result<Child, RcloneError> {
+        self.config_child([
+            "config".to_owned(),
+            "create".to_owned(),
+            name.to_owned(),
+            DRIVE_TYPE.to_owned(),
+            format!("client_id={client_id}"),
+            format!("client_secret={client_secret}"),
+            "scope=drive".to_owned(),
+            "config_is_local=true".to_owned(),
+        ])
+    }
+
+    /// Starts `rclone config update` for the credentials of `name`, same
+    /// contract as [`Rclone::create_drive_remote`].
+    ///
+    /// # Errors
+    /// rclone cannot be started.
+    pub fn update_drive_credentials(
+        &self,
+        name: &str,
+        client_id: &str,
+        client_secret: &str,
+    ) -> Result<Child, RcloneError> {
+        self.config_child([
+            "config".to_owned(),
+            "update".to_owned(),
+            name.to_owned(),
+            format!("client_id={client_id}"),
+            format!("client_secret={client_secret}"),
+        ])
+    }
+
+    fn config_child(&self, args: impl IntoIterator<Item = String>) -> Result<Child, RcloneError> {
+        self.command(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(RcloneError::Spawn)
+    }
+
+    /// Names of the folders directly inside `remote_path` (`gdrive:Notes`).
+    ///
+    /// # Errors
+    /// rclone cannot run or fails (for example the folder does not exist).
+    pub async fn list_dirs(&self, remote_path: &str) -> Result<Vec<String>, RcloneError> {
+        let stdout = self
+            .output(
+                "lsjson",
+                [
+                    "lsjson",
+                    "--dirs-only",
+                    "--no-modtime",
+                    "--no-mimetype",
+                    "--",
+                    remote_path,
+                ]
+                .map(OsString::from)
+                .to_vec(),
+                true,
+            )
+            .await?;
+        let entries: Vec<ListedEntry> =
+            serde_json::from_slice(&stdout).map_err(|_| RcloneError::BadOutput("lsjson"))?;
+        Ok(entries.into_iter().map(|entry| entry.name).collect())
+    }
+
+    /// Paths of every file under `path`, relative to it, honouring the rules
+    /// in `filters` (a `--filters-file` style file) when given.
+    ///
+    /// # Errors
+    /// rclone cannot run or fails.
+    pub async fn list_files(
+        &self,
+        path: &str,
+        filters: Option<&Path>,
+    ) -> Result<Vec<String>, RcloneError> {
+        let mut args: Vec<OsString> = ["lsf", "-R", "--files-only"].map(OsString::from).to_vec();
+        if let Some(filters) = filters {
+            args.extend(["--filter-from".into(), filters.as_os_str().to_owned()]);
+        }
+        args.extend(["--".into(), path.into()]);
+        let stdout = self.output("lsf", args, true).await?;
+        Ok(String::from_utf8_lossy(&stdout)
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect())
+    }
+}
+
+#[derive(Deserialize)]
+struct DumpedRemote {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    client_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ListedEntry {
+    #[serde(rename = "Name")]
+    name: String,
+}
+
+fn last_line(stderr: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())
+        .map(str::to_owned)
+}
+
+fn exit_detail(status: ExitStatus) -> String {
+    match status.code() {
+        Some(code) => format!("exit code {code}"),
+        None => "killed by a signal".to_owned(),
+    }
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+}
+
+/// `override_bin` (the value of `SYNCFAST_RCLONE`) wins when set and not
+/// empty; it must exist. Otherwise the first executable `rclone` on
+/// `path_var` is used.
+fn resolve_binary(
+    override_bin: Option<&OsStr>,
+    path_var: Option<&OsStr>,
+) -> Result<PathBuf, RcloneError> {
+    if let Some(bin) = override_bin.filter(|bin| !bin.is_empty()) {
+        let bin = PathBuf::from(bin);
+        return if is_executable_file(&bin) {
+            Ok(bin)
+        } else {
+            Err(RcloneError::RcloneNotFound)
+        };
+    }
+    path_var
+        .into_iter()
+        .flat_map(std::env::split_paths)
+        .map(|dir| dir.join(BINARY_NAME))
+        .find(|candidate| is_executable_file(candidate))
+        .ok_or(RcloneError::RcloneNotFound)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn executable(dir: &Path, name: &str) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[test]
+    fn the_override_is_used_even_when_rclone_is_on_the_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let custom = executable(dir.path(), "my-rclone");
+        let other = tempfile::tempdir().unwrap();
+        executable(other.path(), "rclone");
+
+        let bin = resolve_binary(Some(custom.as_os_str()), Some(other.path().as_os_str())).unwrap();
+
+        assert_eq!(bin, custom);
+    }
+
+    #[test]
+    fn an_override_that_does_not_exist_is_not_found_even_with_rclone_on_the_path() {
+        let dir = tempfile::tempdir().unwrap();
+        executable(dir.path(), "rclone");
+
+        let result = resolve_binary(
+            Some(dir.path().join("missing").as_os_str()),
+            Some(dir.path().as_os_str()),
+        );
+
+        assert!(matches!(result, Err(RcloneError::RcloneNotFound)));
+    }
+
+    #[test]
+    fn an_empty_override_falls_back_to_the_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let on_path = executable(dir.path(), "rclone");
+
+        let bin = resolve_binary(Some(OsStr::new("")), Some(dir.path().as_os_str())).unwrap();
+
+        assert_eq!(bin, on_path);
+    }
+
+    #[test]
+    fn the_first_executable_rclone_on_the_path_wins_and_non_executables_are_skipped() {
+        let first = tempfile::tempdir().unwrap();
+        std::fs::write(first.path().join("rclone"), "not executable").unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let wanted = executable(second.path(), "rclone");
+        let third = tempfile::tempdir().unwrap();
+        executable(third.path(), "rclone");
+        let path = std::env::join_paths([first.path(), second.path(), third.path()]).unwrap();
+
+        let bin = resolve_binary(None, Some(path.as_os_str())).unwrap();
+
+        assert_eq!(bin, wanted);
+    }
+
+    #[test]
+    fn no_rclone_anywhere_fails_with_the_install_hint() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let error = resolve_binary(None, Some(dir.path().as_os_str())).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "rclone not found; install rclone or reinstall syncfast units"
+        );
+    }
+
+    #[test]
+    fn an_unset_path_is_not_found() {
+        assert!(matches!(
+            resolve_binary(None, None),
+            Err(RcloneError::RcloneNotFound)
+        ));
+    }
+
+    /// The real rclone with a throwaway config, or `None` (with a warning)
+    /// when rclone is not installed.
+    #[allow(clippy::print_stderr)]
+    fn rclone_with(config: &str) -> Option<(Rclone, tempfile::TempDir)> {
+        let Ok(rclone) = Rclone::from_env() else {
+            eprintln!("skipping: rclone is not installed");
+            return None;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("rclone.conf");
+        std::fs::write(&config_path, config).unwrap();
+        Some((rclone.with_config(config_path), dir))
+    }
+
+    const LOCAL_REMOTE: &str = "[testremote]\ntype = local\n";
+
+    #[tokio::test]
+    async fn listremotes_returns_the_names_in_the_given_config_without_the_colon() {
+        let Some((rclone, _dir)) = rclone_with("[a]\ntype = local\n\n[b]\ntype = local\n") else {
+            return;
+        };
+
+        let remotes = rclone.listremotes().await.unwrap();
+
+        assert_eq!(remotes, ["a", "b"]);
+    }
+
+    #[tokio::test]
+    async fn listremotes_of_an_empty_config_is_empty() {
+        let Some((rclone, _dir)) = rclone_with("") else {
+            return;
+        };
+
+        assert_eq!(rclone.listremotes().await.unwrap(), Vec::<String>::new());
+    }
+
+    #[tokio::test]
+    async fn list_dirs_returns_only_the_folders_directly_inside() {
+        let Some((rclone, dir)) = rclone_with(LOCAL_REMOTE) else {
+            return;
+        };
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(root.join("alpha/deep")).unwrap();
+        std::fs::create_dir_all(root.join("beta")).unwrap();
+        std::fs::write(root.join("file.txt"), "x").unwrap();
+
+        let dirs = rclone
+            .list_dirs(&format!("testremote:{}", root.display()))
+            .await
+            .unwrap();
+
+        assert_eq!(dirs, ["alpha", "beta"]);
+    }
+
+    #[tokio::test]
+    async fn list_dirs_of_a_missing_folder_fails_with_the_rclone_message() {
+        let Some((rclone, dir)) = rclone_with(LOCAL_REMOTE) else {
+            return;
+        };
+
+        let error = rclone
+            .list_dirs(&format!(
+                "testremote:{}",
+                dir.path().join("absent").display()
+            ))
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(&error, RcloneError::Failed { command: "lsjson", detail } if detail.contains("not found")),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_files_returns_every_file_recursively_and_skips_folders() {
+        let Some((rclone, dir)) = rclone_with(LOCAL_REMOTE) else {
+            return;
+        };
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        std::fs::write(root.join("sub/b.log"), "x").unwrap();
+
+        let mut files = rclone
+            .list_files(root.to_str().unwrap(), None)
+            .await
+            .unwrap();
+        files.sort();
+
+        assert_eq!(files, ["a.txt", "sub/b.log"]);
+    }
+
+    #[tokio::test]
+    async fn list_files_with_a_filters_file_leaves_out_the_excluded_files() {
+        let Some((rclone, dir)) = rclone_with(LOCAL_REMOTE) else {
+            return;
+        };
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        std::fs::write(root.join("sub/b.log"), "x").unwrap();
+        let filters = dir.path().join("filters.txt");
+        std::fs::write(&filters, "# Generated by syncfast. Do not edit.\n- *.log\n").unwrap();
+
+        let files = rclone
+            .list_files(root.to_str().unwrap(), Some(&filters))
+            .await
+            .unwrap();
+
+        assert_eq!(files, ["a.txt"]);
+    }
+
+    #[tokio::test]
+    async fn drive_remotes_without_own_client_id_lists_only_drive_remotes_without_one() {
+        let config = "\
+[shared]
+type = drive
+
+[blank]
+type = drive
+client_id =
+
+[own]
+type = drive
+client_id = 123.apps.googleusercontent.com
+client_secret = hunter2
+
+[elsewhere]
+type = local
+";
+        let Some((rclone, _dir)) = rclone_with(config) else {
+            return;
+        };
+
+        let remotes = rclone.drive_remotes_without_own_client_id().await.unwrap();
+
+        assert_eq!(remotes, ["blank", "shared"]);
+    }
+
+    #[tokio::test]
+    async fn a_binary_that_cannot_be_started_is_a_spawn_error() {
+        let rclone = Rclone::new(PathBuf::from("/nonexistent/rclone"));
+
+        let error = rclone
+            .drive_remotes_without_own_client_id()
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, RcloneError::Spawn(_)));
+    }
+
+    fn fake_rclone(dir: &Path, script: &str) -> Rclone {
+        let path = dir.join("fake-rclone");
+        std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        Rclone::new(path)
+    }
+
+    #[tokio::test]
+    async fn a_failing_config_dump_never_puts_its_output_in_the_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let rclone = fake_rclone(
+            dir.path(),
+            "echo 'client_secret=TOPSECRET'; echo 'TOPSECRET' >&2; exit 3",
+        );
+
+        let error = rclone
+            .drive_remotes_without_own_client_id()
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.to_string(), "rclone config dump failed: exit code 3");
+    }
+
+    #[tokio::test]
+    async fn an_unparseable_config_dump_never_puts_its_output_in_the_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let rclone = fake_rclone(
+            dir.path(),
+            "echo '{\"a\": {\"client_id\": 5, \"x\": \"TOPSECRET\"}}'",
+        );
+
+        let error = rclone
+            .drive_remotes_without_own_client_id()
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "unexpected output from rclone config dump"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_drive_remote_passes_the_credentials_as_key_value_arguments() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("fake-rclone");
+        std::fs::write(&script, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let rclone = Rclone::new(script);
+
+        let child = rclone
+            .create_drive_remote("mine", "the-id", "the-secret")
+            .unwrap();
+        let output = child.wait_with_output().await.unwrap();
+
+        let args: Vec<_> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(
+            args,
+            [
+                "config",
+                "create",
+                "mine",
+                "drive",
+                "client_id=the-id",
+                "client_secret=the-secret",
+                "scope=drive",
+                "config_is_local=true",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn update_drive_credentials_passes_the_credentials_as_key_value_arguments() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("fake-rclone");
+        std::fs::write(&script, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let rclone = Rclone::new(script);
+
+        let child = rclone
+            .update_drive_credentials("mine", "the-id", "the-secret")
+            .unwrap();
+        let output = child.wait_with_output().await.unwrap();
+
+        let args: Vec<_> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(
+            args,
+            [
+                "config",
+                "update",
+                "mine",
+                "client_id=the-id",
+                "client_secret=the-secret",
+            ]
+        );
+    }
+}

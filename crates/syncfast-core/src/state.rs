@@ -1,0 +1,877 @@
+//! Per-pair state under `$XDG_STATE_HOME/syncfast/pairs/<id>/`, the review
+//! marker, the `runs/` history and the status shown to the user.
+//!
+//! "Running" and "paused" are never stored: a round is running while its
+//! lock file is held, and a pair is paused when the config says
+//! `enabled = false`.
+
+use std::fs::File;
+use std::path::PathBuf;
+
+use jiff::Timestamp;
+use serde::{Deserialize, Serialize};
+
+use crate::bisync::ReviewKind;
+use crate::bisync_log::RunSummary;
+use crate::config::Pair;
+use crate::paths::Paths;
+
+/// How many rounds keep their log in `runs/`.
+pub const RUNS_KEPT: usize = 50;
+/// Key in [`State::notified`] for the "sync failing" notification.
+pub const NOTIFIED_FAILURES: &str = "failures";
+/// Failed rounds in a row before the status turns into [`DisplayStatus::Failing`].
+const FAILING_AFTER: u32 = 3;
+
+#[derive(Debug, thiserror::Error)]
+pub enum StateError {
+    #[error("cannot read {}: {source}", path.display())]
+    Read {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("cannot write {}: {source}", path.display())]
+    Write {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("{} is not valid: {source}", path.display())]
+    Parse {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GateKind {
+    NeedsReviewFirstRun,
+    NeedsReviewFiltersChanged,
+    NeedsReviewCriticalError,
+    TooManyDeletes,
+    ConfigError,
+    AuthError,
+    LocalMissing,
+}
+
+impl GateKind {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NeedsReviewFirstRun => "needs_review_first_run",
+            Self::NeedsReviewFiltersChanged => "needs_review_filters_changed",
+            Self::NeedsReviewCriticalError => "needs_review_critical_error",
+            Self::TooManyDeletes => "too_many_deletes",
+            Self::ConfigError => "config_error",
+            Self::AuthError => "auth_error",
+            Self::LocalMissing => "local_missing",
+        }
+    }
+
+    #[must_use]
+    pub fn is_needs_review(self) -> bool {
+        matches!(
+            self,
+            Self::NeedsReviewFirstRun
+                | Self::NeedsReviewFiltersChanged
+                | Self::NeedsReviewCriticalError
+        )
+    }
+
+    /// Key in [`State::notified`] that records the gate was announced.
+    #[must_use]
+    pub fn notified_key(self) -> String {
+        format!("gate:{}", self.as_str())
+    }
+}
+
+/// Why normal rounds are blocked. Every gate blocks them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Gate {
+    pub kind: GateKind,
+    pub since: Timestamp,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LastOutcome {
+    Ok,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LastRun {
+    pub started: Timestamp,
+    pub finished: Timestamp,
+    pub exit_code: i32,
+    pub summary: RunSummary,
+    pub log_file: PathBuf,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct State {
+    pub gate: Option<Gate>,
+    pub last_outcome: Option<LastOutcome>,
+    /// The last attempt was skipped for lack of network. Changes neither
+    /// `gate` nor `last_outcome`.
+    pub offline: bool,
+    pub consecutive_failures: u32,
+    pub last_success: Option<Timestamp>,
+    pub last_attempt: Option<Timestamp>,
+    pub applied_filters_hash: Option<String>,
+    pub conflicts_pending: u32,
+    pub last_run: Option<LastRun>,
+    pub notified: Vec<String>,
+}
+
+impl State {
+    /// A pair that has never synced: waiting for its first review.
+    #[must_use]
+    pub fn first_run(now: Timestamp) -> Self {
+        Self {
+            gate: Some(Gate {
+                kind: GateKind::NeedsReviewFirstRun,
+                since: now,
+                detail: String::new(),
+            }),
+            ..Self::default()
+        }
+    }
+
+    /// Reads the pair's state. An absent file is [`State::first_run`].
+    ///
+    /// # Errors
+    /// The file cannot be read or is not valid state JSON.
+    pub async fn load(paths: &Paths, pair_id: &str) -> Result<Self, StateError> {
+        let path = paths.state_file(pair_id);
+        match tokio::fs::read(&path).await {
+            Ok(bytes) => {
+                serde_json::from_slice(&bytes).map_err(|source| StateError::Parse { path, source })
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                Ok(Self::first_run(Timestamp::now()))
+            }
+            Err(source) => Err(StateError::Read { path, source }),
+        }
+    }
+
+    /// # Errors
+    /// The file cannot be written.
+    pub async fn save(&self, paths: &Paths, pair_id: &str) -> Result<(), StateError> {
+        write_json(paths.state_file(pair_id), self).await
+    }
+}
+
+/// What the user confirmed in the review. The GUI writes it; the next run
+/// consumes it, but only while `filters_hash` still matches the filters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfirmMarker {
+    pub kind: ReviewKind,
+    pub filters_hash: String,
+}
+
+impl ConfirmMarker {
+    /// # Errors
+    /// The file exists but cannot be read or parsed.
+    pub async fn load(paths: &Paths, pair_id: &str) -> Result<Option<Self>, StateError> {
+        let path = paths.confirm_file(pair_id);
+        match tokio::fs::read(&path).await {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map(Some)
+                .map_err(|source| StateError::Parse { path, source }),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(source) => Err(StateError::Read { path, source }),
+        }
+    }
+
+    /// # Errors
+    /// The file cannot be written.
+    pub async fn save(&self, paths: &Paths, pair_id: &str) -> Result<(), StateError> {
+        write_json(paths.confirm_file(pair_id), self).await
+    }
+
+    /// Deletes the marker; an absent one is fine.
+    ///
+    /// # Errors
+    /// The file exists but cannot be deleted.
+    pub async fn remove(paths: &Paths, pair_id: &str) -> Result<(), StateError> {
+        let path = paths.confirm_file(pair_id);
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(StateError::Write { path, source }),
+        }
+    }
+}
+
+async fn write_json(path: PathBuf, value: &impl Serialize) -> Result<(), StateError> {
+    let mut json = serde_json::to_vec_pretty(value).map_err(|source| StateError::Parse {
+        path: path.clone(),
+        source,
+    })?;
+    json.push(b'\n');
+    let target = path.clone();
+    tokio::task::spawn_blocking(move || fastframe_file::write(&target, json))
+        .await
+        .unwrap_or_else(|join| Err(std::io::Error::other(join)))
+        .map_err(|source| StateError::Write { path, source })
+}
+
+/// True while a round of `pair_id` holds its lock. Never blocks.
+#[must_use]
+pub fn is_running(paths: &Paths, pair_id: &str) -> bool {
+    let Ok(file) = File::open(paths.lock_file(pair_id)) else {
+        return false;
+    };
+    match file.try_lock_shared() {
+        Ok(()) => {
+            let _ = file.unlock();
+            false
+        }
+        Err(std::fs::TryLockError::WouldBlock) => true,
+        Err(std::fs::TryLockError::Error(_)) => false,
+    }
+}
+
+/// Keeps the [`RUNS_KEPT`] newest logs in the pair's `runs/` folder (names
+/// are timestamps, so the highest names are the newest) and deletes the
+/// rest. A missing folder is fine.
+///
+/// # Errors
+/// The folder cannot be listed or a log cannot be deleted.
+pub async fn prune_runs(paths: &Paths, pair_id: &str) -> Result<(), StateError> {
+    let dir = paths.runs_dir(pair_id);
+    let mut entries = match tokio::fs::read_dir(&dir).await {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => return Err(StateError::Read { path: dir, source }),
+    };
+    let mut names = Vec::new();
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|source| StateError::Read {
+            path: dir.clone(),
+            source,
+        })?
+    {
+        names.push(entry.file_name());
+    }
+    names.sort();
+    let excess = names.len().saturating_sub(RUNS_KEPT);
+    for name in names.into_iter().take(excess) {
+        let path = dir.join(name);
+        tokio::fs::remove_file(&path)
+            .await
+            .map_err(|source| StateError::Write { path, source })?;
+    }
+    Ok(())
+}
+
+/// Name of the theme colour token that paints a status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    Accent,
+    Danger,
+    Warning,
+    Dim,
+    Secondary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplayStatus {
+    Syncing,
+    Error,
+    NeedsReview,
+    /// The number of unresolved conflicts.
+    Conflicts(u32),
+    Paused,
+    Offline,
+    Failing,
+    Retrying,
+    UpToDate,
+}
+
+impl DisplayStatus {
+    #[must_use]
+    pub fn tone(self) -> Tone {
+        match self {
+            Self::Syncing => Tone::Accent,
+            Self::Error | Self::Failing => Tone::Danger,
+            Self::NeedsReview | Self::Conflicts(_) => Tone::Warning,
+            Self::Paused | Self::Offline => Tone::Dim,
+            Self::Retrying | Self::UpToDate => Tone::Secondary,
+        }
+    }
+
+    /// Lucide icon name. Colour is never the only signal.
+    #[must_use]
+    pub fn icon(self) -> &'static str {
+        match self {
+            Self::Syncing => "refresh-cw",
+            Self::Error | Self::Failing => "circle-alert",
+            Self::NeedsReview => "eye",
+            Self::Conflicts(_) => "copy",
+            Self::Paused => "pause",
+            Self::Offline => "cloud-off",
+            Self::Retrying => "clock",
+            Self::UpToDate => "check",
+        }
+    }
+
+    #[must_use]
+    pub fn text(self) -> String {
+        match self {
+            Self::Syncing => "Syncing…".to_owned(),
+            Self::Error => "Needs attention".to_owned(),
+            Self::NeedsReview => "Review needed".to_owned(),
+            Self::Conflicts(count) => format!("{count} conflicts"),
+            Self::Paused => "Paused".to_owned(),
+            Self::Offline => "Offline".to_owned(),
+            Self::Failing => "Sync failing".to_owned(),
+            Self::Retrying => "Will retry".to_owned(),
+            Self::UpToDate => "Up to date".to_owned(),
+        }
+    }
+
+    /// The name `syncfast status` prints.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Syncing => "Syncing",
+            Self::Error => "Error",
+            Self::NeedsReview => "NeedsReview",
+            Self::Conflicts(_) => "Conflicts",
+            Self::Paused => "Paused",
+            Self::Offline => "Offline",
+            Self::Failing => "Failing",
+            Self::Retrying => "Retrying",
+            Self::UpToDate => "UpToDate",
+        }
+    }
+}
+
+/// The one precedence used by the sidebar, the tray and `syncfast status`:
+/// the first rule that matches wins.
+#[must_use]
+pub fn display_status(pair: &Pair, state: &State, running: bool) -> DisplayStatus {
+    let gate = state.gate.as_ref().map(|gate| gate.kind);
+    if running {
+        DisplayStatus::Syncing
+    } else if matches!(
+        gate,
+        Some(GateKind::ConfigError | GateKind::AuthError | GateKind::LocalMissing)
+    ) {
+        DisplayStatus::Error
+    } else if gate.is_some() {
+        DisplayStatus::NeedsReview
+    } else if state.conflicts_pending > 0 {
+        DisplayStatus::Conflicts(state.conflicts_pending)
+    } else if !pair.enabled {
+        DisplayStatus::Paused
+    } else if state.offline {
+        DisplayStatus::Offline
+    } else if state.last_outcome == Some(LastOutcome::Error) {
+        if state.consecutive_failures >= FAILING_AFTER {
+            DisplayStatus::Failing
+        } else {
+            DisplayStatus::Retrying
+        }
+    } else {
+        DisplayStatus::UpToDate
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pair(enabled: bool) -> Pair {
+        Pair {
+            id: "drive".into(),
+            name: "Drive".into(),
+            local: "/home/ada/Drive".into(),
+            remote: "gdrive:".into(),
+            enabled,
+            presets: vec![],
+            filters: vec![],
+        }
+    }
+
+    fn at(text: &str) -> Timestamp {
+        text.parse().unwrap()
+    }
+
+    fn gate(kind: GateKind) -> Gate {
+        Gate {
+            kind,
+            since: at("2026-01-01T12:00:00Z"),
+            detail: String::new(),
+        }
+    }
+
+    fn temp_paths() -> (tempfile::TempDir, Paths) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let paths = Paths::new(
+            root.join("home"),
+            root.join("config"),
+            root.join("state"),
+            root.join("data"),
+            root.join("run"),
+        );
+        (dir, paths)
+    }
+
+    fn full_state() -> State {
+        State {
+            gate: Some(Gate {
+                kind: GateKind::TooManyDeletes,
+                since: at("2026-01-01T12:00:00Z"),
+                detail: "3 of 4".into(),
+            }),
+            last_outcome: Some(LastOutcome::Error),
+            offline: true,
+            consecutive_failures: 2,
+            last_success: Some(at("2026-01-01T10:00:00Z")),
+            last_attempt: Some(at("2026-01-01T11:00:00Z")),
+            applied_filters_hash: Some("abc".into()),
+            conflicts_pending: 4,
+            last_run: Some(LastRun {
+                started: at("2026-01-01T11:00:00Z"),
+                finished: at("2026-01-01T11:00:09Z"),
+                exit_code: 1,
+                summary: RunSummary {
+                    uploaded: Some(1),
+                    changes: vec![crate::bisync_log::Change {
+                        kind: crate::bisync_log::ChangeKind::Upload,
+                        path: "a.txt".into(),
+                    }],
+                    ..RunSummary::default()
+                },
+                log_file: "/s/runs/x.jsonl".into(),
+            }),
+            notified: vec!["gate:too_many_deletes".into(), "failures".into()],
+        }
+    }
+
+    #[tokio::test]
+    async fn a_saved_state_loads_back_equal() {
+        let (_dir, paths) = temp_paths();
+        let state = full_state();
+
+        state.save(&paths, "drive").await.unwrap();
+        let loaded = State::load(&paths, "drive").await.unwrap();
+
+        assert_eq!(loaded, state);
+    }
+
+    #[tokio::test]
+    async fn an_absent_state_file_is_waiting_for_the_first_review() {
+        let (_dir, paths) = temp_paths();
+
+        let state = State::load(&paths, "drive").await.unwrap();
+
+        assert_eq!(
+            state.gate.map(|gate| gate.kind),
+            Some(GateKind::NeedsReviewFirstRun)
+        );
+        assert_eq!(state.last_outcome, None);
+        assert_eq!(state.last_success, None);
+    }
+
+    #[tokio::test]
+    async fn a_corrupt_state_file_is_an_error_not_a_reset() {
+        let (_dir, paths) = temp_paths();
+        let file = paths.state_file("drive");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "{ not json").unwrap();
+
+        let result = State::load(&paths, "drive").await;
+
+        assert!(matches!(result, Err(StateError::Parse { .. })));
+    }
+
+    #[tokio::test]
+    async fn the_state_file_has_the_documented_json_shape() {
+        let (_dir, paths) = temp_paths();
+        let state = State {
+            gate: Some(gate(GateKind::NeedsReviewFiltersChanged)),
+            last_outcome: Some(LastOutcome::Ok),
+            ..State::default()
+        };
+
+        state.save(&paths, "drive").await.unwrap();
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(paths.state_file("drive")).unwrap()).unwrap();
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "gate": {
+                    "kind": "needs_review_filters_changed",
+                    "since": "2026-01-01T12:00:00Z",
+                    "detail": ""
+                },
+                "last_outcome": "ok",
+                "offline": false,
+                "consecutive_failures": 0,
+                "last_success": null,
+                "last_attempt": null,
+                "applied_filters_hash": null,
+                "conflicts_pending": 0,
+                "last_run": null,
+                "notified": []
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn the_marker_round_trips_and_is_removed() {
+        let (_dir, paths) = temp_paths();
+        let marker = ConfirmMarker {
+            kind: ReviewKind::Force,
+            filters_hash: "f00".into(),
+        };
+
+        assert_eq!(ConfirmMarker::load(&paths, "drive").await.unwrap(), None);
+        marker.save(&paths, "drive").await.unwrap();
+        let text = std::fs::read_to_string(paths.confirm_file("drive")).unwrap();
+        let loaded = ConfirmMarker::load(&paths, "drive").await.unwrap();
+        ConfirmMarker::remove(&paths, "drive").await.unwrap();
+        let after = ConfirmMarker::load(&paths, "drive").await.unwrap();
+
+        assert_eq!(loaded, Some(marker));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&text).unwrap(),
+            serde_json::json!({ "kind": "force", "filters_hash": "f00" })
+        );
+        assert_eq!(after, None);
+    }
+
+    #[tokio::test]
+    async fn removing_an_absent_marker_is_fine() {
+        let (_dir, paths) = temp_paths();
+
+        ConfirmMarker::remove(&paths, "drive").await.unwrap();
+    }
+
+    #[test]
+    fn a_pair_whose_lock_file_is_absent_is_not_running() {
+        let (_dir, paths) = temp_paths();
+
+        assert!(!is_running(&paths, "drive"));
+    }
+
+    #[test]
+    fn a_pair_is_running_while_its_lock_is_held_and_idle_after() {
+        let (_dir, paths) = temp_paths();
+        let lock = paths.lock_file("drive");
+        std::fs::create_dir_all(lock.parent().unwrap()).unwrap();
+        let holder = File::create(&lock).unwrap();
+        assert!(!is_running(&paths, "drive"));
+
+        holder.try_lock().unwrap();
+        let while_held = is_running(&paths, "drive");
+        holder.unlock().unwrap();
+        let after = is_running(&paths, "drive");
+
+        assert!(while_held);
+        assert!(!after);
+    }
+
+    #[test]
+    fn checking_does_not_keep_the_lock() {
+        let (_dir, paths) = temp_paths();
+        let lock = paths.lock_file("drive");
+        std::fs::create_dir_all(lock.parent().unwrap()).unwrap();
+        let file = File::create(&lock).unwrap();
+
+        let _ = is_running(&paths, "drive");
+
+        assert!(file.try_lock().is_ok());
+    }
+
+    fn make_runs(paths: &Paths, count: usize) {
+        let dir = paths.runs_dir("drive");
+        std::fs::create_dir_all(&dir).unwrap();
+        for n in 0..count {
+            std::fs::write(dir.join(format!("20260101-{n:06}.jsonl")), "").unwrap();
+        }
+    }
+
+    fn run_names(paths: &Paths) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(paths.runs_dir("drive"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[tokio::test]
+    async fn pruning_keeps_the_fifty_newest_runs_by_name() {
+        let (_dir, paths) = temp_paths();
+        make_runs(&paths, 53);
+
+        prune_runs(&paths, "drive").await.unwrap();
+
+        let names = run_names(&paths);
+        assert_eq!(names.len(), 50);
+        assert_eq!(
+            names.first().map(String::as_str),
+            Some("20260101-000003.jsonl")
+        );
+        assert_eq!(
+            names.last().map(String::as_str),
+            Some("20260101-000052.jsonl")
+        );
+    }
+
+    #[tokio::test]
+    async fn pruning_fifty_or_fewer_runs_deletes_nothing() {
+        let (_dir, paths) = temp_paths();
+        make_runs(&paths, 50);
+
+        prune_runs(&paths, "drive").await.unwrap();
+
+        assert_eq!(run_names(&paths).len(), 50);
+    }
+
+    #[tokio::test]
+    async fn pruning_a_pair_without_runs_is_fine() {
+        let (_dir, paths) = temp_paths();
+
+        prune_runs(&paths, "drive").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn pruning_leaves_previews_and_state_alone() {
+        let (_dir, paths) = temp_paths();
+        make_runs(&paths, 51);
+        let pair_dir = paths.pair_state_dir("drive");
+        std::fs::write(pair_dir.join("preview-20260101-000000.jsonl"), "").unwrap();
+        std::fs::write(pair_dir.join("state.json"), "{}").unwrap();
+
+        prune_runs(&paths, "drive").await.unwrap();
+
+        assert!(pair_dir.join("preview-20260101-000000.jsonl").exists());
+        assert!(pair_dir.join("state.json").exists());
+    }
+
+    fn status(enabled: bool, state: &State, running: bool) -> DisplayStatus {
+        display_status(&pair(enabled), state, running)
+    }
+
+    #[test]
+    fn running_beats_every_other_condition() {
+        let state = full_state();
+
+        assert_eq!(status(false, &state, true), DisplayStatus::Syncing);
+    }
+
+    #[test]
+    fn a_config_auth_or_missing_folder_gate_is_an_error() {
+        for kind in [
+            GateKind::ConfigError,
+            GateKind::AuthError,
+            GateKind::LocalMissing,
+        ] {
+            let state = State {
+                gate: Some(gate(kind)),
+                conflicts_pending: 2,
+                ..State::default()
+            };
+
+            assert_eq!(
+                status(true, &state, false),
+                DisplayStatus::Error,
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_review_or_deletion_gate_needs_review_even_when_paused() {
+        for kind in [
+            GateKind::NeedsReviewFirstRun,
+            GateKind::NeedsReviewFiltersChanged,
+            GateKind::NeedsReviewCriticalError,
+            GateKind::TooManyDeletes,
+        ] {
+            let state = State {
+                gate: Some(gate(kind)),
+                conflicts_pending: 2,
+                ..State::default()
+            };
+
+            assert_eq!(
+                status(false, &state, false),
+                DisplayStatus::NeedsReview,
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn pending_conflicts_beat_paused_offline_and_failing() {
+        let state = State {
+            conflicts_pending: 3,
+            offline: true,
+            last_outcome: Some(LastOutcome::Error),
+            consecutive_failures: 9,
+            ..State::default()
+        };
+
+        assert_eq!(status(false, &state, false), DisplayStatus::Conflicts(3));
+    }
+
+    #[test]
+    fn a_disabled_pair_is_paused_even_when_offline_or_failing() {
+        let state = State {
+            offline: true,
+            last_outcome: Some(LastOutcome::Error),
+            consecutive_failures: 9,
+            ..State::default()
+        };
+
+        assert_eq!(status(false, &state, false), DisplayStatus::Paused);
+    }
+
+    #[test]
+    fn offline_beats_failing() {
+        let state = State {
+            offline: true,
+            last_outcome: Some(LastOutcome::Error),
+            consecutive_failures: 9,
+            ..State::default()
+        };
+
+        assert_eq!(status(true, &state, false), DisplayStatus::Offline);
+    }
+
+    #[test]
+    fn three_failures_in_a_row_is_failing() {
+        let state = State {
+            last_outcome: Some(LastOutcome::Error),
+            consecutive_failures: 3,
+            ..State::default()
+        };
+
+        assert_eq!(status(true, &state, false), DisplayStatus::Failing);
+    }
+
+    #[test]
+    fn fewer_than_three_failures_will_retry() {
+        let state = State {
+            last_outcome: Some(LastOutcome::Error),
+            consecutive_failures: 2,
+            ..State::default()
+        };
+
+        assert_eq!(status(true, &state, false), DisplayStatus::Retrying);
+    }
+
+    #[test]
+    fn a_pair_with_nothing_wrong_is_up_to_date() {
+        let state = State {
+            last_outcome: Some(LastOutcome::Ok),
+            ..State::default()
+        };
+
+        assert_eq!(status(true, &state, false), DisplayStatus::UpToDate);
+    }
+
+    #[test]
+    fn every_status_has_the_documented_icon_text_and_tone() {
+        let table = [
+            (
+                DisplayStatus::Syncing,
+                "refresh-cw",
+                "Syncing…",
+                Tone::Accent,
+            ),
+            (
+                DisplayStatus::Error,
+                "circle-alert",
+                "Needs attention",
+                Tone::Danger,
+            ),
+            (
+                DisplayStatus::NeedsReview,
+                "eye",
+                "Review needed",
+                Tone::Warning,
+            ),
+            (
+                DisplayStatus::Conflicts(2),
+                "copy",
+                "2 conflicts",
+                Tone::Warning,
+            ),
+            (DisplayStatus::Paused, "pause", "Paused", Tone::Dim),
+            (DisplayStatus::Offline, "cloud-off", "Offline", Tone::Dim),
+            (
+                DisplayStatus::Failing,
+                "circle-alert",
+                "Sync failing",
+                Tone::Danger,
+            ),
+            (
+                DisplayStatus::Retrying,
+                "clock",
+                "Will retry",
+                Tone::Secondary,
+            ),
+            (
+                DisplayStatus::UpToDate,
+                "check",
+                "Up to date",
+                Tone::Secondary,
+            ),
+        ];
+
+        for (status, icon, text, tone) in table {
+            assert_eq!(status.icon(), icon);
+            assert_eq!(status.text(), text);
+            assert_eq!(status.tone(), tone, "{status:?}");
+        }
+    }
+
+    #[test]
+    fn status_names_are_the_variant_names_without_the_conflict_count() {
+        assert_eq!(DisplayStatus::UpToDate.name(), "UpToDate");
+        assert_eq!(DisplayStatus::NeedsReview.name(), "NeedsReview");
+        assert_eq!(DisplayStatus::Conflicts(7).name(), "Conflicts");
+    }
+
+    #[test]
+    fn gate_kinds_serialize_to_the_documented_names_and_notified_keys() {
+        let kinds = [
+            (GateKind::NeedsReviewFirstRun, "needs_review_first_run"),
+            (
+                GateKind::NeedsReviewFiltersChanged,
+                "needs_review_filters_changed",
+            ),
+            (
+                GateKind::NeedsReviewCriticalError,
+                "needs_review_critical_error",
+            ),
+            (GateKind::TooManyDeletes, "too_many_deletes"),
+            (GateKind::ConfigError, "config_error"),
+            (GateKind::AuthError, "auth_error"),
+            (GateKind::LocalMissing, "local_missing"),
+        ];
+
+        for (kind, name) in kinds {
+            assert_eq!(serde_json::to_string(&kind).unwrap(), format!("\"{name}\""));
+            assert_eq!(kind.as_str(), name);
+            assert_eq!(kind.notified_key(), format!("gate:{name}"));
+        }
+    }
+}
