@@ -15,13 +15,16 @@ use crate::ui::{Action, RemoteRow, ViewModel};
 pub const SHARED_CLIENT_ID: &str = "Uses rclone's shared client ID, which stops working in 2026.";
 pub const DISCONNECTED: &str = "Signed out. Reconnect to resume syncing.";
 
-const DRIVE: &str = "drive";
 const ROW_HEIGHT: f32 = 28.0;
 const FLAGGED_HEIGHT: f32 = 44.0;
 
 /// The type as people know it: `drive` is Google Drive.
 fn kind_label(kind: &str) -> &str {
-    if kind == DRIVE { "Google Drive" } else { kind }
+    if kind == "drive" {
+        "Google Drive"
+    } else {
+        kind
+    }
 }
 
 /// Whether a sync on `remote` stopped because the sign-in was lost.
@@ -36,7 +39,7 @@ pub fn show(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
     let palette = theme::palette(ui.ctx());
     let mut actions = Vec::new();
     for remote in &vm.remotes {
-        let shared = remote.kind == DRIVE && !remote.own_client_id;
+        let shared = remote.shares_client_id();
         let reconnect = needs_reconnect(vm, &remote.name);
         actions.extend(row(ui, &palette, remote, shared, reconnect));
     }
@@ -115,10 +118,10 @@ fn row(
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = space::S;
                     if shared && secondary_button(ui, "Use My Client ID…").clicked() {
-                        actions.push(Action::EditAccount(remote.name.clone()));
+                        actions.push(Action::ChangeClientId(remote.name.clone()));
                     }
                     if reconnect && primary_button(ui, "Reconnect…").clicked() {
-                        actions.push(Action::EditAccount(remote.name.clone()));
+                        actions.push(Action::ReconnectAccount(remote.name.clone()));
                     }
                 });
             });

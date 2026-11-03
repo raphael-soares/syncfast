@@ -9,6 +9,10 @@ use super::widgets::{inline_error, primary_button, secondary_button, switch, tex
 use super::{Action, ViewModel};
 use crate::theme::{self, space};
 
+/// The id of a `Test Filters` run from the Add Sync wizard, where the sync
+/// does not exist yet.
+pub const NEW_SYNC: &str = "";
+
 pub const SAVED: &str = "Saved. The next sync will ask you to review the changes.";
 
 /// The rules as the user has them on screen.
@@ -221,7 +225,7 @@ pub fn form(
     );
     let problems = draft.problems();
     for (_, message) in &problems {
-        inline_error(ui, &capitalized(message));
+        inline_error(ui, message);
     }
     let mut test_clicked = false;
     ui.horizontal(|ui| {
@@ -267,13 +271,6 @@ fn outcome(ui: &mut Ui, state: &FilterTestState) {
             }
         }
     }
-}
-
-fn capitalized(text: &str) -> String {
-    let mut chars = text.chars();
-    chars.next().map_or_else(String::new, |first| {
-        first.to_uppercase().chain(chars).collect()
-    })
 }
 
 #[cfg(test)]

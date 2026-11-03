@@ -282,3 +282,25 @@ fn the_typed_state_never_shows_the_secret_in_debug_output() {
 
     assert!(!shown.contains("hunter2"), "{shown}");
 }
+
+#[test]
+fn using_my_client_id_names_the_account_and_needs_both_credentials() {
+    let mode = || AccountMode::ChangeClientId {
+        name: "gdrive".into(),
+    };
+    let empty = harness(mode(), |_| {});
+    let filled = harness(mode(), |screen| {
+        screen.state.client_id = "123.apps.googleusercontent.com".into();
+        screen.state.client_secret = "hunter2".into();
+    });
+
+    empty.get_by_label("Use My Client ID for \"gdrive\"");
+    assert!(empty.get_by_label("Connect").accesskit_node().is_disabled());
+    assert!(
+        !filled
+            .get_by_label("Connect")
+            .accesskit_node()
+            .is_disabled()
+    );
+    assert!(empty.query_by_label("Account name").is_none());
+}

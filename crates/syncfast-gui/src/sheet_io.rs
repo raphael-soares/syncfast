@@ -191,7 +191,7 @@ pub async fn connect(
     let secret = request.client_secret.expose();
     let child = match &request.mode {
         AccountMode::Add => rclone.create_drive_remote(&request.name, &request.client_id, secret),
-        AccountMode::Update { name } => {
+        AccountMode::Update { name } | AccountMode::ChangeClientId { name } => {
             rclone.update_drive_credentials(name, &request.client_id, secret)
         }
     }

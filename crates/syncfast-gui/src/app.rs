@@ -14,13 +14,13 @@ use crate::backend::{Backend, Command, Event};
 use crate::gui_state::{self, GuiState, SettingsPane};
 use crate::instance::{Inbox, Request};
 use crate::runs::RunEntry;
-use crate::sheets::{Sheets, Surroundings};
 use crate::screens::Screens;
+use crate::sheets::{Sheets, Surroundings};
 use crate::snapshot::Snapshot;
 use crate::theme::{self, Palette, Themes};
 use crate::tray::{IconLook, PairView, Summary, SyncTray, TrayView, action as tray_action};
-use crate::ui::welcome::{self, WelcomeView};
 use crate::ui::settings::AppearanceView;
+use crate::ui::welcome::{self, WelcomeView};
 use crate::ui::{self, Action, DetailTab, PairRow, ViewModel};
 
 /// The window class the compositor and desktop entry know the app by.
@@ -465,7 +465,7 @@ impl App {
         } else {
             actions.extend(ui::root(ui, &vm));
         }
-        actions.extend(self.sheets.show(&ctx, &vm.pairs));
+        actions.extend(self.sheets.show(&ctx, &vm.pairs, vm.filter_test.as_ref()));
         if self.screens.settings_open {
             actions.extend(ui::settings::window(&ctx, &vm, APP_ID));
         }
@@ -531,31 +531,16 @@ impl App {
             Action::AddSync
             | Action::OpenReview(_)
             | Action::AddAccount
-            | Action::EditAccount(_)
+            | Action::ReconnectAccount(_)
+            | Action::ChangeClientId(_)
             | Action::Review(_)
             | Action::AddSyncSheet(_)
             | Action::Account(_) => self.apply_to_sheets(&action),
-            Action::OpenSettings => self.open_settings(ctx),
-            Action::OpenAccounts => {
-                if self.gui.settings_pane != SettingsPane::Accounts {
-                    self.gui.settings_pane = SettingsPane::Accounts;
-                    self.mark_gui_dirty();
-                }
-                self.open_settings(ctx);
-            }
-            Action::CloseSettings => self.screens.settings_open = false,
-            Action::SetSettingsPane(pane) => {
-                if self.gui.settings_pane != pane {
-                    self.gui.settings_pane = pane;
-                    self.mark_gui_dirty();
-                }
-            }
-            Action::SetTheme(choice) => {
-                if self.gui.theme != choice {
-                    self.gui.theme = choice;
-                    self.mark_gui_dirty();
-                }
-            }
+            Action::OpenSettings
+            | Action::OpenAccounts
+            | Action::CloseSettings
+            | Action::SetSettingsPane(_)
+            | Action::SetTheme(_) => self.apply_to_settings(action, ctx),
             action @ (Action::RemoveSync(_)
             | Action::CancelRemove
             | Action::ConfirmRemove { .. }
@@ -624,6 +609,30 @@ impl App {
         };
         for command in self.sheets.apply(action, &around) {
             self.backend.send(command);
+        }
+    }
+
+    fn apply_to_settings(&mut self, action: Action, ctx: &egui::Context) {
+        match action {
+            Action::OpenSettings => self.open_settings(ctx),
+            Action::OpenAccounts => {
+                self.remember_pane(SettingsPane::Accounts);
+                self.open_settings(ctx);
+            }
+            Action::CloseSettings => self.screens.settings_open = false,
+            Action::SetSettingsPane(pane) => self.remember_pane(pane),
+            Action::SetTheme(choice) if self.gui.theme != choice => {
+                self.gui.theme = choice;
+                self.mark_gui_dirty();
+            }
+            _ => {}
+        }
+    }
+
+    fn remember_pane(&mut self, pane: SettingsPane) {
+        if self.gui.settings_pane != pane {
+            self.gui.settings_pane = pane;
+            self.mark_gui_dirty();
         }
     }
 

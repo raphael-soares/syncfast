@@ -13,6 +13,7 @@ use syncfast_gui::ui::add_sync::{
     AddSyncAction, AddSyncState, AddSyncView, DirListing, LocalFacts, LocalStatus, NewSync, Step,
     show,
 };
+use syncfast_gui::ui::filters::{FilterRules, FilterTest, FilterTestState};
 use syncfast_gui::ui::{Action, PairRow, RemoteRow};
 
 struct Sheet {
@@ -25,6 +26,7 @@ struct Sheet {
     local_error: Option<String>,
     create_error: Option<String>,
     creating: bool,
+    filter_test: Option<FilterTest>,
     actions: Vec<Action>,
 }
 
@@ -49,6 +51,8 @@ fn pair(id: &str, name: &str, local: &str, remote: &str) -> PairRow {
         progress: None,
         gate_detail: String::new(),
         consecutive_failures: 0,
+        presets: Vec::new(),
+        filters: Vec::new(),
     }
 }
 
@@ -108,6 +112,7 @@ fn harness_with(state: AddSyncState, edit: impl FnOnce(&mut Sheet)) -> Harness<'
         local_error: None,
         create_error: None,
         creating: false,
+        filter_test: None,
         actions: Vec::new(),
     };
     edit(&mut sheet);
@@ -127,6 +132,7 @@ fn harness_with(state: AddSyncState, edit: impl FnOnce(&mut Sheet)) -> Harness<'
                 home: std::path::Path::new("/home/ada"),
                 data_dir: std::path::Path::new("/home/ada/.local/share/syncfast"),
                 local_error: sheet.local_error.as_deref(),
+                filter_test: sheet.filter_test.as_ref(),
             };
             let actions = show(ui.ctx(), &view, &mut sheet.state);
             for action in &actions {
@@ -1016,4 +1022,59 @@ fn escape_emits_cancel() {
     harness.run();
 
     assert_eq!(sheet_actions(&harness), [AddSyncAction::Cancel]);
+}
+
+#[test]
+fn test_filters_in_the_wizard_runs_on_the_chosen_folder_with_the_rules_on_screen() {
+    let mut harness = filters_harness("- *.bak");
+
+    click(&mut harness, "Test Filters");
+
+    assert!(harness.state().actions.contains(&Action::TestFilters {
+        id: String::new(),
+        local: "/home/ada/Documents/notes".into(),
+        presets: vec!["system_junk".into(), "dev_dirs".into()],
+        rules: vec!["- *.bak".into()],
+    }));
+}
+
+#[test]
+fn a_filter_test_of_the_wizard_shows_how_many_files_are_excluded() {
+    let mut state = state_at(Step::Filters);
+    state.rules = "- *.bak".into();
+    let harness = harness_with(state, |sheet| {
+        sheet.filter_test = Some(FilterTest {
+            id: String::new(),
+            rules: FilterRules {
+                presets: vec!["system_junk".into(), "dev_dirs".into()],
+                custom: vec!["- *.bak".into()],
+            },
+            state: FilterTestState::Done(syncfast_core::filters::ExclusionSummary {
+                total: 10,
+                excluded: 4,
+                folders: vec![("target".into(), 3)],
+            }),
+        });
+    });
+
+    assert!(shown(&harness, "4 of 10 files excluded"));
+    assert!(shown(&harness, "target \u{b7} 3 files"));
+}
+
+#[test]
+fn a_filter_test_of_a_sync_is_not_shown_in_the_wizard() {
+    let mut state = state_at(Step::Filters);
+    state.rules = "- *.bak".into();
+    let harness = harness_with(state, |sheet| {
+        sheet.filter_test = Some(FilterTest {
+            id: "notes".into(),
+            rules: FilterRules {
+                presets: vec!["system_junk".into(), "dev_dirs".into()],
+                custom: vec!["- *.bak".into()],
+            },
+            state: FilterTestState::Failed("nope".into()),
+        });
+    });
+
+    assert!(!shown(&harness, "nope"));
 }

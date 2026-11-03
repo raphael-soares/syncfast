@@ -10,8 +10,8 @@ pub mod detail;
 pub mod filters;
 pub mod format;
 pub mod relative;
-pub mod review;
 pub mod remove;
+pub mod review;
 pub mod settings;
 pub mod sidebar;
 pub mod welcome;
@@ -183,9 +183,10 @@ pub enum Action {
     OpenAccounts,
     /// Opens the sheet that adds a Google Drive account.
     AddAccount,
-    /// Opens the account sheet for an existing remote, to sign in again or
-    /// to give it the user's own client ID.
-    EditAccount(String),
+    /// Opens the account sheet to sign in again to a remote.
+    ReconnectAccount(String),
+    /// Opens the account sheet to give a remote the user's own client ID.
+    ChangeClientId(String),
     Review(review::ReviewAction),
     AddSyncSheet(add_sync::AddSyncAction),
     Account(account_sheet::AccountAction),

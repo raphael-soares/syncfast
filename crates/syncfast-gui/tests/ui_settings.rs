@@ -53,7 +53,7 @@ fn only_a_drive_remote_without_its_own_client_id_gets_the_shared_client_warning(
 }
 
 #[test]
-fn use_my_client_id_opens_the_account_of_that_remote() {
+fn use_my_client_id_asks_to_change_the_client_id_of_that_remote() {
     let mut harness = harness(accounts(vec![remote("gdrive", "drive", false)]), screen());
     harness.run();
 
@@ -62,7 +62,7 @@ fn use_my_client_id_opens_the_account_of_that_remote() {
 
     assert_eq!(
         harness.state().actions,
-        [Action::EditAccount("gdrive".to_owned())]
+        [Action::ChangeClientId("gdrive".to_owned())]
     );
 }
 
@@ -96,7 +96,7 @@ fn a_remote_whose_sync_lost_its_sign_in_offers_reconnect() {
     harness.run();
     assert_eq!(
         harness.state().actions,
-        [Action::EditAccount("gdrive".to_owned())]
+        [Action::ReconnectAccount("gdrive".to_owned())]
     );
 }
 

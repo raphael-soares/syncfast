@@ -47,7 +47,7 @@ fn a_custom_line_without_a_sign_gets_an_error_and_blocks_save_and_test() {
 
     harness.run();
 
-    harness.get_by_label("Filter line 2 must start with \"+ \" or \"- \"");
+    harness.get_by_label("filter line 2 must start with \"+ \" or \"- \"");
     assert!(is_disabled(&harness, "Save"));
     assert!(is_disabled(&harness, "Test Filters"));
 }
@@ -61,7 +61,7 @@ fn typing_a_bad_line_shows_its_error_at_once() {
 
     harness.run();
 
-    harness.get_by_label("Filter line 1 must start with \"+ \" or \"- \"");
+    harness.get_by_label("filter line 1 must start with \"+ \" or \"- \"");
 }
 
 #[test]

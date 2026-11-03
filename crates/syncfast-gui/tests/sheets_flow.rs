@@ -36,6 +36,8 @@ fn pair(id: &str, gate: Option<GateKind>) -> PairRow {
         progress: None,
         gate_detail: String::new(),
         consecutive_failures: 0,
+        presets: Vec::new(),
+        filters: Vec::new(),
     }
 }
 
@@ -369,7 +371,28 @@ fn cancelling_the_account_of_the_welcome_screen_closes_everything() {
 fn reconnecting_an_account_asks_the_backend_for_its_saved_client() {
     let mut sheets = sheets();
 
-    let commands = sheets.apply(&Action::EditAccount("gdrive".into()), &around(&[], false));
+    let commands = sheets.apply(
+        &Action::ReconnectAccount("gdrive".into()),
+        &around(&[], false),
+    );
+
+    assert_eq!(
+        commands,
+        [
+            Command::LoadRemotes,
+            Command::LoadCredentials("gdrive".into())
+        ]
+    );
+}
+
+#[test]
+fn giving_an_account_its_own_client_id_also_asks_for_the_saved_client() {
+    let mut sheets = sheets();
+
+    let commands = sheets.apply(
+        &Action::ChangeClientId("gdrive".into()),
+        &around(&[], false),
+    );
 
     assert_eq!(
         commands,

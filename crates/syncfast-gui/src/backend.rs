@@ -33,7 +33,7 @@ use crate::sheet_io::{self, PreviewFailure};
 use crate::snapshot::{self, Snapshot};
 use crate::theme::Themes;
 use crate::ui::RemoteRow;
-use crate::ui::account_sheet::{AccountMode, ConnectRequest, Secret};
+use crate::ui::account_sheet::{ConnectRequest, Secret};
 use crate::ui::add_sync::{LocalFacts, NewSync};
 
 const POLL_ACTIVE: Duration = Duration::from_secs(1);
@@ -896,10 +896,10 @@ fn spawn_connect(context: &Arc<Context>, request: ConnectRequest) {
     context.tasks().connect = Some(cancel);
     let context = Arc::clone(context);
     tokio::spawn(async move {
-        let account = match &request.mode {
-            AccountMode::Add => request.name.clone(),
-            AccountMode::Update { name } => name.clone(),
-        };
+        let account = request
+            .mode
+            .remote()
+            .map_or_else(|| request.name.clone(), str::to_owned);
         let signed_in = match rclone() {
             Ok(rclone) => sheet_io::connect(&rclone, &request, cancelled).await,
             Err(text) => Err(text),
