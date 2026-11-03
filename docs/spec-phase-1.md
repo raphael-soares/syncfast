@@ -17,7 +17,7 @@ Roadmap:
 
 Estado final da fase 1:
 
-- `syncfast` (CLI) e `syncfast-gui` instalados em `~/.local/bin`.
+- App instalado como Flatpak (`io.github.raphael_soares.syncfast`, ADR 0006): `syncfast-gui` abre pelo launcher e a CLI roda com `flatpak run --command=syncfast io.github.raphael_soares.syncfast <comando>`.
 - Pastas configuradas pela GUI e sincronizando por timer e inotify.
 - Revisão obrigatória antes de qualquer resync ou exclusão em massa.
 - Bandeja com estado; notificação quando algo exige ação.
@@ -51,14 +51,14 @@ Estado final da fase 1:
 
 - **Workspace Cargo com 3 crates em `crates/`:**
   - `syncfast-core` (lib): paths, config, `Behavior`, filtros, bisync, estado, decisão de rodada, units, rclone, rede, notificação. Não depende de egui, eframe, winit, nem de crates fastframe de UI.
-  - `syncfast-cli` (bin `syncfast`): `apply`, `run`, `watch`, `preview`, `status`. As units chamam esse binário.
+  - `syncfast-cli` (bin `syncfast`): `apply`, `run`, `watch`, `preview`, `status`. As units chamam esse binário, dentro do Flatpak: `flatpak run --command=syncfast io.github.raphael_soares.syncfast <comando>`. É também como o usuário o chama no terminal.
   - `syncfast-gui` (bin `syncfast-gui`): app egui/fastframe. Usa o core como biblioteca e nunca chama o binário da CLI, exceto no modo dev (seção Ambiente).
 - **Tokio:**
   - O core expõe `async` para processo (`tokio::process`), arquivo e D-Bus (zbus com feature `tokio`).
   - A CLI usa `#[tokio::main(flavor = "current_thread")]`.
   - A GUI tem um runtime multi-thread numa thread de backend, com canais `Command` (UI → backend) e `Event` (backend → UI), e acorda a UI com `fastframe_shell::Waker` (padrão do zapfast `src/backend.rs`).
 - **Erros:** `thiserror` no core (um enum por módulo) e `anyhow` só nos `main`.
-- **Caminhos:** um resolvedor só, `syncfast_core::paths::Paths::from_env()`, que lê `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `XDG_DATA_HOME` e `XDG_RUNTIME_DIR` com os fallbacks XDG (`~/.config`, `~/.local/state`, `~/.local/share`, `/run/user/<uid>`). O `fastframe-dirs` não é usado, porque testes e modo dev controlam tudo por variável de ambiente.
+- **Caminhos:** um resolvedor só, `syncfast_core::paths::Paths::from_env()`, que lê `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `XDG_DATA_HOME` e `XDG_RUNTIME_DIR` com os fallbacks XDG (`~/.config`, `~/.local/state`, `~/.local/share`, `/run/user/<uid>`). O `fastframe-dirs` não é usado, porque testes e modo dev controlam tudo por variável de ambiente. Dentro do Flatpak, `XDG_*_HOME` apontam para `~/.var/app/<id>`; o resolvedor então usa `HOST_XDG_*` ou os padrões sob `HOME`, e `XDG_RUNTIME_DIR/app/<id>` no lugar de `XDG_RUNTIME_DIR`, para manter config, estado e versions onde estavam (ADR 0006).
 
 ### Visual e UX
 
@@ -66,7 +66,7 @@ Estado final da fase 1:
   - Paleta com os 16 tokens do `fastframe-theme` usados pelo Spotifast.
   - Fonte Inter (`fastframe-fonts`), ícones Lucide (`fastframe-icons`).
   - Temas JSON do usuário em `$XDG_CONFIG_HOME/syncfast/themes/`.
-  - Verbo `syncfast-gui reload-themes`.
+  - Verbo `syncfast-gui reload-themes` (no Flatpak, `flatpak run io.github.raphael_soares.syncfast reload-themes`).
   - Template Noctalia próprio.
   - Acento violeta.
 - **Estrutura e comportamento seguem o Apple HIG (macOS):**
@@ -109,7 +109,7 @@ Estado final da fase 1:
   - `~/.config/systemd/user/obsidian-sync.{service,timer}` (bisync de `~/Notes`, timer desabilitado, `~/Notes` não existe mais)
   - `~/.config/rclone/{gdrive-exclude.txt,obsidian-filter.txt}`
   - `~/.cache/rclone/bisync/home_raphael_Notes..gdrive_Notes.*`
-- O PATH do systemd do usuário não inclui `~/.local/bin`; o do shell inclui.
+- O PATH do systemd do usuário não inclui `~/.local/bin`; o do shell inclui. O Flatpak é o único canal de instalação, então as units chamam `flatpak run` (passo 8, ADR 0006).
 - `rustup` instalado sem toolchain. Spotifast e zapfast fixam `channel = "1.98.0"`.
 - Portais `xdg-desktop-portal`, `-gtk` e `-hyprland` instalados.
 - `fs.inotify.max_user_watches = 524288`.
@@ -183,11 +183,14 @@ Arquivos na raiz:
   - `run-gui-dev`: `dev-env`, depois `env XDG_CONFIG_HOME=$PWD/.dev/config XDG_STATE_HOME=$PWD/.dev/state XDG_DATA_HOME=$PWD/.dev/data XDG_RUNTIME_DIR=$PWD/.dev/run RCLONE_CONFIG=$PWD/.dev/rclone.conf SYNCFAST_SYSTEMD=off SYNCFAST_CLI=$PWD/target/debug/syncfast cargo run -p syncfast-gui`
   - `run-cli-dev *args`: o mesmo `env`, com `cargo run -p syncfast-cli -- {{args}}`
   - `dev-reset`: `rm -rf .dev`
-  - `install`: `cargo install --locked --path crates/syncfast-cli --root ~/.local && cargo install --locked --path crates/syncfast-gui --root ~/.local`
+  - `flatpak`: `flatpak-builder --user --install` do manifesto `packaging/flatpak/io.github.raphael_soares.syncfast.yml` (ADR 0006); é a única instalação, não há `cargo install`
+  - `flatpak-bundle`: `flatpak build-bundle` produz `syncfast.flatpak`, para `flatpak install --user syncfast.flatpak` em outra máquina
+  - `flatpak-sources`: regenera `packaging/flatpak/cargo-sources.json` com `flatpak-cargo-generator`
   - `hooks`: `lefthook install`
-- `.gitignore`: `/target`, `/.dev`, `/mutants.out*`.
+- `.gitignore`: `/target`, `/.dev`, `/mutants.out*`, `/syncfast.flatpak`.
 - `README.md`:
   - Uma frase do que o app faz.
+  - Seção Install com `just flatpak` (build local) e `flatpak install --user syncfast.flatpak` (bundle de `just flatpak-bundle`).
   - Seção Development com `sudo pacman -S --needed just lefthook cargo-deny`, `cargo install --locked cargo-mutants cargo-nextest`, `just hooks`, `just check`, `just run-gui-dev`.
   - Se a compilação acusar lib nativa faltando, instalar com `pacman -S --needed` a do erro. Candidatas: `libxkbcommon wayland libx11 libxcursor libxrandr libxi mesa fontconfig dbus`.
 - `AGENTS.md` (até 40 linhas):
@@ -501,6 +504,7 @@ Notificações (`notify.rs`, no core):
   - Caminhos em `ExecStart=` e `Environment=` ficam entre aspas duplas, com `\` e `"` escapados e `%` duplicado.
   - Teste unitário com nome contendo `%` e caminho com espaço.
 - `<bin>` = `std::env::current_exe()` canonicalizado. `<rclone>` = o rclone resolvido no momento do `apply`, canonicalizado.
+- Dentro do Flatpak (`FLATPAK_ID` definido), `ExecStart=` vira `flatpak run --die-with-parent --command=syncfast <FLATPAK_ID> run <id>` (e `... watch`), sem a linha `Environment=`: o rclone embutido está no PATH do sandbox. O `flatpak run` move o sandbox para um scope próprio, então sem `--die-with-parent` um `stop`/`restart` da unit deixa o processo vivo. Os `systemctl --user` rodam por `flatpak-spawn --host` (ADR 0006).
 
 `syncfast-<id>.service`:
 
@@ -665,7 +669,7 @@ A GUI chama `apply` como função do core: ao iniciar, depois de cada gravação
     - `Offline` troca por `cloud-off`.
     - Atenção e erro acrescentam um ponto de 35% do tamanho no canto inferior direito, com as cores fixas `#F2B85C` (atenção) e `#F5717F` (erro). São as únicas cores literais fora da paleta.
   - Pior estado entre pares, do pior para o melhor: `Error`, `NeedsReview`, `Conflicts`, `Failing`, `Syncing`, `Paused`, `Offline`, `Retrying`, `UpToDate`. O que exige ação do usuário vem antes de rodada em andamento, pausa e falta de rede (a ordem do passo 6 vale para um par só).
-- Template Noctalia em `contrib/noctalia/syncfast/` com `template.toml`, `syncfast-dark.json`, `syncfast-light.json`. Cópia do spotifast trocando `spotifast` por `syncfast`. `output_path = "$XDG_CONFIG_HOME/syncfast/themes/noctalia.json"`, `post_hook = "syncfast-gui reload-themes >/dev/null 2>&1 || true"`, `requires_path = "$XDG_CONFIG_HOME/syncfast"`. Sem a entrada flatpak.
+- Template Noctalia em `contrib/noctalia/syncfast/` com `template.toml`, `syncfast-dark.json`, `syncfast-light.json`. Cópia do spotifast trocando `spotifast` por `syncfast`. `output_path = "$XDG_CONFIG_HOME/syncfast/themes/noctalia.json"`, `post_hook = "flatpak run io.github.raphael_soares.syncfast reload-themes >/dev/null 2>&1 || true"`, `requires_path = "$XDG_CONFIG_HOME/syncfast"`. 
 
 ### 12. Casca da GUI (`main.rs`, `app.rs`, `backend.rs`)
 
@@ -861,22 +865,8 @@ Toda tela é função de um `ViewModel` imutável e devolve `Vec<Action>`. O `ap
 
 Rodar depois de `just check` verde e do roteiro dev da Verification.
 
-1. `just install`.
-2. Desktop entry `~/.dotfiles/desktop/.local/share/applications/syncfast.desktop`:
-
-   ```ini
-   [Desktop Entry]
-   Type=Application
-   Name=syncfast
-   GenericName=Folder Sync
-   Comment=Keep folders in sync with Google Drive
-   Exec=syncfast-gui
-   Icon=folder-sync
-   Terminal=false
-   Categories=Utility;FileTools;
-   StartupWMClass=syncfast-gui
-   ```
-
+1. `just flatpak` (build e `flatpak install --user`, ADR 0006). O Flatpak exporta o desktop entry e o ícone, então o dotfiles não guarda `syncfast.desktop`.
+2. Remover o desktop entry antigo `~/.dotfiles/desktop/.local/share/applications/syncfast.desktop` e, quando houver, `~/.local/bin/{syncfast,syncfast-gui}`.
 3. Config no dotfiles:
    - Em `~/.dotfiles/install.sh`, `camada_desktop()`, acrescentar `.config/syncfast` à lista de diretórios do `linkar`.
    - Criar `~/.dotfiles/desktop/.config/syncfast/config.toml` com `version = 1`.
@@ -886,8 +876,8 @@ Rodar depois de `just check` verde e do roteiro dev da Verification.
    - Copiar `contrib/noctalia/syncfast/` para `~/.local/state/noctalia/community-templates/syncfast/`.
    - Acrescentar `"syncfast"` a `community_ids` em `~/.dotfiles/noctalia/.local/state/noctalia/settings.toml`.
    - Se o Noctalia não aplicar um template que não está no `catalog.json` da comunidade, gerar `~/.config/syncfast/themes/noctalia.json` à mão a partir de `syncfast-dark.json` com as cores atuais e registrar a limitação no `README.md`.
-5. Autostart: acrescentar `hl.exec_cmd("syncfast-gui --start-hidden")` depois de `hl.exec_cmd("noctalia")` em `~/.dotfiles/hypr/.config/hypr/autostart.lua`.
-6. Abrir `syncfast-gui`, `Settings… > Accounts > Use My Client ID…` no `gdrive`, concluir o OAuth.
+5. Autostart: acrescentar `hl.exec_cmd("flatpak run io.github.raphael_soares.syncfast --start-hidden")` depois de `hl.exec_cmd("noctalia")` em `~/.dotfiles/hypr/.config/hypr/autostart.lua`.
+6. Abrir o app pelo launcher (ou `flatpak run io.github.raphael_soares.syncfast`), `Settings… > Accounts > Use My Client ID…` no `gdrive`, concluir o OAuth.
 7. Remover o setup antigo:
    - `systemctl --user disable --now rclone-gdrive.service obsidian-sync.timer`
    - `rm ~/.config/systemd/user/rclone-gdrive.service ~/.config/systemd/user/obsidian-sync.service ~/.config/systemd/user/obsidian-sync.timer`
@@ -925,7 +915,7 @@ Rodar depois de `just check` verde e do roteiro dev da Verification.
 | S7 | Main window, activity and progress | 13 (janela principal, Activity) | Sidebar, detalhe, cartão de status com progresso ao vivo, aba Activity. Testes de UI do detalhe. Bate com os quadros 2 do mock. |
 | S8 | Review, Add Sync and Welcome | 13 (Review, Add Sync, Boas-vindas) | Fluxo completo no modo dev: boas-vindas → conta → Add Sync → Review → Up to date. Testes de UI de boas-vindas, Add Sync e Review. Bate com os quadros 1, 3 e 4 do mock. |
 | S9 | Settings, conflicts, filters and removal | 13 (Settings, Conflicts, Filters, Remove) | Accounts (criar, trocar credencial, aviso), Appearance, aba Conflicts (3 ações), aba Filters com Test Filters, alert de remoção. Testes de UI correspondentes. `just mutants` sem sobrevivente nos módulos-alvo. Bate com os quadros 5 e 6 do mock. |
-| S10 | Install, migration and Drive end-to-end | 14, 15, Verification 3 e 4 | Instalado em `~/.local/bin`, setup antigo removido, roteiros dev e Drive real da Verification executados e anotados na PR. **Marco final.** |
+| S10 | Install, migration and Drive end-to-end | 14, 15, Verification 3 e 4 | Instalado como Flatpak, setup antigo removido, roteiros dev e Drive real da Verification executados e anotados na PR. **Marco final.** |
 
 ### Fluxo de cada fatia
 
@@ -983,6 +973,6 @@ Diretório `~/Desktop/Personal/syncfast`.
 
 - **Patch do egui/winit:** se o `[patch.crates-io]` não resolver junto da tag v0.15.6 do fastframe, remover o bloco inteiro e registrar no `AGENTS.md`.
 - **Bandeja invisível:** se a bandeja não aparecer no Noctalia (`Tray::is_shown()` falso 10 s depois de iniciar), `--start-hidden` passa a abrir a janela minimizável, e fechar a janela minimiza em vez de esconder. Registrar no `AGENTS.md`.
-- **PATH do Hyprland:** se `hl.exec_cmd("syncfast-gui --start-hidden")` não subir no login por PATH, usar `/home/raphael/.local/bin/syncfast-gui --start-hidden`.
+- **PATH do Hyprland:** se `hl.exec_cmd("flatpak run io.github.raphael_soares.syncfast --start-hidden")` não subir no login por PATH, usar `/usr/bin/flatpak run ...`.
 - **OAuth parado:** se `rclone config create` com stdin nulo parar sem abrir o navegador, acrescentar `--non-interactive` e tratar o JSON de pergunta devolvido: responder `config_is_local=true` via `--continue --state <state> --result true` até o fim.
 - **Lucide:** se algum ícone citado não existir no set Lucide do `fastframe-icons`, entra como SVG próprio copiado do Lucide (ISC), sem trocar o ícone.
