@@ -363,6 +363,21 @@ mod tests {
         assert_ne!(mtime(&changed.path), past);
     }
 
+    #[tokio::test]
+    async fn a_filters_path_that_cannot_be_read_is_a_read_error_and_is_left_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = paths_in(tmp.path());
+        std::fs::create_dir_all(paths.filters_file("drive")).unwrap();
+
+        let result = write_if_changed(&paths, &pair(&[], &[])).await;
+
+        assert!(
+            matches!(result, Err(FiltersError::Read { .. })),
+            "{result:?}"
+        );
+        assert!(paths.filters_file("drive").is_dir());
+    }
+
     #[test]
     fn unanchored_rule_matches_at_any_depth() {
         let m = matcher(&["- node_modules/"]);

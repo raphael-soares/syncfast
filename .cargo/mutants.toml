@@ -1,0 +1,3 @@
+# cargo test runs the rclone stub-script tests in threads and trips ETXTBSY on the
+# unmutated baseline; nextest gives each test its own process.
+test_tool = "nextest"
