@@ -104,7 +104,6 @@ struct Raw {
 /// preserve comments and ordering.
 #[derive(Debug, Clone)]
 pub struct Config {
-    home: PathBuf,
     document: DocumentMut,
     pairs: Vec<Pair>,
 }
@@ -117,13 +116,11 @@ pub struct Validation {
 }
 
 impl Config {
-    /// A config with no pairs, as if the file were absent.
     #[must_use]
-    pub fn empty(home: &Path) -> Self {
+    pub fn empty() -> Self {
         let mut document = DocumentMut::new();
         document["version"] = toml_edit::value(SUPPORTED_VERSION);
         Self {
-            home: home.to_owned(),
             document,
             pairs: Vec::new(),
         }
@@ -136,7 +133,7 @@ impl Config {
     pub async fn load(paths: &Paths) -> Result<Self, GlobalConfigError> {
         match tokio::fs::read_to_string(paths.config_file()).await {
             Ok(text) => Self::parse(&text, &paths.home),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Self::empty(&paths.home)),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Self::empty()),
             Err(err) => Err(GlobalConfigError::Read(err)),
         }
     }
@@ -162,7 +159,6 @@ impl Config {
             pair.local = expand_tilde(&pair.local, home);
         }
         Ok(Self {
-            home: home.to_owned(),
             document,
             pairs: raw.pair,
         })
@@ -171,11 +167,6 @@ impl Config {
     #[must_use]
     pub fn pairs(&self) -> &[Pair] {
         &self.pairs
-    }
-
-    #[must_use]
-    pub fn home(&self) -> &Path {
-        &self.home
     }
 
     /// Checks every pair. `accounts` are the rclone remote names (a trailing
@@ -197,7 +188,7 @@ impl Config {
             .iter()
             .map(|pair| {
                 let duplicate = id_counts.get(pair.id.as_str()).copied().unwrap_or(0) > 1;
-                pair_problem(pair, duplicate, &accounts, &data_dir)
+                problem_before_overlap(pair, duplicate, &data_dir)
             })
             .collect();
         let candidates: Vec<bool> = messages.iter().map(Option::is_none).collect();
@@ -217,19 +208,24 @@ impl Config {
             if !candidates[i] {
                 continue;
             }
-            for (j, other) in self.pairs.iter().enumerate() {
-                if i == j || !candidates[j] {
-                    continue;
-                }
-                if locals[i].starts_with(&locals[j]) || locals[j].starts_with(&locals[i]) {
-                    messages[i] = Some(format!("local folder overlaps \"{}\"", other.name));
-                    break;
-                }
-                if remotes_overlap(&pair.remote, &other.remote) {
-                    messages[i] = Some(format!("remote folder overlaps \"{}\"", other.name));
-                    break;
-                }
-            }
+            let others = || {
+                self.pairs
+                    .iter()
+                    .enumerate()
+                    .filter(|&(j, _)| j != i && candidates[j])
+            };
+            let local_overlap = others().find(|&(j, _)| {
+                locals[i].starts_with(&locals[j]) || locals[j].starts_with(&locals[i])
+            });
+            messages[i] = if let Some((_, other)) = local_overlap {
+                Some(format!("local folder overlaps \"{}\"", other.name))
+            } else if let Some((_, other)) =
+                others().find(|(_, other)| remotes_overlap(&pair.remote, &other.remote))
+            {
+                Some(format!("remote folder overlaps \"{}\"", other.name))
+            } else {
+                problem_after_overlap(pair, &accounts)
+            };
         }
         let mut valid = Vec::new();
         let mut errors = Vec::new();
@@ -248,8 +244,6 @@ impl Config {
         }
     }
 
-    /// Appends `pair` as a new `[[pair]]` table.
-    ///
     /// # Errors
     /// The local path is not valid UTF-8, so TOML cannot hold it.
     pub fn add_pair(&mut self, pair: Pair) -> Result<(), ConfigEditError> {
@@ -275,7 +269,6 @@ impl Config {
         Ok(())
     }
 
-    /// Removes every pair with `id`. Returns whether any existed.
     pub fn remove_pair(&mut self, id: &str) -> bool {
         let before = self.pairs.len();
         self.pairs.retain(|pair| pair.id != id);
@@ -292,7 +285,6 @@ impl Config {
         self.pairs.len() != before
     }
 
-    /// Sets `enabled` on every pair with `id`. Returns whether any existed.
     pub fn set_enabled(&mut self, id: &str, enabled: bool) -> bool {
         self.edit_pair(
             id,
@@ -303,8 +295,6 @@ impl Config {
         )
     }
 
-    /// Replaces the presets and custom filter lines of every pair with `id`.
-    /// Returns whether any existed.
     pub fn set_filters(&mut self, id: &str, presets: &[String], filters: &[String]) -> bool {
         self.edit_pair(
             id,
@@ -443,13 +433,8 @@ fn valid_id(id: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
-/// The first problem of a pair on its own, in the order of the spec.
-fn pair_problem(
-    pair: &Pair,
-    duplicate_id: bool,
-    accounts: &HashSet<&str>,
-    data_dir: &Path,
-) -> Option<String> {
+/// Checks that run before the cross-pair overlap checks, in spec order.
+fn problem_before_overlap(pair: &Pair, duplicate_id: bool, data_dir: &Path) -> Option<String> {
     if !valid_id(&pair.id) {
         return Some(format!(
             "sync id \"{}\" must use a-z, 0-9 and \"-\", up to 32 characters",
@@ -468,10 +453,17 @@ fn pair_problem(
     if data_dir.starts_with(resolve(&pair.local)) {
         return Some("local folder cannot contain syncfast's versions folder".to_owned());
     }
-    let Some((account, _)) = split_remote(&pair.remote) else {
+    if split_remote(&pair.remote).is_none() {
         return Some("remote folder must look like \"account:folder\"".to_owned());
-    };
-    if !accounts.contains(account) {
+    }
+    None
+}
+
+/// Checks that run after the overlap checks, in spec order.
+fn problem_after_overlap(pair: &Pair, accounts: &HashSet<&str>) -> Option<String> {
+    if let Some((account, _)) = split_remote(&pair.remote)
+        && !accounts.contains(account)
+    {
         return Some(format!("account \"{account}\" is not set up in rclone"));
     }
     for (index, line) in pair.filters.iter().enumerate() {
@@ -946,6 +938,44 @@ mod tests {
     }
 
     #[test]
+    fn overlap_is_reported_before_an_unknown_account() {
+        let config = config(&[
+            pair_block("a", "Alpha", "/data/Docs", "gone:a"),
+            pair_block("b", "Beta", "/data/Docs/Sub", "gdrive:b"),
+            pair_block("c", "Gamma", "/data/c", "gone:Notes"),
+            pair_block("d", "Delta", "/data/d", "gone:Notes/2024"),
+        ]);
+
+        assert_eq!(
+            messages(&config),
+            [
+                "local folder overlaps \"Beta\"",
+                "local folder overlaps \"Alpha\"",
+                "remote folder overlaps \"Delta\"",
+                "remote folder overlaps \"Gamma\"",
+            ]
+        );
+    }
+
+    #[test]
+    fn local_overlap_is_reported_before_remote_overlap_whatever_the_pair_order() {
+        let config = config(&[
+            pair_block("a", "Alpha", "/data/a", "gdrive:Notes"),
+            pair_block("b", "Beta", "/data/b", "gdrive:Notes"),
+            pair_block("c", "Gamma", "/data/a", "other:c"),
+        ]);
+
+        assert_eq!(
+            messages(&config),
+            [
+                "local folder overlaps \"Gamma\"",
+                "remote folder overlaps \"Alpha\"",
+                "local folder overlaps \"Alpha\"",
+            ]
+        );
+    }
+
+    #[test]
     fn account_names_without_a_trailing_colon_are_accepted() {
         let root = tempfile::tempdir().unwrap();
         let config = config(&[pair_block("drive", "Drive", "/data/Drive", "gdrive:")]);
@@ -1070,7 +1100,7 @@ mod tests {
 
     #[test]
     fn add_pair_to_an_empty_config_creates_the_first_table() {
-        let mut config = Config::empty(Path::new(HOME));
+        let mut config = Config::empty();
 
         config
             .add_pair(Pair {
@@ -1116,7 +1146,7 @@ mod tests {
     async fn save_writes_the_file_and_load_reads_it_back() {
         let root = tempfile::tempdir().unwrap();
         let paths = paths_in(root.path());
-        let mut config = Config::empty(&paths.home);
+        let mut config = Config::empty();
         config
             .add_pair(Pair {
                 id: "a".into(),
