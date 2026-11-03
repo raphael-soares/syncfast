@@ -7,7 +7,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
 use jiff::Zoned;
@@ -18,7 +18,7 @@ use syncfast_core::notify::{Notice, Notifier};
 use syncfast_core::paths::Paths;
 use syncfast_core::preview::{PreviewError, preview};
 use syncfast_core::rclone::Rclone;
-use syncfast_core::run::{RunEnv, RunReport, run};
+use syncfast_core::run::{RunEnv, RunReport, STORED_CHANGES, run};
 use syncfast_core::run_decision::SkipReason;
 use syncfast_core::state::{ConfirmMarker, GateKind, LastOutcome, State, try_lock_pair};
 
@@ -118,6 +118,28 @@ impl Bed {
         fs::write(file, text).unwrap();
     }
 
+    /// Makes the pair invalid: its local folder becomes a relative path.
+    fn break_config(&self) {
+        let text = fs::read_to_string(self.paths.config_file())
+            .unwrap()
+            .replace(
+                &format!("local = \"{}\"", self.local.display()),
+                "local = \"relative/dir\"",
+            );
+        fs::write(self.paths.config_file(), text).unwrap();
+    }
+
+    async fn confirm(&self, kind: ReviewKind) {
+        let reviewed = self.preview(kind).await.unwrap();
+        ConfirmMarker {
+            kind,
+            filters_hash: reviewed.filters_hash,
+        }
+        .save(&self.paths, PAIR)
+        .await
+        .unwrap();
+    }
+
     async fn run(&self) -> RunReport {
         self.run_with(&self.rclone).await
     }
@@ -138,10 +160,18 @@ impl Bed {
         &self,
         kind: ReviewKind,
     ) -> Result<syncfast_core::preview::Preview, PreviewError> {
+        self.preview_with(&self.rclone, kind).await
+    }
+
+    async fn preview_with(
+        &self,
+        rclone: &Rclone,
+        kind: ReviewKind,
+    ) -> Result<syncfast_core::preview::Preview, PreviewError> {
         let clock = Zoned::now;
         let env = RunEnv {
             paths: &self.paths,
-            rclone: &self.rclone,
+            rclone,
             network: &self.online,
             notifier: &self.notices,
             clock: &clock,
@@ -586,6 +616,58 @@ async fn missing_local_folder_sets_the_gate_and_the_next_round_resumes_when_it_i
         }
     );
     assert!(bed.state().await.gate.is_none());
+
+    fs::rename(&bed.local, &moved).unwrap();
+    let again = bed.run().await;
+
+    assert_eq!(again, RunReport::GateSet(GateKind::LocalMissing));
+    let folder_notices = bed
+        .notices
+        .titles()
+        .iter()
+        .filter(|title| *title == "Docs: folder not found")
+        .count();
+    assert_eq!(folder_notices, 2, "a second disappearance notifies again");
+}
+
+#[tokio::test]
+async fn pending_first_review_survives_the_local_folder_going_away_and_coming_back() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "a.txt", "a");
+    assert_eq!(bed.run().await, RunReport::Skipped(SkipReason::Gated));
+    let moved = bed.local.with_file_name("local-away");
+    fs::rename(&bed.local, &moved).unwrap();
+
+    let away = bed.run().await;
+
+    assert_eq!(away, RunReport::Skipped(SkipReason::Gated));
+    assert_eq!(
+        bed.state().await.gate.map(|gate| gate.kind),
+        Some(GateKind::NeedsReviewFirstRun)
+    );
+    fs::rename(&moved, &bed.local).unwrap();
+    let back = bed.run().await;
+
+    assert_eq!(back, RunReport::Skipped(SkipReason::Gated));
+    assert_eq!(
+        bed.state().await.gate.map(|gate| gate.kind),
+        Some(GateKind::NeedsReviewFirstRun)
+    );
+    assert!(
+        bed.notices
+            .titles()
+            .iter()
+            .all(|title| title != "Docs: folder not found")
+    );
+    bed.confirm(ReviewKind::Resync).await;
+    assert_eq!(
+        bed.run().await,
+        RunReport::Ran {
+            mode: Mode::Resync,
+            outcome: Outcome::Ok
+        }
+    );
+    assert_eq!(read(&bed.remote, "a.txt"), "a");
 }
 
 #[tokio::test]
@@ -636,13 +718,7 @@ async fn offline_round_is_skipped_quietly_and_recorded() {
 #[tokio::test]
 async fn invalid_pair_gets_the_config_error_gate_and_one_notification() {
     let Some(bed) = bed() else { return };
-    let relative = fs::read_to_string(bed.paths.config_file())
-        .unwrap()
-        .replace(
-            &format!("local = {:?}", bed.local),
-            "local = \"relative/dir\"",
-        );
-    fs::write(bed.paths.config_file(), relative).unwrap();
+    bed.break_config();
 
     let first = bed.run().await;
     let second = bed.run().await;
@@ -662,7 +738,11 @@ async fn invalid_pair_gets_the_config_error_gate_and_one_notification() {
 /// An rclone stand-in: lists `testremote`, and every bisync appends `log`
 /// to the `--log-file` and exits with `code`.
 fn fake_rclone(bed: &Bed, log: &str, code: i32) -> Rclone {
-    let script = bed.paths.state_home.join("fake-rclone.sh");
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let script = bed.paths.state_home.join(format!(
+        "fake-rclone-{}.sh",
+        NEXT.fetch_add(1, Ordering::SeqCst)
+    ));
     let body = format!(
         "#!/bin/sh\nif [ \"$1\" = listremotes ]; then echo 'testremote:'; exit 0; fi\n\
          while [ $# -gt 0 ]; do if [ \"$1\" = --log-file ]; then file=\"$2\"; fi; shift; done\n\
@@ -759,4 +839,207 @@ async fn success_after_failures_clears_the_failure_notification_key() {
     assert_eq!(state.consecutive_failures, 0);
     assert_eq!(state.last_outcome, Some(LastOutcome::Ok));
     assert!(state.notified.is_empty(), "{:?}", state.notified);
+}
+
+#[tokio::test]
+async fn config_error_of_a_pair_that_never_synced_leaves_the_first_review_pending() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "a.txt", "a");
+    bed.break_config();
+    assert_eq!(bed.run().await, RunReport::ConfigInvalid);
+
+    bed.write_config(true, &[]);
+    let fixed = bed.run().await;
+
+    assert_eq!(fixed, RunReport::GateSet(GateKind::NeedsReviewFirstRun));
+    assert!(bed.remote.read_dir().unwrap().next().is_none());
+    assert_eq!(
+        bed.notices.titles(),
+        ["Docs: configuration error", "Docs: review needed"]
+    );
+    bed.confirm(ReviewKind::Resync).await;
+    assert_eq!(
+        bed.run().await,
+        RunReport::Ran {
+            mode: Mode::Resync,
+            outcome: Outcome::Ok
+        }
+    );
+}
+
+#[tokio::test]
+async fn config_error_of_a_synced_pair_clears_itself_once_the_config_is_valid() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "base.txt", "base");
+    bed.first_sync().await;
+    bed.break_config();
+    assert_eq!(bed.run().await, RunReport::ConfigInvalid);
+    assert_eq!(
+        bed.state().await.gate.map(|gate| gate.kind),
+        Some(GateKind::ConfigError)
+    );
+    write(&bed.local, "new.txt", "new");
+
+    bed.write_config(true, &[]);
+    let fixed = bed.run().await;
+
+    assert_eq!(
+        fixed,
+        RunReport::Ran {
+            mode: Mode::Normal,
+            outcome: Outcome::Ok
+        }
+    );
+    assert!(bed.state().await.gate.is_none());
+    assert_eq!(read(&bed.remote, "new.txt"), "new");
+}
+
+#[tokio::test]
+async fn a_sync_that_is_running_makes_the_round_busy_and_changes_nothing() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "base.txt", "base");
+    bed.first_sync().await;
+    write(&bed.local, "new.txt", "new");
+    let held = try_lock_pair(&bed.paths, PAIR).unwrap().unwrap();
+
+    let report = bed.run().await;
+
+    assert_eq!(report, RunReport::Busy);
+    assert_eq!(names(&bed.remote), ["base.txt"]);
+    drop(held);
+    assert!(matches!(bed.run().await, RunReport::Ran { .. }));
+}
+
+#[tokio::test]
+async fn marker_with_an_old_filters_hash_is_discarded_and_the_gate_holds() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "a.txt", "a");
+    ConfirmMarker {
+        kind: ReviewKind::Resync,
+        filters_hash: "hash-of-other-filters".to_owned(),
+    }
+    .save(&bed.paths, PAIR)
+    .await
+    .unwrap();
+
+    let report = bed.run().await;
+
+    assert_eq!(report, RunReport::Skipped(SkipReason::Gated));
+    assert!(!bed.paths.confirm_file(PAIR).exists());
+    assert!(bed.remote.read_dir().unwrap().next().is_none());
+}
+
+#[tokio::test]
+async fn marker_survives_a_transient_failure_and_is_deleted_once_a_gate_is_set() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "a.txt", "a");
+    bed.confirm(ReviewKind::Resync).await;
+    let failing = fake_rclone(&bed, r#"{"level":"error","msg":"boom"}"#, 1);
+
+    let transient = bed.run_with(&failing).await;
+
+    assert_eq!(
+        transient,
+        RunReport::Ran {
+            mode: Mode::Resync,
+            outcome: Outcome::Transient
+        }
+    );
+    assert!(bed.paths.confirm_file(PAIR).exists());
+    assert_eq!(
+        bed.state().await.gate.map(|gate| gate.kind),
+        Some(GateKind::NeedsReviewFirstRun)
+    );
+    let deleting = fake_rclone(
+        &bed,
+        r#"{"level":"error","msg":"too many deletes (>50%, 3 of 4)"}"#,
+        1,
+    );
+
+    let gated = bed.run_with(&deleting).await;
+
+    assert_eq!(
+        gated,
+        RunReport::Ran {
+            mode: Mode::Resync,
+            outcome: Outcome::TooManyDeletes
+        }
+    );
+    assert!(!bed.paths.confirm_file(PAIR).exists());
+    assert_eq!(
+        bed.state().await.gate.map(|gate| gate.kind),
+        Some(GateKind::TooManyDeletes)
+    );
+}
+
+#[tokio::test]
+async fn state_keeps_only_the_first_changes_of_a_big_round_but_all_the_counts() {
+    let Some(bed) = bed() else { return };
+    for n in 0..STORED_CHANGES + 20 {
+        write(&bed.local, &format!("f{n:03}.txt"), "x");
+    }
+
+    bed.first_sync().await;
+
+    let summary = bed.state().await.last_run.unwrap().summary;
+    assert_eq!(summary.changes.len(), STORED_CHANGES);
+    assert_eq!(
+        summary.uploaded,
+        Some(u32::try_from(STORED_CHANGES + 20).unwrap())
+    );
+}
+
+#[tokio::test]
+async fn a_successful_round_prunes_expired_versions_and_old_run_logs() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "base.txt", "base");
+    bed.first_sync().await;
+    let versions = bed.paths.versions_dir(PAIR);
+    write(&versions, "20200101-000000/old.txt", "expired");
+    write(&versions, "kept-by-hand.txt", "mine");
+    for n in 0..55 {
+        write(
+            &bed.paths.runs_dir(PAIR),
+            &format!("20200101-0000{n:02}.jsonl"),
+            "",
+        );
+    }
+    write(&bed.local, "new.txt", "new");
+
+    let report = bed.run().await;
+
+    assert_eq!(
+        report,
+        RunReport::Ran {
+            mode: Mode::Normal,
+            outcome: Outcome::Ok
+        }
+    );
+    assert!(!versions.join("20200101-000000").exists());
+    assert!(versions.join("kept-by-hand.txt").exists());
+    assert_eq!(names(&bed.paths.runs_dir(PAIR)).len(), 50);
+    let newest = bed.state().await.last_run.unwrap().log_file;
+    assert!(newest.exists(), "the newest log is kept");
+}
+
+#[tokio::test]
+async fn failed_preview_reports_the_last_error_and_deletes_its_log() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "a.txt", "a");
+    let failing = fake_rclone(&bed, r#"{"level":"error","msg":"drive is unreachable"}"#, 1);
+
+    let result = bed.preview_with(&failing, ReviewKind::Resync).await;
+
+    match result {
+        Err(PreviewError::Failed { exit_code, message }) => {
+            assert_eq!(exit_code, 1);
+            assert_eq!(message, "drive is unreachable");
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    let leftovers: Vec<String> = names(&bed.paths.pair_state_dir(PAIR))
+        .into_iter()
+        .filter(|name| name.starts_with("preview-"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
 }
