@@ -83,7 +83,7 @@ Estado final da fase 1:
 
 ### Qualidade, testes, ambiente
 
-- **Portões locais, sem CI remoto:**
+- **Portões locais, sem CI remoto (exceto o empacotamento, ADR 0006):**
   - lints rígidos no workspace
   - `cargo-deny`
   - teste de fronteira de crates
@@ -891,7 +891,7 @@ Rodar depois de `just check` verde e do roteiro dev da Verification.
 
 ### Repositório e rastreio
 
-- Repositório privado `raphael-soares/syncfast` no GitHub, sem CI remoto. Os portões são o `just check` e o lefthook.
+- Repositório público `raphael-soares/syncfast` no GitHub. O único CI remoto é `.github/workflows/flatpak.yml`, que empacota e publica o repositório Flatpak no Pages a cada push na `main` (ADR 0006). Os portões de qualidade são o `just check` e o lefthook.
 - Criação, dentro da fatia S1, depois do primeiro commit:
   1. `gh auth switch -u raphael-soares`
   2. `gh repo create raphael-soares/syncfast --private --source . --remote origin --push`

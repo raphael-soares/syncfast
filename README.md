@@ -4,19 +4,17 @@ Keeps folders on this computer in sync with Google Drive, in both directions, fr
 
 ## Install
 
-Flatpak is the only way to install syncfast (ADR 0006). It bundles rclone and needs nothing else from the host except `flatpak` and the user's systemd.
+Flatpak is the only way to install syncfast (ADR 0006). It bundles rclone and needs nothing else from the host except `flatpak` and the user's systemd. Every push to `main` publishes a signed Flatpak repository at https://raphael-soares.github.io/syncfast/.
 
 ```sh
-just flatpak        # builds and installs for this user
-just flatpak-bundle # also writes syncfast.flatpak
-```
-
-On another machine, install the bundle (the runtime comes from Flathub):
-
-```sh
-flatpak install --user syncfast.flatpak
+flatpak install --user https://raphael-soares.github.io/syncfast/io.github.raphael_soares.syncfast.flatpakref
+flatpak update              # later, to get the latest build (or: just flatpak-update)
 flatpak run io.github.raphael_soares.syncfast
 ```
+
+The runtime comes from Flathub; add it first with `flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo` if the machine has no Flathub remote.
+
+To build from a checkout instead, `just flatpak` builds and installs for this user, and `just flatpak-bundle` also writes `syncfast.flatpak`. The Flatpak workflow uploads the same bundle as an artifact; install it offline with `flatpak install --user syncfast.flatpak`.
 
 The command line is `flatpak run --command=syncfast io.github.raphael_soares.syncfast <apply|run|watch|preview|status>`. Start it hidden at login with `flatpak run io.github.raphael_soares.syncfast --start-hidden`.
 

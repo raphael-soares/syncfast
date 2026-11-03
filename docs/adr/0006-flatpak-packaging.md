@@ -5,6 +5,7 @@ The app must install the same way on this Arch machine and on a Fedora one, with
 
 ## Decision
 - The only way to install is the Flatpak `io.github.raphael_soares.syncfast` (freedesktop 25.08), built from `packaging/flatpak/` by `just flatpak` and exported as `syncfast.flatpak` by `just flatpak-bundle`. `just install` and `cargo install` are gone.
+- Channel: a GitHub Action builds on every push to `main` and publishes a GPG-signed OSTree repository to GitHub Pages (public repo), with history kept across runs so `flatpak update` gets deltas. Installed from `packaging/flatpak/*.flatpakref`; `syncfast.flatpak` is a workflow artifact for offline installs. Updates are pulled by `flatpak update`, never automatically. Quality gates stay local.
 - rclone ships inside the package (official release binary, pinned sha256); crates are vendored offline from `cargo-sources.json` (`just flatpak-sources`).
 - The sandbox is bridged to the host only when `FLATPAK_ID` is set. `systemctl --user` runs as `flatpak-spawn --host systemctl --user ...`. The units run `flatpak run --die-with-parent --command=syncfast <id> run <pair>` (and `watch`) with no `SYNCFAST_RCLONE`: the embedded rclone is on the sandbox `PATH`.
 - Config, state and versions stay where they were: `Paths` ignores the remapped `XDG_*_HOME` (`HOST_XDG_*` or the `HOME` defaults), and `RCLONE_CONFIG` defaults to the host's `~/.config/rclone/rclone.conf`. The runtime folder is `$XDG_RUNTIME_DIR/app/<id>`, the only one the instances share (locks, instance slot).
