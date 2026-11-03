@@ -48,11 +48,7 @@ fn harness(view: WelcomeView) -> Harness<'static, Screen> {
 }
 
 fn fresh(has_remote: bool) -> WelcomeView {
-    WelcomeView {
-        has_remote,
-        has_sync: false,
-        reviewed: false,
-    }
+    WelcomeView { has_remote }
 }
 
 #[test]
@@ -84,20 +80,9 @@ fn with_an_account_the_first_step_is_done_and_the_folder_step_is_current() {
 }
 
 #[test]
-fn steps_follow_account_sync_and_first_round() {
-    let steps = |has_remote, has_sync, reviewed| {
-        WelcomeView {
-            has_remote,
-            has_sync,
-            reviewed,
-        }
-        .steps()
-    };
-
-    assert_eq!(steps(false, false, false), [Current, Pending, Pending]);
-    assert_eq!(steps(true, false, false), [Done, Current, Pending]);
-    assert_eq!(steps(true, true, false), [Done, Done, Current]);
-    assert_eq!(steps(true, true, true), [Done, Done, Done]);
+fn steps_follow_the_account_and_the_later_ones_never_count_as_done() {
+    assert_eq!(fresh(false).steps(), [Current, Pending, Pending]);
+    assert_eq!(fresh(true).steps(), [Done, Current, Pending]);
 }
 
 #[test]

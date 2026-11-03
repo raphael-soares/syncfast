@@ -35,39 +35,22 @@ const STEPS: [&str; 3] = [
     "Review the first sync",
 ];
 
-/// What decides the three steps and the button.
+/// What decides the three steps and the button. The screen only shows while
+/// there is no sync, so the first step is the only one that can be done.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WelcomeView {
     /// An rclone remote exists: the account step is done.
     pub has_remote: bool,
-    pub has_sync: bool,
-    /// The first round finished well.
-    pub reviewed: bool,
 }
 
 impl WelcomeView {
     #[must_use]
-    pub fn steps(&self) -> [StepState; 3] {
-        let account = if self.has_remote {
-            StepState::Done
+    pub fn steps(self) -> [StepState; 3] {
+        if self.has_remote {
+            [StepState::Done, StepState::Current, StepState::Pending]
         } else {
-            StepState::Current
-        };
-        let folder = if self.has_sync {
-            StepState::Done
-        } else if self.has_remote {
-            StepState::Current
-        } else {
-            StepState::Pending
-        };
-        let review = if self.reviewed {
-            StepState::Done
-        } else if self.has_sync {
-            StepState::Current
-        } else {
-            StepState::Pending
-        };
-        [account, folder, review]
+            [StepState::Current, StepState::Pending, StepState::Pending]
+        }
     }
 
     /// `Get Started` asks for an account while there is none, then for the

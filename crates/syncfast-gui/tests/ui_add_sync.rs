@@ -440,6 +440,23 @@ fn a_failed_listing_shows_its_message() {
     assert!(shown(&harness, "couldn't list directory"));
 }
 
+#[test]
+fn try_again_after_a_failed_listing_asks_for_that_folder_again() {
+    let mut harness = harness_with(state_at(Step::RemoteFolder), |sheet| {
+        sheet.dirs.insert(
+            "devremote:".into(),
+            DirListing::Failed("couldn't list directory".into()),
+        );
+    });
+
+    click(&mut harness, "Try Again");
+
+    assert_eq!(
+        sheet_actions(&harness),
+        [AddSyncAction::LoadDirs("devremote:".into())]
+    );
+}
+
 fn typed_new_folder(parent: Option<&str>, name: &str) -> Harness<'static, Sheet> {
     let mut state = state_at(Step::RemoteFolder);
     state.remote_path = parent.map(ToOwned::to_owned);

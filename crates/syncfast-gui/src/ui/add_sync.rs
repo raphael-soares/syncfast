@@ -513,7 +513,7 @@ fn remote_step(
             }
         }
     }
-    listing_notes(ui, &account, view.dirs);
+    listing_notes(ui, &account, view.dirs, actions);
     new_folder_section(ui, view, state, &account, actions);
     if let Some(problem) = remote_problem(view, state) {
         widgets::inline_error(ui, &problem);
@@ -547,7 +547,12 @@ fn children(account: &str, dirs: &HashMap<String, DirListing>, parent: &str) -> 
 }
 
 /// The root loading line and the listings that failed.
-fn listing_notes(ui: &mut Ui, account: &str, dirs: &HashMap<String, DirListing>) {
+fn listing_notes(
+    ui: &mut Ui,
+    account: &str,
+    dirs: &HashMap<String, DirListing>,
+    actions: &mut Vec<Action>,
+) {
     let palette = theme::palette(ui.ctx());
     if matches!(
         dirs.get(&remote_key(account, "")),
@@ -571,8 +576,11 @@ fn listing_notes(ui: &mut Ui, account: &str, dirs: &HashMap<String, DirListing>)
         })
         .collect();
     failed.sort();
-    for (_, message) in failed {
+    for (key, message) in failed {
         widgets::inline_error(ui, message);
+        if widgets::secondary_button(ui, "Try Again").clicked() {
+            emit(actions, AddSyncAction::LoadDirs(key.clone()));
+        }
     }
 }
 
