@@ -171,12 +171,8 @@ pub async fn load(paths: &Paths, pair_id: &str, running: bool) -> Arc<[RunEntry]
             .and_then(|state| state.last_run.as_ref())
             .filter(|last| is_log_of(last, &runs, name))
             .map(|last| (last.exit_code, workdir.as_path()));
-        let finished_last = state
-            .as_ref()
-            .and_then(|state| state.last_run.as_ref())
-            .is_some_and(|last| is_log_of(last, &runs, name));
         let known = Known {
-            in_progress: running && index == 0 && !finished_last,
+            in_progress: running && index == 0 && last.is_none(),
             last,
         };
         entries.push(entry(name, &text, &known));

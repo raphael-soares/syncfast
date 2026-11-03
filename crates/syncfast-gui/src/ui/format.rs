@@ -22,7 +22,7 @@ pub fn bytes(count: u64) -> String {
     }
 }
 
-/// A span of seconds: `4 s`, `3 min`, `1 h 5 min`.
+/// A span of seconds, truncated: `4 s`, `3 min`, `1 h 5 min`.
 #[must_use]
 pub fn duration(seconds: u64) -> String {
     const MINUTE: u64 = 60;
@@ -30,7 +30,7 @@ pub fn duration(seconds: u64) -> String {
     if seconds < MINUTE {
         format!("{seconds} s")
     } else if seconds < HOUR {
-        format!("{} min", seconds.div_ceil(MINUTE))
+        format!("{} min", seconds / MINUTE)
     } else {
         let minutes = (seconds % HOUR) / MINUTE;
         if minutes == 0 {
@@ -38,6 +38,17 @@ pub fn duration(seconds: u64) -> String {
         } else {
             format!("{} h {minutes} min", seconds / HOUR)
         }
+    }
+}
+
+/// Time left, rounded up to the minute so a wait never reads shorter than it is.
+#[must_use]
+pub fn eta(seconds: u64) -> String {
+    const MINUTE: u64 = 60;
+    if seconds < MINUTE {
+        duration(seconds)
+    } else {
+        duration(seconds.div_ceil(MINUTE) * MINUTE)
     }
 }
 
@@ -55,7 +66,7 @@ pub fn progress_line(progress: &Progress) -> String {
         bytes(progress.speed.max(0.0) as u64),
     );
     match progress.eta_seconds {
-        Some(eta) => format!("{line} · {} left", duration(eta)),
+        Some(left) => format!("{line} · {} left", eta(left)),
         None => line,
     }
 }
@@ -113,12 +124,15 @@ mod tests {
     }
 
     #[test]
-    fn durations_round_up_to_the_next_minute_so_a_wait_never_reads_zero() {
+    fn durations_are_truncated_and_only_the_eta_rounds_up() {
         assert_eq!(duration(4), "4 s");
         assert_eq!(duration(60), "1 min");
-        assert_eq!(duration(170), "3 min");
+        assert_eq!(duration(119), "1 min");
         assert_eq!(duration(3_600), "1 h");
         assert_eq!(duration(3_900), "1 h 5 min");
+        assert_eq!(eta(4), "4 s");
+        assert_eq!(eta(61), "2 min");
+        assert_eq!(eta(170), "3 min");
     }
 
     #[test]

@@ -42,6 +42,8 @@ enum CloseIntent {
     Quit,
 }
 
+type RunsKey = (String, bool, Option<Timestamp>);
+
 #[derive(Debug)]
 pub struct App {
     backend: Backend,
@@ -67,9 +69,10 @@ pub struct App {
     actions: Vec<Action>,
     tab: DetailTab,
     runs: Option<(String, Arc<[RunEntry]>)>,
-    /// The sync and running state the history was last asked for, so it is
-    /// read again when a round starts or ends and not on every poll.
-    runs_key: Option<(String, bool)>,
+    /// The sync, its running state and the end of its latest round, as of the
+    /// last history request: the history is read again when any changes (a
+    /// round that starts and ends between two polls included), not on every poll.
+    runs_key: Option<RunsKey>,
 }
 
 impl App {
@@ -160,14 +163,11 @@ impl App {
         (self.selected_id().as_deref() == Some(id.as_str())).then(|| Arc::clone(runs))
     }
 
-    fn selected_running(&self) -> Option<(String, bool)> {
+    fn runs_key(&self) -> Option<RunsKey> {
         let id = self.selected_id()?;
-        let running = self
-            .snapshot
-            .pairs
-            .iter()
-            .any(|pair| pair.pair.id == id && pair.running);
-        Some((id, running))
+        let pair = self.snapshot.pairs.iter().find(|pair| pair.pair.id == id)?;
+        let finished = pair.state.last_run.as_ref().map(|last| last.finished);
+        Some((id, pair.running, finished))
     }
 
     /// Asks the backend for the history of the selected sync when Activity
@@ -178,11 +178,11 @@ impl App {
             self.runs_key = None;
             return;
         }
-        let key = self.selected_running();
+        let key = self.runs_key();
         if key == self.runs_key {
             return;
         }
-        if let Some((id, _)) = &key {
+        if let Some((id, ..)) = &key {
             self.backend.send(Command::LoadRuns(id.clone()));
         }
         self.runs_key = key;
@@ -583,8 +583,9 @@ impl Resident for App {
 
 #[cfg(test)]
 mod tests {
+    use syncfast_core::bisync_log::RunSummary;
     use syncfast_core::config::Pair;
-    use syncfast_core::state::{DisplayStatus, Gate, GateKind, State};
+    use syncfast_core::state::{DisplayStatus, Gate, GateKind, LastRun, State};
 
     use super::*;
     use crate::snapshot::PairSnapshot;
@@ -695,6 +696,33 @@ mod tests {
         assert_eq!(app.gui.selected_pair.as_deref(), Some("b"));
         assert!(app.gui_dirty_since.is_some());
         assert_eq!(app.selected_id().as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn the_history_is_read_again_when_a_round_ends_even_if_no_poll_saw_it_running() {
+        let (_dir, mut app) = app();
+        app.snapshot.pairs = vec![pair_with_gate("a", None)];
+        app.load_runs_if_stale();
+        let first = app.runs_key.clone();
+
+        app.load_runs_if_stale();
+        assert_eq!(app.runs_key, first, "a poll with nothing new reads nothing");
+
+        let run = LastRun {
+            started: Timestamp::UNIX_EPOCH,
+            finished: "2026-11-03T12:00:00Z".parse().unwrap(),
+            exit_code: 0,
+            summary: RunSummary::default(),
+            log_file: "a.jsonl".into(),
+        };
+        app.snapshot.pairs[0].state.last_run = Some(run);
+        app.load_runs_if_stale();
+
+        assert_ne!(app.runs_key, first);
+        assert_eq!(
+            app.runs_key.map(|key| key.2),
+            Some(Some("2026-11-03T12:00:00Z".parse().unwrap()))
+        );
     }
 
     #[test]
