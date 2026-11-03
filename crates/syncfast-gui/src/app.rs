@@ -1,6 +1,7 @@
 //! The app that outlives its window: it owns the backend, the tray and the
 //! state the screens show, and applies the actions they emit.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use fastframe_shell::window::Geometry;
@@ -11,10 +12,11 @@ use syncfast_core::paths::Paths;
 use crate::backend::{Backend, Command, Event};
 use crate::gui_state::{self, GuiState};
 use crate::instance::{Inbox, Request};
+use crate::runs::RunEntry;
 use crate::snapshot::Snapshot;
 use crate::theme::{self, Palette, Themes};
 use crate::tray::{IconLook, PairView, Summary, SyncTray, TrayView, action as tray_action};
-use crate::ui::{self, Action, PairRow, ViewModel};
+use crate::ui::{self, Action, DetailTab, PairRow, ViewModel};
 
 /// How long a hidden start waits for a panel to show the tray item before
 /// it gives up and opens the window, since nothing else could bring it back.
@@ -40,6 +42,8 @@ enum CloseIntent {
     Quit,
 }
 
+type RunsKey = (String, bool, Option<Timestamp>);
+
 #[derive(Debug)]
 pub struct App {
     backend: Backend,
@@ -63,6 +67,12 @@ pub struct App {
     wants_show: bool,
     wayland: bool,
     actions: Vec<Action>,
+    tab: DetailTab,
+    runs: Option<(String, Arc<[RunEntry]>)>,
+    /// The sync, its running state and the end of its latest round, as of the
+    /// last history request: the history is read again when any changes (a
+    /// round that starts and ends between two polls included), not on every poll.
+    runs_key: Option<RunsKey>,
 }
 
 impl App {
@@ -101,6 +111,9 @@ impl App {
             wants_show: false,
             wayland: std::env::var_os("WAYLAND_DISPLAY").is_some(),
             actions: Vec::new(),
+            tab: DetailTab::default(),
+            runs: None,
+            runs_key: None,
         };
         if with_tray {
             app.tray = SyncTray::spawn(waker, app.tray_view());
@@ -140,7 +153,39 @@ impl App {
             sidebar_width: self.gui.sidebar_width,
             error: self.snapshot.config_error.clone().or(self.error.clone()),
             now: Timestamp::now(),
+            tab: self.tab,
+            runs: self.runs_of_selected(),
         }
+    }
+
+    fn runs_of_selected(&self) -> Option<Arc<[RunEntry]>> {
+        let (id, runs) = self.runs.as_ref()?;
+        (self.selected_id().as_deref() == Some(id.as_str())).then(|| Arc::clone(runs))
+    }
+
+    fn runs_key(&self) -> Option<RunsKey> {
+        let id = self.selected_id()?;
+        let pair = self.snapshot.pairs.iter().find(|pair| pair.pair.id == id)?;
+        let finished = pair.state.last_run.as_ref().map(|last| last.finished);
+        Some((id, pair.running, finished))
+    }
+
+    /// Asks the backend for the history of the selected sync when Activity
+    /// shows it and it changed: another sync, the tab just opened, or a
+    /// round started or ended.
+    fn load_runs_if_stale(&mut self) {
+        if self.tab != DetailTab::Activity {
+            self.runs_key = None;
+            return;
+        }
+        let key = self.runs_key();
+        if key == self.runs_key {
+            return;
+        }
+        if let Some((id, ..)) = &key {
+            self.backend.send(Command::LoadRuns(id.clone()));
+        }
+        self.runs_key = key;
     }
 
     fn tray_view(&self) -> TrayView {
@@ -234,7 +279,11 @@ impl App {
     /// Takes in what the backend reported.
     pub fn handle_event(&mut self, event: Event) {
         match event {
-            Event::Snapshot(snapshot) => self.snapshot = snapshot,
+            Event::Snapshot(snapshot) => {
+                self.snapshot = snapshot;
+                self.load_runs_if_stale();
+            }
+            Event::Runs { pair, runs } => self.runs = Some((pair, runs)),
             Event::Themes(themes) => self.themes = themes,
             Event::SystemDark(dark) => self.system_dark = Some(dark),
             Event::Failed(text) => self.error = Some(text),
@@ -369,6 +418,7 @@ impl App {
                 if self.gui.selected_pair.as_ref() != Some(&id) {
                     self.gui.selected_pair = Some(id);
                     self.mark_gui_dirty();
+                    self.load_runs_if_stale();
                 }
             }
             Action::ResizeSidebar(width) => {
@@ -378,8 +428,13 @@ impl App {
                     self.mark_gui_dirty();
                 }
             }
-            // TODO(#8): the Add Sync and Review sheets. TODO(#9): Settings.
-            Action::AddSync | Action::OpenSettings | Action::OpenReview(_) => {}
+            // TODO(#8): the Add Sync and Review sheets.
+            // TODO(#9): Settings (also Accounts) and the Remove alert.
+            Action::AddSync
+            | Action::OpenSettings
+            | Action::OpenReview(_)
+            | Action::RemoveSync(_)
+            | Action::OpenAccounts => {}
             Action::SyncNow(id) => {
                 self.error = None;
                 self.backend.send(Command::SyncNow(id));
@@ -391,6 +446,30 @@ impl App {
             Action::SetAllEnabled(enabled) => {
                 self.error = None;
                 self.backend.send(Command::SetAllEnabled(enabled));
+            }
+            Action::SelectTab(tab) => {
+                self.tab = tab;
+                self.load_runs_if_stale();
+            }
+            Action::SetEnabled(id, enabled) => {
+                self.error = None;
+                self.backend.send(Command::SetEnabled(id, enabled));
+            }
+            Action::OpenLocalFolder(id) => {
+                self.error = None;
+                let local = self
+                    .snapshot
+                    .pairs
+                    .iter()
+                    .find(|pair| pair.pair.id == id)
+                    .map(|pair| pair.pair.local.clone());
+                if let Some(local) = local {
+                    self.backend.send(Command::OpenLocalFolder(local));
+                }
+            }
+            Action::OpenVersionsFolder(id) => {
+                self.error = None;
+                self.backend.send(Command::OpenVersionsFolder(id));
             }
             Action::ShowWindow => self.show_window(ctx),
             Action::HideWindow => self.hide_window(ctx),
@@ -504,8 +583,9 @@ impl Resident for App {
 
 #[cfg(test)]
 mod tests {
+    use syncfast_core::bisync_log::RunSummary;
     use syncfast_core::config::Pair;
-    use syncfast_core::state::{DisplayStatus, Gate, GateKind, State};
+    use syncfast_core::state::{DisplayStatus, Gate, GateKind, LastRun, State};
 
     use super::*;
     use crate::snapshot::PairSnapshot;
@@ -616,6 +696,33 @@ mod tests {
         assert_eq!(app.gui.selected_pair.as_deref(), Some("b"));
         assert!(app.gui_dirty_since.is_some());
         assert_eq!(app.selected_id().as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn the_history_is_read_again_when_a_round_ends_even_if_no_poll_saw_it_running() {
+        let (_dir, mut app) = app();
+        app.snapshot.pairs = vec![pair_with_gate("a", None)];
+        app.load_runs_if_stale();
+        let first = app.runs_key.clone();
+
+        app.load_runs_if_stale();
+        assert_eq!(app.runs_key, first, "a poll with nothing new reads nothing");
+
+        let run = LastRun {
+            started: Timestamp::UNIX_EPOCH,
+            finished: "2026-11-03T12:00:00Z".parse().unwrap(),
+            exit_code: 0,
+            summary: RunSummary::default(),
+            log_file: "a.jsonl".into(),
+        };
+        app.snapshot.pairs[0].state.last_run = Some(run);
+        app.load_runs_if_stale();
+
+        assert_ne!(app.runs_key, first);
+        assert_eq!(
+            app.runs_key.map(|key| key.2),
+            Some(Some("2026-11-03T12:00:00Z".parse().unwrap()))
+        );
     }
 
     #[test]

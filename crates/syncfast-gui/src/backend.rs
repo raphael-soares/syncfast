@@ -12,6 +12,7 @@ use fastframe_shell::Waker;
 use syncfast_core::config::Config;
 use syncfast_core::paths::Paths;
 use syncfast_core::rclone::Rclone;
+use syncfast_core::state::is_running;
 use syncfast_core::units::{ApplyEnv, SystemdMode, UserSystemctl, apply};
 use syncfast_core::watch::{Trigger, trigger_for};
 use tokio::sync::{
@@ -21,6 +22,7 @@ use tokio::sync::{
 use crate::gui_state::{self, GuiState};
 use crate::instance::Inbox;
 use crate::notices::{Notices, notice_for};
+use crate::runs::{self, RunEntry};
 use crate::snapshot::{self, Snapshot};
 use crate::theme::Themes;
 
@@ -32,6 +34,7 @@ const ROUND_START_WAIT: Duration = Duration::from_millis(600);
 const CLI_NAME: &str = "syncfast";
 const CLI_VAR: &str = "SYNCFAST_CLI";
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+const FOLDER_OPENER: &str = "xdg-open";
 
 /// What the UI asks of the backend.
 #[derive(Debug, Clone, PartialEq)]
@@ -49,6 +52,13 @@ pub enum Command {
     /// Read the theme files again, after `reload-themes`.
     ReloadThemes,
     Shutdown,
+    /// Read the rounds of a sync from its logs, for Activity.
+    LoadRuns(String),
+    /// Pause (`false`) or resume (`true`) one sync, then `apply`.
+    SetEnabled(String, bool),
+    OpenLocalFolder(PathBuf),
+    /// The folder that keeps the saved versions of a sync.
+    OpenVersionsFolder(String),
 }
 
 /// What the backend tells the UI.
@@ -60,6 +70,11 @@ pub enum Event {
     SystemDark(bool),
     /// An action did not work; the text is shown near the sync list.
     Failed(String),
+    /// The rounds of a sync, newest first.
+    Runs {
+        pair: String,
+        runs: Arc<[RunEntry]>,
+    },
 }
 
 #[derive(Clone)]
@@ -231,6 +246,15 @@ async fn run(
                     Command::SyncNow(id) => spawn_sync(&context, vec![id]),
                     Command::SyncAll => spawn_sync_all(&context),
                     Command::SetAllEnabled(enabled) => spawn_set_all_enabled(&context, enabled),
+                    Command::LoadRuns(id) => spawn_load_runs(&context, id),
+                    Command::SetEnabled(id, enabled) => spawn_set_enabled(&context, id, enabled),
+                    Command::OpenLocalFolder(path) => {
+                        spawn_open_folder(&context, path, "The folder of this sync is missing.");
+                    }
+                    Command::OpenVersionsFolder(id) => {
+                        let path = context.paths.versions_dir(&id);
+                        spawn_open_folder(&context, path, "No versions are saved yet.");
+                    }
                 }
             }
             () = context.refresh.notified() => {}
@@ -389,6 +413,64 @@ async fn write_enabled(paths: &Paths, enabled: bool) -> Result<(), String> {
     config.save(paths).await.map_err(|err| err.to_string())
 }
 
+fn spawn_load_runs(context: &Arc<Context>, id: String) {
+    let context = Arc::clone(context);
+    tokio::spawn(async move {
+        let running = is_running(&context.paths, &id);
+        let runs = runs::load(&context.paths, &id, running).await;
+        context.emitter.send(Event::Runs { pair: id, runs });
+    });
+}
+
+fn spawn_set_enabled(context: &Arc<Context>, id: String, enabled: bool) {
+    let context = Arc::clone(context);
+    tokio::spawn(async move {
+        if let Err(text) = set_enabled(&context.paths, &id, enabled).await {
+            fail(&context, text);
+        }
+        context.refresh.notify_one();
+    });
+}
+
+async fn set_enabled(paths: &Paths, id: &str, enabled: bool) -> Result<(), String> {
+    let mut config = Config::load(paths).await.map_err(|err| err.to_string())?;
+    if !config.set_enabled(id, enabled) {
+        return Err(format!("There is no sync named \"{id}\"."));
+    }
+    config.save(paths).await.map_err(|err| err.to_string())?;
+    apply_config(paths).await
+}
+
+fn spawn_open_folder(context: &Arc<Context>, path: PathBuf, missing: &'static str) {
+    let context = Arc::clone(context);
+    tokio::spawn(async move {
+        if let Err(text) = open_folder(FOLDER_OPENER.as_ref(), &path, missing).await {
+            fail(&context, text);
+        }
+    });
+}
+
+/// Hands a folder to the desktop's opener. A folder that does not exist
+/// is reported with `missing` instead of whatever the opener would say.
+async fn open_folder(opener: &std::ffi::OsStr, path: &Path, missing: &str) -> Result<(), String> {
+    if !tokio::fs::metadata(path)
+        .await
+        .is_ok_and(|meta| meta.is_dir())
+    {
+        return Err(missing.to_owned());
+    }
+    let status = tokio::process::Command::new(opener)
+        .arg(path)
+        .status()
+        .await
+        .map_err(|err| format!("Cannot run {}: {err}", opener.to_string_lossy()))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("Cannot open {}.", path.display()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -461,5 +543,59 @@ mod tests {
 
         let resumed = Config::load(&paths).await.unwrap();
         assert!(resumed.pairs().iter().all(|pair| pair.enabled));
+    }
+
+    fn paths_with_pairs(root: &Path) -> Paths {
+        let paths = Paths::new(
+            root.join("home"),
+            root.join("config"),
+            root.join("state"),
+            root.join("data"),
+            root.join("run"),
+        );
+        let file = paths.config_file();
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(
+            &file,
+            "version = 1\n\n[[pair]]\nid = \"a\"\nname = \"A\"\nlocal = \"/data/a\"\nremote = \"r:a\"\n\n[[pair]]\nid = \"b\"\nname = \"B\"\nlocal = \"/data/b\"\nremote = \"r:b\"\n",
+        )
+        .unwrap();
+        paths
+    }
+
+    #[tokio::test]
+    async fn setting_enabled_on_an_unknown_sync_names_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_with_pairs(dir.path());
+
+        let err = set_enabled(&paths, "gone", false).await.unwrap_err();
+
+        assert_eq!(err, "There is no sync named \"gone\".");
+    }
+
+    #[tokio::test]
+    async fn opening_a_folder_that_does_not_exist_reports_the_given_reason_without_running_the_opener()
+     {
+        let dir = tempfile::tempdir().unwrap();
+
+        let err = open_folder("false".as_ref(), &dir.path().join("none"), "Nothing here.")
+            .await
+            .unwrap_err();
+
+        assert_eq!(err, "Nothing here.");
+    }
+
+    #[tokio::test]
+    async fn opening_a_folder_succeeds_when_the_opener_does_and_fails_when_it_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let opened = open_folder("true".as_ref(), dir.path(), "x").await;
+        let refused = open_folder("false".as_ref(), dir.path(), "x").await;
+
+        assert!(opened.is_ok());
+        assert_eq!(
+            refused.unwrap_err(),
+            format!("Cannot open {}.", dir.path().display())
+        );
     }
 }
