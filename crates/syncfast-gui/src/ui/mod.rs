@@ -2,16 +2,25 @@
 //! [`Action`]s the user asked for. It never does I/O: `app.rs` applies the
 //! actions after the frame.
 
+pub mod activity;
+pub mod conflicts;
+pub mod detail;
+pub mod filters;
+pub mod format;
 pub mod relative;
 pub mod sidebar;
 pub mod widgets;
+
+use std::sync::Arc;
 
 use jiff::Timestamp;
 use syncfast_core::bisync_log::Progress;
 use syncfast_core::state::{DisplayStatus, GateKind};
 
+use crate::runs::RunEntry;
 use crate::snapshot::PairSnapshot;
-use crate::theme;
+
+pub use detail::DetailTab;
 
 /// The window title when no sync is selected.
 pub const TITLE: &str = "Syncs";
@@ -29,13 +38,17 @@ pub struct PairRow {
     pub last_success: Option<Timestamp>,
     /// Live numbers of the round in progress, if there is one.
     pub progress: Option<Progress>,
+    /// What the gate says about itself; empty without a gate.
+    pub gate_detail: String,
+    pub consecutive_failures: u32,
 }
 
 impl PairRow {
-    /// `Sync Now` is offered unless a round is running or a gate blocks it.
+    /// `Sync Now` is offered unless a round is running, a gate blocks it or
+    /// the sync is paused (a round of a paused sync does nothing).
     #[must_use]
     pub fn can_sync(&self) -> bool {
-        self.status != DisplayStatus::Syncing && self.gate.is_none()
+        self.status != DisplayStatus::Syncing && self.gate.is_none() && self.enabled
     }
 }
 
@@ -51,6 +64,13 @@ impl From<&PairSnapshot> for PairRow {
             gate: snapshot.state.gate.as_ref().map(|gate| gate.kind),
             last_success: snapshot.state.last_success,
             progress: snapshot.progress.clone(),
+            gate_detail: snapshot
+                .state
+                .gate
+                .as_ref()
+                .map(|gate| gate.detail.clone())
+                .unwrap_or_default(),
+            consecutive_failures: snapshot.state.consecutive_failures,
         }
     }
 }
@@ -63,6 +83,9 @@ pub struct ViewModel {
     /// A problem to show near the list: a broken config or a failed action.
     pub error: Option<String>,
     pub now: Timestamp,
+    pub tab: DetailTab,
+    /// The rounds of the selected sync; `None` until they are read.
+    pub runs: Option<Arc<[RunEntry]>>,
 }
 
 impl ViewModel {
@@ -97,56 +120,24 @@ pub enum Action {
     ShowWindow,
     HideWindow,
     Quit,
+    SelectTab(DetailTab),
+    /// Pause (`false`) or resume (`true`) one sync.
+    SetEnabled(String, bool),
+    /// Opens the folder of the sync on this computer.
+    OpenLocalFolder(String),
+    /// Opens the folder that keeps the sync's saved versions.
+    OpenVersionsFolder(String),
+    /// Asks to remove a sync (the alert decides).
+    RemoveSync(String),
+    /// Opens Settings on Accounts.
+    OpenAccounts,
 }
 
 /// The whole window: sidebar and detail.
 #[must_use]
 pub fn root(ui: &mut egui::Ui, vm: &ViewModel) -> Vec<Action> {
     let mut actions = sidebar::show(ui, vm);
-    actions.extend(detail(ui, vm));
-    actions
-}
-
-fn detail(ui: &mut egui::Ui, vm: &ViewModel) -> Vec<Action> {
-    let palette = theme::palette(ui.ctx());
-    let mut actions = Vec::new();
-    egui::CentralPanel::default()
-        .frame(
-            egui::Frame::new()
-                .fill(palette.window)
-                .inner_margin(egui::Margin::same(20)),
-        )
-        .show(ui, |ui| {
-            if let Some(error) = &vm.error {
-                widgets::inline_error(ui, error);
-                ui.add_space(theme::space::M);
-            }
-            match vm.selected_pair() {
-                Some(pair) => {
-                    ui.label(
-                        egui::RichText::new(&pair.name)
-                            .font(theme::title2())
-                            .color(palette.text),
-                    );
-                    ui.label(
-                        egui::RichText::new(format!("{} ↔ {}", pair.local.display(), pair.remote))
-                            .font(theme::callout())
-                            .color(palette.secondary),
-                    );
-                }
-                None => {
-                    if widgets::empty_state(
-                        ui,
-                        crate::icons::Icon::FolderSync,
-                        "No syncs yet",
-                        Some("Keep a folder on this computer and a folder in the cloud the same."),
-                        Some("Add Sync…"),
-                    ) {
-                        actions.push(Action::AddSync);
-                    }
-                }
-            }
-        });
+    actions.extend(detail::show(ui, vm));
     actions
 }
 

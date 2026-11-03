@@ -23,6 +23,8 @@ fn row(id: &str, name: &str, status: DisplayStatus) -> PairRow {
         gate: None,
         last_success: Some("2026-11-03T11:55:00Z".parse().unwrap()),
         progress: None,
+        gate_detail: String::new(),
+        consecutive_failures: 0,
     }
 }
 
@@ -33,6 +35,8 @@ fn view(pairs: Vec<PairRow>, selected: Option<&str>) -> ViewModel {
         sidebar_width: 240.0,
         error: None,
         now: now(),
+        tab: ui::DetailTab::Activity,
+        runs: None,
     }
 }
 
@@ -181,7 +185,7 @@ fn a_problem_is_shown_in_the_detail_area() {
 
 fn press(harness: &mut Harness<'_, Screen>, key: Key) {
     harness.key_press_modifiers(Modifiers::CTRL, key);
-    harness.run();
+    harness.run_steps(4);
 }
 
 #[test]
@@ -214,7 +218,7 @@ fn ctrl_r_does_nothing_while_the_selected_sync_is_running_or_blocked() {
     let mut nothing = harness(view(Vec::new(), None));
 
     for harness in [&mut running, &mut blocked, &mut nothing] {
-        harness.run();
+        harness.run_steps(4);
         press(harness, Key::R);
     }
 

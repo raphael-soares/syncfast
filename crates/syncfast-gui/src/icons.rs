@@ -23,6 +23,7 @@ fastframe_icons::icons! {
         History => "history",
         Palette => "palette",
         Pause => lucide "pause",
+        Play => lucide "play",
         Plus => lucide "plus",
         Refresh => lucide "refresh-cw",
         Settings => lucide "settings",

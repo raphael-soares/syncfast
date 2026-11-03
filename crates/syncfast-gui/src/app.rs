@@ -1,6 +1,7 @@
 //! The app that outlives its window: it owns the backend, the tray and the
 //! state the screens show, and applies the actions they emit.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use fastframe_shell::window::Geometry;
@@ -11,10 +12,11 @@ use syncfast_core::paths::Paths;
 use crate::backend::{Backend, Command, Event};
 use crate::gui_state::{self, GuiState};
 use crate::instance::{Inbox, Request};
+use crate::runs::RunEntry;
 use crate::snapshot::Snapshot;
 use crate::theme::{self, Palette, Themes};
 use crate::tray::{IconLook, PairView, Summary, SyncTray, TrayView, action as tray_action};
-use crate::ui::{self, Action, PairRow, ViewModel};
+use crate::ui::{self, Action, DetailTab, PairRow, ViewModel};
 
 /// How long a hidden start waits for a panel to show the tray item before
 /// it gives up and opens the window, since nothing else could bring it back.
@@ -63,6 +65,11 @@ pub struct App {
     wants_show: bool,
     wayland: bool,
     actions: Vec<Action>,
+    tab: DetailTab,
+    runs: Option<(String, Arc<[RunEntry]>)>,
+    /// The sync and running state the history was last asked for, so it is
+    /// read again when a round starts or ends and not on every poll.
+    runs_key: Option<(String, bool)>,
 }
 
 impl App {
@@ -101,6 +108,9 @@ impl App {
             wants_show: false,
             wayland: std::env::var_os("WAYLAND_DISPLAY").is_some(),
             actions: Vec::new(),
+            tab: DetailTab::default(),
+            runs: None,
+            runs_key: None,
         };
         if with_tray {
             app.tray = SyncTray::spawn(waker, app.tray_view());
@@ -140,7 +150,42 @@ impl App {
             sidebar_width: self.gui.sidebar_width,
             error: self.snapshot.config_error.clone().or(self.error.clone()),
             now: Timestamp::now(),
+            tab: self.tab,
+            runs: self.runs_of_selected(),
         }
+    }
+
+    fn runs_of_selected(&self) -> Option<Arc<[RunEntry]>> {
+        let (id, runs) = self.runs.as_ref()?;
+        (self.selected_id().as_deref() == Some(id.as_str())).then(|| Arc::clone(runs))
+    }
+
+    fn selected_running(&self) -> Option<(String, bool)> {
+        let id = self.selected_id()?;
+        let running = self
+            .snapshot
+            .pairs
+            .iter()
+            .any(|pair| pair.pair.id == id && pair.running);
+        Some((id, running))
+    }
+
+    /// Asks the backend for the history of the selected sync when Activity
+    /// shows it and it changed: another sync, the tab just opened, or a
+    /// round started or ended.
+    fn load_runs_if_stale(&mut self) {
+        if self.tab != DetailTab::Activity {
+            self.runs_key = None;
+            return;
+        }
+        let key = self.selected_running();
+        if key == self.runs_key {
+            return;
+        }
+        if let Some((id, _)) = &key {
+            self.backend.send(Command::LoadRuns(id.clone()));
+        }
+        self.runs_key = key;
     }
 
     fn tray_view(&self) -> TrayView {
@@ -234,7 +279,11 @@ impl App {
     /// Takes in what the backend reported.
     pub fn handle_event(&mut self, event: Event) {
         match event {
-            Event::Snapshot(snapshot) => self.snapshot = snapshot,
+            Event::Snapshot(snapshot) => {
+                self.snapshot = snapshot;
+                self.load_runs_if_stale();
+            }
+            Event::Runs { pair, runs } => self.runs = Some((pair, runs)),
             Event::Themes(themes) => self.themes = themes,
             Event::SystemDark(dark) => self.system_dark = Some(dark),
             Event::Failed(text) => self.error = Some(text),
@@ -369,6 +418,7 @@ impl App {
                 if self.gui.selected_pair.as_ref() != Some(&id) {
                     self.gui.selected_pair = Some(id);
                     self.mark_gui_dirty();
+                    self.load_runs_if_stale();
                 }
             }
             Action::ResizeSidebar(width) => {
@@ -378,8 +428,13 @@ impl App {
                     self.mark_gui_dirty();
                 }
             }
-            // TODO(#8): the Add Sync and Review sheets. TODO(#9): Settings.
-            Action::AddSync | Action::OpenSettings | Action::OpenReview(_) => {}
+            // TODO(#8): the Add Sync and Review sheets.
+            // TODO(#9): Settings (also Accounts) and the Remove alert.
+            Action::AddSync
+            | Action::OpenSettings
+            | Action::OpenReview(_)
+            | Action::RemoveSync(_)
+            | Action::OpenAccounts => {}
             Action::SyncNow(id) => {
                 self.error = None;
                 self.backend.send(Command::SyncNow(id));
@@ -391,6 +446,30 @@ impl App {
             Action::SetAllEnabled(enabled) => {
                 self.error = None;
                 self.backend.send(Command::SetAllEnabled(enabled));
+            }
+            Action::SelectTab(tab) => {
+                self.tab = tab;
+                self.load_runs_if_stale();
+            }
+            Action::SetEnabled(id, enabled) => {
+                self.error = None;
+                self.backend.send(Command::SetEnabled(id, enabled));
+            }
+            Action::OpenLocalFolder(id) => {
+                self.error = None;
+                let local = self
+                    .snapshot
+                    .pairs
+                    .iter()
+                    .find(|pair| pair.pair.id == id)
+                    .map(|pair| pair.pair.local.clone());
+                if let Some(local) = local {
+                    self.backend.send(Command::OpenLocalFolder(local));
+                }
+            }
+            Action::OpenVersionsFolder(id) => {
+                self.error = None;
+                self.backend.send(Command::OpenVersionsFolder(id));
             }
             Action::ShowWindow => self.show_window(ctx),
             Action::HideWindow => self.hide_window(ctx),
