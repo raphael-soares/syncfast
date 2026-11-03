@@ -6,6 +6,7 @@ use jiff::tz::TimeZone;
 use jiff::{Timestamp, Zoned};
 use syncfast_core::conflicts::{Conflict, FileFacts, Resolution};
 
+use super::format;
 use super::widgets::{empty_state, list_row, secondary_button};
 use super::{Action, ViewModel};
 use crate::icons::Icon;
@@ -116,30 +117,10 @@ fn describe(conflict: &Conflict, now: Timestamp, tz: &TimeZone) -> String {
 }
 
 fn facts_text(facts: &FileFacts, now: Timestamp, tz: &TimeZone) -> String {
-    let size = size_text(facts.size);
+    let size = format::bytes(facts.size);
     match facts.modified {
         Some(modified) => format!("{size}, {}", when(now, modified, tz)),
         None => size,
-    }
-}
-
-const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-
-/// `812 B`, `4.1 KB`, `12 KB`: binary steps, one decimal under ten.
-fn size_text(bytes: u64) -> String {
-    let (mut unit, mut divisor) = (0, 1_u64);
-    while unit + 1 < UNITS.len() && bytes / divisor >= 1024 {
-        divisor *= 1024;
-        unit += 1;
-    }
-    if unit == 0 {
-        return format!("{bytes} B");
-    }
-    let tenths = bytes.saturating_mul(10) / divisor;
-    if tenths < 100 {
-        format!("{}.{} {}", tenths / 10, tenths % 10, UNITS[unit])
-    } else {
-        format!("{} {}", tenths / 10, UNITS[unit])
     }
 }
 
@@ -166,17 +147,6 @@ mod tests {
 
     fn at(text: &str) -> Timestamp {
         text.parse().unwrap()
-    }
-
-    #[test]
-    fn sizes_use_binary_steps_with_one_decimal_under_ten() {
-        assert_eq!(size_text(0), "0 B");
-        assert_eq!(size_text(1023), "1023 B");
-        assert_eq!(size_text(1024), "1.0 KB");
-        assert_eq!(size_text(4200), "4.1 KB");
-        assert_eq!(size_text(12 * 1024), "12 KB");
-        assert_eq!(size_text(5 * 1024 * 1024 + 512 * 1024), "5.5 MB");
-        assert_eq!(size_text(3 * 1024 * 1024 * 1024), "3.0 GB");
     }
 
     #[test]
@@ -207,6 +177,6 @@ mod tests {
 
         let text = describe(&conflict, at("2026-11-03T12:00:00Z"), &TimeZone::UTC);
 
-        assert_eq!(text, "Current: missing · Conflicted copy: 3.8 KB");
+        assert_eq!(text, "Current: missing · Conflicted copy: 3.9 KB");
     }
 }

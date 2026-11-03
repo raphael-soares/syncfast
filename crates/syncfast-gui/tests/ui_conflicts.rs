@@ -64,7 +64,7 @@ fn each_row_shows_the_file_and_both_sizes() {
 
     harness.get_by_label("inbox/2026-11-02.md");
     harness.get_by_label("principios/scrum.md");
-    harness.get_by_label("Current: 4.1 KB · Conflicted copy: 3.8 KB");
+    harness.get_by_label("Current: 4.2 KB · Conflicted copy: 3.9 KB");
 }
 
 #[test]
