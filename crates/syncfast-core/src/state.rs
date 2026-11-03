@@ -184,14 +184,22 @@ pub struct ConfirmMarker {
 }
 
 impl ConfirmMarker {
+    /// A marker that is not valid JSON counts as no marker: it is logged
+    /// and deleted, so a bad file never blocks the pair.
+    ///
     /// # Errors
-    /// The file exists but cannot be read or parsed.
+    /// The file exists but cannot be read or deleted.
     pub async fn load(paths: &Paths, pair_id: &str) -> Result<Option<Self>, StateError> {
         let path = paths.confirm_file(pair_id);
         match tokio::fs::read(&path).await {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map(Some)
-                .map_err(|source| StateError::Parse { path, source }),
+            Ok(bytes) => match serde_json::from_slice(&bytes) {
+                Ok(marker) => Ok(Some(marker)),
+                Err(err) => {
+                    log::warn!("ignoring {}: {err}", path.display());
+                    Self::remove(paths, pair_id).await?;
+                    Ok(None)
+                }
+            },
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(source) => Err(StateError::Read { path, source }),
         }
@@ -584,6 +592,25 @@ mod tests {
             serde_json::json!({ "kind": "force", "filters_hash": "f00" })
         );
         assert_eq!(after, None);
+    }
+
+    #[tokio::test]
+    async fn a_marker_that_is_not_valid_json_counts_as_none_and_is_deleted() {
+        let (_dir, paths) = temp_paths();
+        let file = paths.confirm_file("drive");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        for garbage in [
+            "{\"kind\": \"res",
+            "",
+            "{\"kind\": \"sideways\", \"filters_hash\": \"x\"}",
+        ] {
+            std::fs::write(&file, garbage).unwrap();
+
+            let loaded = ConfirmMarker::load(&paths, "drive").await.unwrap();
+
+            assert_eq!(loaded, None, "{garbage:?}");
+            assert!(!file.exists(), "{garbage:?}");
+        }
     }
 
     #[tokio::test]
