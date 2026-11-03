@@ -66,7 +66,7 @@ pub fn decide(input: &DecideInput<'_>) -> Decision {
             (ReviewKind::Resync, Some(kind)) if kind.is_needs_review() => {
                 return Decision::Run(Mode::Resync);
             }
-            (ReviewKind::Force, Some(GateKind::TooManyDeletes)) => {
+            (ReviewKind::Force, Some(kind)) if kind.is_force_review() => {
                 return Decision::Run(Mode::Force);
             }
             _ => {}
@@ -177,16 +177,17 @@ mod tests {
     }
 
     #[test]
-    fn force_marker_with_matching_hash_runs_force_on_too_many_deletes() {
+    fn force_marker_with_matching_hash_runs_force_on_every_force_review_gate() {
         let confirmed = marker(ReviewKind::Force, HASH);
+        for gate in [GateKind::TooManyDeletes, GateKind::AllFilesChanged] {
+            let decision = decide(&DecideInput {
+                gate: Some(gate),
+                marker: Some(&confirmed),
+                ..input()
+            });
 
-        let decision = decide(&DecideInput {
-            gate: Some(GateKind::TooManyDeletes),
-            marker: Some(&confirmed),
-            ..input()
-        });
-
-        assert_eq!(decision, Decision::Run(Mode::Force));
+            assert_eq!(decision, Decision::Run(Mode::Force), "{gate:?}");
+        }
     }
 
     #[test]
@@ -206,6 +207,11 @@ mod tests {
                 GateKind::TooManyDeletes,
             ),
             (marker(ReviewKind::Resync, HASH), GateKind::AuthError),
+            (marker(ReviewKind::Resync, HASH), GateKind::AllFilesChanged),
+            (
+                marker(ReviewKind::Force, "old-hash"),
+                GateKind::AllFilesChanged,
+            ),
         ];
         for (stale, gate) in cases {
             let decision = decide(&DecideInput {

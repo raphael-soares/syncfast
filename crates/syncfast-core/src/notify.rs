@@ -57,6 +57,10 @@ pub fn notice(pair: &Pair, alert: &Alert) -> Notice {
                 "More than half of the files would be deleted. Review before continuing."
                     .to_owned(),
             ),
+            GateKind::AllFilesChanged => (
+                format!("{name}: review needed"),
+                "Every file changed at once. Review before continuing.".to_owned(),
+            ),
             GateKind::ConfigError => (format!("{name}: configuration error"), detail.clone()),
             GateKind::AuthError => (
                 format!("{name}: account disconnected"),
@@ -245,6 +249,17 @@ mod tests {
                 "Documents: many deletions".to_owned(),
                 "More than half of the files would be deleted. Review before continuing."
                     .to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn all_files_changed_asks_for_review() {
+        assert_eq!(
+            text(&gate(GateKind::AllFilesChanged, "")),
+            (
+                "Documents: review needed".to_owned(),
+                "Every file changed at once. Review before continuing.".to_owned()
             )
         );
     }

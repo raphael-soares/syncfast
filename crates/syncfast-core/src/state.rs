@@ -52,6 +52,7 @@ pub enum GateKind {
     NeedsReviewFiltersChanged,
     NeedsReviewCriticalError,
     TooManyDeletes,
+    AllFilesChanged,
     ConfigError,
     AuthError,
     LocalMissing,
@@ -65,6 +66,7 @@ impl GateKind {
             Self::NeedsReviewFiltersChanged => "needs_review_filters_changed",
             Self::NeedsReviewCriticalError => "needs_review_critical_error",
             Self::TooManyDeletes => "too_many_deletes",
+            Self::AllFilesChanged => "all_files_changed",
             Self::ConfigError => "config_error",
             Self::AuthError => "auth_error",
             Self::LocalMissing => "local_missing",
@@ -79,6 +81,12 @@ impl GateKind {
                 | Self::NeedsReviewFiltersChanged
                 | Self::NeedsReviewCriticalError
         )
+    }
+
+    /// Gates that only a confirmed `--force` round clears.
+    #[must_use]
+    pub fn is_force_review(self) -> bool {
+        matches!(self, Self::TooManyDeletes | Self::AllFilesChanged)
     }
 
     /// Key in [`State::notified`] that records the gate was announced.
@@ -742,6 +750,7 @@ mod tests {
             GateKind::NeedsReviewFiltersChanged,
             GateKind::NeedsReviewCriticalError,
             GateKind::TooManyDeletes,
+            GateKind::AllFilesChanged,
         ] {
             let state = State {
                 gate: Some(gate(kind)),
@@ -902,6 +911,7 @@ mod tests {
                 "needs_review_critical_error",
             ),
             (GateKind::TooManyDeletes, "too_many_deletes"),
+            (GateKind::AllFilesChanged, "all_files_changed"),
             (GateKind::ConfigError, "config_error"),
             (GateKind::AuthError, "auth_error"),
             (GateKind::LocalMissing, "local_missing"),

@@ -420,6 +420,7 @@ impl Round<'_> {
                 return Ok(());
             }
             Outcome::TooManyDeletes => (GateKind::TooManyDeletes, String::new()),
+            Outcome::AllFilesChanged => (GateKind::AllFilesChanged, String::new()),
             Outcome::NeedsReview(_) => (
                 GateKind::NeedsReviewCriticalError,
                 detail.unwrap_or_default(),

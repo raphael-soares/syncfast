@@ -474,6 +474,53 @@ async fn deleting_most_files_locally_stops_at_the_gate_until_a_forced_round_is_c
 }
 
 #[tokio::test]
+async fn editing_the_only_file_stops_at_the_gate_until_a_forced_round_is_confirmed() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "only.txt", "base");
+    bed.first_sync().await;
+    write(&bed.local, "only.txt", "edited locally, longer");
+
+    let report = bed.run().await;
+
+    assert_eq!(
+        report,
+        RunReport::Ran {
+            mode: Mode::Normal,
+            outcome: Outcome::AllFilesChanged
+        }
+    );
+    assert_eq!(
+        bed.state().await.gate.map(|gate| gate.kind),
+        Some(GateKind::AllFilesChanged)
+    );
+    assert_eq!(read(&bed.remote, "only.txt"), "base");
+    assert_eq!(
+        bed.notices.bodies(),
+        ["Every file changed at once. Review before continuing."]
+    );
+
+    let reviewed = bed.preview(ReviewKind::Force).await.unwrap();
+    ConfirmMarker {
+        kind: ReviewKind::Force,
+        filters_hash: reviewed.filters_hash,
+    }
+    .save(&bed.paths, PAIR)
+    .await
+    .unwrap();
+    let confirmed = bed.run().await;
+
+    assert_eq!(
+        confirmed,
+        RunReport::Ran {
+            mode: Mode::Force,
+            outcome: Outcome::Ok
+        }
+    );
+    assert_eq!(read(&bed.remote, "only.txt"), "edited locally, longer");
+    assert!(bed.state().await.gate.is_none());
+}
+
+#[tokio::test]
 async fn changing_the_filters_sets_the_gate_and_syncs_nothing() {
     let Some(bed) = bed() else { return };
     write(&bed.local, "base.txt", "base");
