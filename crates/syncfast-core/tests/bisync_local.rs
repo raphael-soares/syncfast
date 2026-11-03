@@ -422,6 +422,11 @@ async fn new_local_file_in_a_pair_that_started_empty_on_both_sides_reaches_the_r
     assert_eq!(state.last_outcome, Some(LastOutcome::Ok));
     assert!(state.gate.is_none());
     assert_eq!(state.consecutive_failures, 0);
+    assert_eq!(
+        names(&bed.paths.runs_dir(PAIR)).len(),
+        2,
+        "the refused attempt leaves no log of its own: first sync plus this round"
+    );
     write(&bed.local, "second.txt", "again");
     assert_eq!(
         bed.run().await,

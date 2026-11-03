@@ -419,7 +419,11 @@ impl Round<'_> {
         let mut attempt = self.attempt(mode, started.clone()).await?;
         if mode == Mode::Normal && is_empty_prior_listing(attempt.exit_code, &attempt.lines) {
             mode = Mode::Resync;
+            let refused = attempt.log_path;
             attempt = self.attempt(mode, env.now()).await?;
+            if let Err(err) = tokio::fs::remove_file(&refused).await {
+                log::warn!("cannot delete {}: {err}", refused.display());
+            }
         }
         let Attempt {
             exit_code,
