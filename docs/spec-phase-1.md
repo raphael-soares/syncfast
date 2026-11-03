@@ -428,8 +428,11 @@ Cenários:
 | # | Condição | Decisão |
 |---|---|---|
 | 1 | `!pair_enabled` | `Skip(Paused)` |
-| 2 | `!local_exists` | `SetGate(local_missing)` |
+| 2 | `!local_exists` e gate `null` ou `local_missing` | `SetGate(local_missing)` |
+| 2b | `!local_exists` e qualquer outro gate | `Skip(Gated)`, o gate fica |
 | 3 | gate `local_missing` e local existe | trata como gate `null` e continua |
+| 3b | gate `config_error` (o par é válido, senão o `run` nem chega aqui) e `applied_filters_hash` não nulo | trata como gate `null` e continua |
+| 3c | gate `config_error` e `applied_filters_hash` nulo (nunca sincronizou) | `SetGate(needs_review_first_run)` |
 | 4 | `!online` | `Skip(Offline)` |
 | 5 | marker `resync` e gate ∈ `needs_review_*` e `marker.filters_hash == current` | `Run(Resync)` |
 | 6 | marker `force` e gate `too_many_deletes` ou `all_files_changed` e `marker.filters_hash == current` | `Run(Force)` |
@@ -438,7 +441,8 @@ Cenários:
 | 9 | `applied_filters_hash` não nulo e diferente de `current` | `SetGate(needs_review_filters_changed)` |
 | 10 | senão | `Run(Normal)` |
 
-- `config_error` e `auth_error` não têm marker. Eles saem do gate na próxima rodada depois que o usuário corrige: a GUI limpa o gate ao salvar config válida ou ao reconectar a conta, e então chama `Sync Now`.
+- `config_error` e `auth_error` não têm marker. `config_error` sai sozinho na próxima rodada com config válida (linhas 3b e 3c), mesmo sem GUI. `auth_error` sai pela GUI: ela limpa o gate ao reconectar a conta e então chama `Sync Now`.
+- Um gate nunca é sobrescrito por `local_missing` (linha 2b): uma revisão pendente (inclusive a primeira) sobrevive à pasta sumir e voltar. Quando `local_missing` ou `config_error` terminam, a chave `gate:<kind>` sai de `notified`, para a próxima ocorrência notificar de novo.
 - Mudar o filtro com gate `too_many_deletes` ou `all_files_changed` cai na linha 6 com hash diferente, depois na 7 e na 8. O gate continua até a próxima revisão.
 - Para isso não travar, a GUI, ao salvar filtros, troca qualquer gate `too_many_deletes` ou `all_files_changed` por `needs_review_filters_changed`.
 - Teste unitário para cada linha da tabela, mais o caso "needs_review → pausa → retoma → ainda pede revisão".
@@ -840,7 +844,7 @@ Toda tela é função de um `ViewModel` imutável e devolve `Vec<Action>`. O `ap
     4. Arquivo alterado no remoto → versão local antiga em `versions/<id>/<AAAAMMDD-HHMMSS>/`.
     5. Apagar 3 de 4 arquivos locais → gate `too_many_deletes`, remoto intacto. Marker `force` → remoto apagado, `ok`. Pasta com um só arquivo, editado no local → gate `all_files_changed`; marker `force` → remoto atualizado, `ok`.
     6. Mudar `filters` → gate `needs_review_filters_changed`, nada sincronizado.
-    7. Pasta local renomeada → gate `local_missing`. Pasta de volta → `run` normal, `ok`.
+    7. Pasta local renomeada → gate `local_missing`. Pasta de volta → `run` normal, `ok`. Partindo de `needs_review_first_run`: pasta some e volta, o gate continua e a revisão ainda é pedida.
     8. `needs_review` → `enabled = false` → `run` (Skip) → `enabled = true` → `run` ainda `Skip(Gated)`.
     9. `apply` em modo Off com par removido → arquivos de estado, filtro, `.md5` e workdir apagados; `versions/` mantido.
 - **Fronteira:** `boundary.rs` (passo 1).
