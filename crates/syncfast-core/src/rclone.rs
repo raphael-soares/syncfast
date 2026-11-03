@@ -128,6 +128,66 @@ impl Rclone {
             .collect())
     }
 
+    /// Remote names with their rclone type (`drive`, `local`...), in the
+    /// order rclone lists them.
+    ///
+    /// # Errors
+    /// rclone cannot run or fails.
+    pub async fn remote_types(&self) -> Result<Vec<(String, String)>, RcloneError> {
+        let stdout = self
+            .output(
+                "listremotes",
+                vec!["listremotes".into(), "--long".into()],
+                true,
+            )
+            .await?;
+        Ok(String::from_utf8_lossy(&stdout)
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .map(|(name, kind)| (name.trim().to_owned(), kind.trim().to_owned()))
+            .filter(|(name, _)| !name.is_empty())
+            .collect())
+    }
+
+    /// The `client_id` and `client_secret` saved for the remote `name`, so
+    /// that a sign-in again can start from them. `None` when the remote has
+    /// no such entry. Like the other dump readers, it never logs the dump.
+    ///
+    /// # Errors
+    /// rclone cannot run or fails, or prints something that is not the
+    /// expected JSON.
+    pub async fn drive_client_credentials(
+        &self,
+        name: &str,
+    ) -> Result<Option<(String, String)>, RcloneError> {
+        let stdout = self
+            .output("config dump", vec!["config".into(), "dump".into()], false)
+            .await?;
+        let mut remotes: BTreeMap<String, DumpedRemote> =
+            serde_json::from_slice(&stdout).map_err(|_| RcloneError::BadOutput("config dump"))?;
+        Ok(remotes.remove(name).map(|remote| {
+            (
+                remote.client_id.unwrap_or_default(),
+                remote.client_secret.unwrap_or_default(),
+            )
+        }))
+    }
+
+    /// Creates the folder `remote_path` (`gdrive:Notes/2026`) and the
+    /// folders above it that are missing.
+    ///
+    /// # Errors
+    /// rclone cannot run or fails.
+    pub async fn mkdir(&self, remote_path: &str) -> Result<(), RcloneError> {
+        self.output(
+            "mkdir",
+            ["mkdir", "--", remote_path].map(OsString::from).to_vec(),
+            true,
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Names of `drive` remotes whose `client_id` is absent or empty, so they
     /// use rclone's shared one. Sorted.
     ///
@@ -257,6 +317,7 @@ struct DumpedRemote {
     #[serde(rename = "type")]
     kind: Option<String>,
     client_id: Option<String>,
+    client_secret: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -500,6 +561,68 @@ mod tests {
             .unwrap();
 
         assert_eq!(files, ["a.txt"]);
+    }
+
+    #[tokio::test]
+    async fn remote_types_pairs_each_name_with_its_rclone_type() {
+        let Some((rclone, _dir)) = rclone_with("[a]\ntype = local\n\n[b]\ntype = drive\n") else {
+            return;
+        };
+
+        let remotes = rclone.remote_types().await.unwrap();
+
+        assert_eq!(
+            remotes,
+            [
+                ("a".to_owned(), "local".to_owned()),
+                ("b".to_owned(), "drive".to_owned())
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn mkdir_creates_the_folder_and_its_missing_parents() {
+        let Some((rclone, dir)) = rclone_with(LOCAL_REMOTE) else {
+            return;
+        };
+        let target = dir.path().join("root/new/deeper");
+
+        rclone
+            .mkdir(&format!("testremote:{}", target.display()))
+            .await
+            .unwrap();
+
+        assert!(target.is_dir());
+    }
+
+    #[tokio::test]
+    async fn drive_client_credentials_returns_what_is_saved_and_none_for_an_unknown_remote() {
+        let config = "\
+[own]
+type = drive
+client_id = 123.apps.googleusercontent.com
+client_secret = hunter2
+
+[shared]
+type = drive
+";
+        let Some((rclone, _dir)) = rclone_with(config) else {
+            return;
+        };
+
+        let own = rclone.drive_client_credentials("own").await.unwrap();
+        let shared = rclone.drive_client_credentials("shared").await.unwrap();
+        let unknown = rclone.drive_client_credentials("absent").await.unwrap();
+
+        assert_eq!(
+            own,
+            Some((
+                "123.apps.googleusercontent.com".to_owned(),
+                "hunter2".to_owned()
+            ))
+        );
+        assert_eq!(shared, Some((String::new(), String::new())));
+        assert_eq!(unknown, None);
     }
 
     #[tokio::test]
