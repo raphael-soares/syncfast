@@ -10,6 +10,7 @@ publish = false
 fastframe-file.workspace = true
 fastframe-instance.workspace = true
 fastframe-notifications.workspace = true
+futures-core.workspace = true
 globset.workspace = true
 inotify.workspace = true
 jiff.workspace = true

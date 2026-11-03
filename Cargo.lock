@@ -4014,6 +4014,7 @@ dependencies = [
  "clap",
  "fastframe-log",
  "jiff",
+ "serde_json",
  "syncfast-core",
  "tokio",
 ]
@@ -4026,6 +4027,7 @@ dependencies = [
  "fastframe-file",
  "fastframe-instance",
  "fastframe-notifications",
+ "futures-core",
  "globset",
  "inotify",
  "jiff",

@@ -145,6 +145,24 @@ impl Paths {
     pub fn lock_file(&self, pair_id: &str) -> PathBuf {
         self.runtime_subdir().join(format!("{pair_id}.lock"))
     }
+
+    /// Held by `syncfast apply` so two applies never interleave.
+    #[must_use]
+    pub fn apply_lock_file(&self) -> PathBuf {
+        self.runtime_subdir().join("apply.lock")
+    }
+
+    /// Where systemd looks for the user's units.
+    #[must_use]
+    pub fn systemd_user_dir(&self) -> PathBuf {
+        self.config_home.join("systemd").join("user")
+    }
+
+    /// Where `apply` writes the units when systemd is off (dev mode, tests).
+    #[must_use]
+    pub fn units_preview_dir(&self) -> PathBuf {
+        self.state_dir().join("units-preview")
+    }
 }
 
 fn current_uid() -> std::io::Result<u32> {
@@ -232,6 +250,12 @@ mod tests {
         assert_eq!(paths.runs_dir("p"), Path::new("/s/syncfast/pairs/p/runs"));
         assert_eq!(paths.versions_dir("p"), Path::new("/d/syncfast/versions/p"));
         assert_eq!(paths.lock_file("p"), Path::new("/r/syncfast/p.lock"));
+        assert_eq!(paths.apply_lock_file(), Path::new("/r/syncfast/apply.lock"));
+        assert_eq!(paths.systemd_user_dir(), Path::new("/c/systemd/user"));
+        assert_eq!(
+            paths.units_preview_dir(),
+            Path::new("/s/syncfast/units-preview")
+        );
     }
 
     #[test]

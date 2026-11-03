@@ -137,7 +137,7 @@ pub(crate) async fn lookup_pair(env: &RunEnv<'_>, pair_id: &str) -> Result<PairL
 
 /// Records `kind` as the gate, keeping `since` when the pair was already
 /// gated for the same reason.
-fn set_gate(state: &mut State, kind: GateKind, detail: String, now: Timestamp) {
+pub(crate) fn set_gate(state: &mut State, kind: GateKind, detail: String, now: Timestamp) {
     let since = state
         .gate
         .as_ref()
