@@ -2,13 +2,17 @@
 //! [`Action`]s the user asked for. It never does I/O: `app.rs` applies the
 //! actions after the frame.
 
+pub mod account_sheet;
 pub mod activity;
+pub mod add_sync;
 pub mod conflicts;
 pub mod detail;
 pub mod filters;
 pub mod format;
 pub mod relative;
+pub mod review;
 pub mod sidebar;
+pub mod welcome;
 pub mod widgets;
 
 use std::sync::Arc;
@@ -75,6 +79,30 @@ impl From<&PairSnapshot> for PairRow {
     }
 }
 
+/// One rclone remote (an account) as the screens show it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteRow {
+    pub name: String,
+    /// The rclone type, for example `drive` or `local`.
+    pub kind: String,
+    /// Only meaningful for `drive`: the remote has its own `client_id`.
+    pub own_client_id: bool,
+}
+
+impl RemoteRow {
+    #[must_use]
+    pub fn is_drive(&self) -> bool {
+        self.kind == "drive"
+    }
+
+    /// A Drive remote on rclone's shared client ID, which stops working in
+    /// 2026.
+    #[must_use]
+    pub fn shares_client_id(&self) -> bool {
+        self.is_drive() && !self.own_client_id
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ViewModel {
     pub pairs: Vec<PairRow>,
@@ -86,6 +114,7 @@ pub struct ViewModel {
     pub tab: DetailTab,
     /// The rounds of the selected sync; `None` until they are read.
     pub runs: Option<Arc<[RunEntry]>>,
+    pub remotes: Vec<RemoteRow>,
 }
 
 impl ViewModel {
@@ -131,6 +160,14 @@ pub enum Action {
     RemoveSync(String),
     /// Opens Settings on Accounts.
     OpenAccounts,
+    /// Opens the sheet that adds a Google Drive account.
+    AddAccount,
+    /// Opens the account sheet for an existing remote, to sign in again or
+    /// to give it the user's own client ID.
+    EditAccount(String),
+    Review(review::ReviewAction),
+    AddSyncSheet(add_sync::AddSyncAction),
+    Account(account_sheet::AccountAction),
 }
 
 /// The whole window: sidebar and detail.

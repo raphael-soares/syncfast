@@ -8,14 +8,17 @@ use fastframe_shell::window::Geometry;
 use fastframe_shell::{Closed, Headless, Resident, Waker};
 use jiff::Timestamp;
 use syncfast_core::paths::Paths;
+use syncfast_core::state::LastOutcome;
 
 use crate::backend::{Backend, Command, Event};
 use crate::gui_state::{self, GuiState};
 use crate::instance::{Inbox, Request};
 use crate::runs::RunEntry;
+use crate::sheets::{Sheets, Surroundings};
 use crate::snapshot::Snapshot;
 use crate::theme::{self, Palette, Themes};
 use crate::tray::{IconLook, PairView, Summary, SyncTray, TrayView, action as tray_action};
+use crate::ui::welcome::{self, WelcomeView};
 use crate::ui::{self, Action, DetailTab, PairRow, ViewModel};
 
 /// How long a hidden start waits for a panel to show the tray item before
@@ -73,6 +76,7 @@ pub struct App {
     /// last history request: the history is read again when any changes (a
     /// round that starts and ends between two polls included), not on every poll.
     runs_key: Option<RunsKey>,
+    sheets: Sheets,
 }
 
 impl App {
@@ -114,6 +118,7 @@ impl App {
             tab: DetailTab::default(),
             runs: None,
             runs_key: None,
+            sheets: Sheets::new(paths.home.clone(), paths.data_dir()),
         };
         if with_tray {
             app.tray = SyncTray::spawn(waker, app.tray_view());
@@ -155,6 +160,7 @@ impl App {
             now: Timestamp::now(),
             tab: self.tab,
             runs: self.runs_of_selected(),
+            remotes: self.sheets.remotes().to_vec(),
         }
     }
 
@@ -281,13 +287,44 @@ impl App {
         match event {
             Event::Snapshot(snapshot) => {
                 self.snapshot = snapshot;
+                self.finish_welcome();
                 self.load_runs_if_stale();
             }
             Event::Runs { pair, runs } => self.runs = Some((pair, runs)),
             Event::Themes(themes) => self.themes = themes,
             Event::SystemDark(dark) => self.system_dark = Some(dark),
             Event::Failed(text) => self.error = Some(text),
+            other => {
+                for command in self.sheets.handle_event(&other) {
+                    self.backend.send(command);
+                }
+            }
         }
+    }
+
+    /// The first round that ended well confirms the first sync: the welcome
+    /// screen never comes back.
+    fn finish_welcome(&mut self) {
+        let confirmed = self
+            .snapshot
+            .pairs
+            .iter()
+            .any(|pair| pair.state.last_outcome == Some(LastOutcome::Ok));
+        if confirmed && !self.gui.welcome_done {
+            self.gui.welcome_done = true;
+            self.mark_gui_dirty();
+        }
+    }
+
+    /// No syncs, none ever confirmed, and no config problem to show instead.
+    fn welcome_visible(&self) -> bool {
+        !self.gui.welcome_done
+            && self.snapshot.pairs.is_empty()
+            && self.snapshot.config_error.is_none()
+    }
+
+    fn pair_rows(&self) -> Vec<PairRow> {
+        self.snapshot.pairs.iter().map(PairRow::from).collect()
     }
 
     fn drain_inbox(&mut self) {
@@ -376,13 +413,38 @@ impl App {
     pub fn frame_ui(&mut self, ui: &mut egui::Ui) {
         let vm = self.view_model();
         let ctx = ui.ctx().clone();
-        let title = vm.title();
+        let welcome = self.welcome_visible();
+        let title = if welcome {
+            welcome::TITLE.to_owned()
+        } else {
+            vm.title()
+        };
         if self.title.as_deref() != Some(title.as_str()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title = Some(title);
         }
-        let mut actions = ui::shortcuts(&ctx, &vm);
-        actions.extend(ui::root(ui, &vm));
+        let mut actions = Vec::new();
+        if !self.sheets.is_open() {
+            actions.extend(ui::shortcuts(&ctx, &vm));
+        }
+        if welcome {
+            let view = WelcomeView {
+                has_remote: !vm.remotes.is_empty(),
+                has_sync: false,
+                reviewed: false,
+            };
+            actions.extend(welcome::show(ui, &view));
+        } else {
+            actions.extend(ui::root(ui, &vm));
+        }
+        actions.extend(self.sheets.show(&ctx, &vm.pairs));
+        let (commands, wait) = self.sheets.tick(Instant::now());
+        for command in commands {
+            self.backend.send(command);
+        }
+        if let Some(wait) = wait {
+            ctx.request_repaint_after(wait);
+        }
         self.actions.extend(actions);
         self.apply_actions(&ctx);
         ctx.request_repaint_after(REPAINT_EVERY);
@@ -428,13 +490,15 @@ impl App {
                     self.mark_gui_dirty();
                 }
             }
-            // TODO(#8): the Add Sync and Review sheets.
             // TODO(#9): Settings (also Accounts) and the Remove alert.
+            Action::OpenSettings | Action::RemoveSync(_) | Action::OpenAccounts => {}
             Action::AddSync
-            | Action::OpenSettings
             | Action::OpenReview(_)
-            | Action::RemoveSync(_)
-            | Action::OpenAccounts => {}
+            | Action::AddAccount
+            | Action::EditAccount(_)
+            | Action::Review(_)
+            | Action::AddSyncSheet(_)
+            | Action::Account(_) => self.apply_to_sheets(&action),
             Action::SyncNow(id) => {
                 self.error = None;
                 self.backend.send(Command::SyncNow(id));
@@ -479,6 +543,17 @@ impl App {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             }
+        }
+    }
+
+    fn apply_to_sheets(&mut self, action: &Action) {
+        let pairs = self.pair_rows();
+        let around = Surroundings {
+            pairs: &pairs,
+            welcome: self.welcome_visible(),
+        };
+        for command in self.sheets.apply(action, &around) {
+            self.backend.send(command);
         }
     }
 
@@ -585,7 +660,7 @@ impl Resident for App {
 mod tests {
     use syncfast_core::bisync_log::RunSummary;
     use syncfast_core::config::Pair;
-    use syncfast_core::state::{DisplayStatus, Gate, GateKind, LastRun, State};
+    use syncfast_core::state::{DisplayStatus, Gate, GateKind, LastOutcome, LastRun, State};
 
     use super::*;
     use crate::snapshot::PairSnapshot;
@@ -684,6 +759,49 @@ mod tests {
                 "{id}"
             );
         }
+    }
+
+    #[test]
+    fn welcome_shows_only_without_syncs_and_without_a_config_problem_until_confirmed() {
+        let (_dir, mut app) = app();
+        assert!(app.welcome_visible());
+
+        app.snapshot.config_error = Some("config.toml: broken".into());
+        assert!(!app.welcome_visible());
+
+        app.snapshot.config_error = None;
+        app.snapshot.pairs = vec![pair_with_gate("a", None)];
+        assert!(!app.welcome_visible());
+
+        app.snapshot.pairs.clear();
+        app.gui.welcome_done = true;
+        assert!(!app.welcome_visible());
+    }
+
+    #[test]
+    fn the_first_round_that_ends_well_ends_the_welcome_for_good_and_a_failed_one_does_not() {
+        let (_dir, mut app) = app();
+        let mut failed = pair_with_gate("a", None);
+        failed.state.last_outcome = Some(LastOutcome::Error);
+        let mut fine = pair_with_gate("b", None);
+        fine.state.last_outcome = Some(LastOutcome::Ok);
+
+        app.handle_event(Event::Snapshot(Snapshot {
+            config_error: None,
+            pairs: vec![failed],
+        }));
+        assert!(!app.gui.welcome_done);
+        assert!(app.gui_dirty_since.is_none());
+
+        app.handle_event(Event::Snapshot(Snapshot {
+            config_error: None,
+            pairs: vec![fine],
+        }));
+        assert!(app.gui.welcome_done);
+        assert!(app.gui_dirty_since.is_some());
+
+        app.handle_event(Event::Snapshot(Snapshot::default()));
+        assert!(app.gui.welcome_done, "it never comes back");
     }
 
     #[test]

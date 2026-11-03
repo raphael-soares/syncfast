@@ -4,27 +4,34 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use fastframe_shell::Waker;
+use syncfast_core::bisync::ReviewKind;
 use syncfast_core::config::Config;
 use syncfast_core::paths::Paths;
+use syncfast_core::preview::Preview;
 use syncfast_core::rclone::Rclone;
 use syncfast_core::state::is_running;
 use syncfast_core::units::{ApplyEnv, SystemdMode, UserSystemctl, apply};
 use syncfast_core::watch::{Trigger, trigger_for};
 use tokio::sync::{
-    Notify, mpsc::UnboundedReceiver, mpsc::UnboundedSender, mpsc::unbounded_channel,
+    Notify, mpsc::UnboundedReceiver, mpsc::UnboundedSender, mpsc::unbounded_channel, oneshot,
 };
+use tokio::task::AbortHandle;
 
 use crate::gui_state::{self, GuiState};
 use crate::instance::Inbox;
 use crate::notices::{Notices, notice_for};
 use crate::runs::{self, RunEntry};
+use crate::sheet_io::{self, PreviewFailure};
 use crate::snapshot::{self, Snapshot};
 use crate::theme::Themes;
+use crate::ui::RemoteRow;
+use crate::ui::account_sheet::{AccountMode, ConnectRequest, Secret};
+use crate::ui::add_sync::{LocalFacts, NewSync};
 
 const POLL_ACTIVE: Duration = Duration::from_secs(1);
 const POLL_VISIBLE: Duration = Duration::from_secs(2);
@@ -59,6 +66,36 @@ pub enum Command {
     OpenLocalFolder(PathBuf),
     /// The folder that keeps the saved versions of a sync.
     OpenVersionsFolder(String),
+    /// Read the rclone remotes again.
+    LoadRemotes,
+    /// The folders inside a remote path (`gdrive:Notes`).
+    ListDirs(String),
+    /// `rclone mkdir` of a remote path.
+    MakeRemoteDir(String),
+    /// What a path typed in the Add Sync sheet names on this computer.
+    CheckLocal(String),
+    CreateLocalDir(String),
+    /// Open the portal's folder dialog.
+    PickFolder,
+    /// Write a new sync into the config and `apply` it.
+    CreateSync(NewSync),
+    /// Dry run for the Review sheet. A new one replaces a running one.
+    Preview {
+        pair_id: String,
+        kind: ReviewKind,
+    },
+    CancelPreview,
+    /// The user confirmed the review: leave the marker and start a round.
+    ConfirmReview {
+        pair_id: String,
+        kind: ReviewKind,
+        filters_hash: String,
+    },
+    /// The saved client ID and secret of a Drive remote.
+    LoadCredentials(String),
+    ConnectAccount(ConnectRequest),
+    /// Kill the sign-in in progress.
+    CancelConnect,
 }
 
 /// What the backend tells the UI.
@@ -75,6 +112,33 @@ pub enum Event {
         pair: String,
         runs: Arc<[RunEntry]>,
     },
+    Remotes(Vec<RemoteRow>),
+    Dirs {
+        path: String,
+        result: Result<Vec<String>, String>,
+    },
+    RemoteDirMade {
+        path: String,
+        result: Result<(), String>,
+    },
+    LocalChecked(LocalFacts),
+    LocalCreated(Result<(), String>),
+    /// `None`: the dialog was dismissed.
+    FolderPicked(Option<PathBuf>),
+    /// The id of the sync that was created, or why it was not.
+    SyncCreated(Result<String, String>),
+    Preview {
+        pair_id: String,
+        result: Result<Preview, PreviewFailure>,
+    },
+    Credentials {
+        name: String,
+        client_id: String,
+        client_secret: Secret,
+    },
+    /// The sign-in ended: the account's name, or rclone's last error line.
+    /// A cancelled sign-in sends nothing.
+    Connected(Result<String, String>),
 }
 
 #[derive(Clone)]
@@ -205,6 +269,20 @@ struct Context {
     paths: Arc<Paths>,
     emitter: Emitter,
     refresh: Arc<Notify>,
+    tasks: Mutex<Tasks>,
+}
+
+/// The two jobs the user can cancel.
+#[derive(Default)]
+struct Tasks {
+    preview: Option<AbortHandle>,
+    connect: Option<oneshot::Sender<()>>,
+}
+
+impl Context {
+    fn tasks(&self) -> MutexGuard<'_, Tasks> {
+        self.tasks.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 }
 
 async fn run(
@@ -217,9 +295,11 @@ async fn run(
         paths,
         emitter,
         refresh: Arc::new(Notify::new()),
+        tasks: Mutex::new(Tasks::default()),
     });
     follow_appearance(&context);
     spawn_apply(&context);
+    spawn_load_remotes(&context);
     let mut visible = true;
     let mut last: Option<Snapshot> = None;
     loop {
@@ -255,6 +335,21 @@ async fn run(
                         let path = context.paths.versions_dir(&id);
                         spawn_open_folder(&context, path, "No versions are saved yet.");
                     }
+                    Command::LoadRemotes => spawn_load_remotes(&context),
+                    Command::ListDirs(path) => spawn_list_dirs(&context, path),
+                    Command::MakeRemoteDir(path) => spawn_make_remote_dir(&context, path),
+                    Command::CheckLocal(typed) => spawn_check_local(&context, typed),
+                    Command::CreateLocalDir(typed) => spawn_create_local(&context, typed),
+                    Command::PickFolder => spawn_pick_folder(&context),
+                    Command::CreateSync(new) => spawn_create_sync(&context, new),
+                    Command::Preview { pair_id, kind } => spawn_preview(&context, pair_id, kind),
+                    Command::CancelPreview => abort_preview(&context),
+                    Command::ConfirmReview { pair_id, kind, filters_hash } => {
+                        spawn_confirm_review(&context, pair_id, kind, filters_hash);
+                    }
+                    Command::LoadCredentials(name) => spawn_load_credentials(&context, name),
+                    Command::ConnectAccount(request) => spawn_connect(&context, request),
+                    Command::CancelConnect => cancel_connect(&context),
                 }
             }
             () = context.refresh.notified() => {}
@@ -469,6 +564,191 @@ async fn open_folder(opener: &std::ffi::OsStr, path: &Path, missing: &str) -> Re
     } else {
         Err(format!("Cannot open {}.", path.display()))
     }
+}
+
+fn rclone() -> Result<Rclone, String> {
+    Rclone::from_env().map_err(|err| err.to_string())
+}
+
+async fn publish_remotes(context: &Context) {
+    let loaded = match rclone() {
+        Ok(rclone) => sheet_io::load_remotes(&rclone).await,
+        Err(text) => Err(text),
+    };
+    match loaded {
+        Ok(remotes) => context.emitter.send(Event::Remotes(remotes)),
+        Err(text) => fail(context, text),
+    }
+}
+
+fn spawn_load_remotes(context: &Arc<Context>) {
+    let context = Arc::clone(context);
+    tokio::spawn(async move { publish_remotes(&context).await });
+}
+
+fn spawn_list_dirs(context: &Arc<Context>, path: String) {
+    let context = Arc::clone(context);
+    tokio::spawn(async move {
+        let result = match rclone() {
+            Ok(rclone) => sheet_io::list_dirs(&rclone, &path).await,
+            Err(text) => Err(text),
+        };
+        context.emitter.send(Event::Dirs { path, result });
+    });
+}
+
+fn spawn_make_remote_dir(context: &Arc<Context>, path: String) {
+    let context = Arc::clone(context);
+    tokio::spawn(async move {
+        let result = match rclone() {
+            Ok(rclone) => sheet_io::make_remote_dir(&rclone, &path).await,
+            Err(text) => Err(text),
+        };
+        context.emitter.send(Event::RemoteDirMade { path, result });
+    });
+}
+
+fn spawn_check_local(context: &Arc<Context>, typed: String) {
+    let context = Arc::clone(context);
+    tokio::spawn(async move {
+        let facts = sheet_io::check_local(&context.paths.home, &typed).await;
+        context.emitter.send(Event::LocalChecked(facts));
+    });
+}
+
+fn spawn_create_local(context: &Arc<Context>, typed: String) {
+    let context = Arc::clone(context);
+    tokio::spawn(async move {
+        let result = sheet_io::create_local(&context.paths.home, &typed).await;
+        context.emitter.send(Event::LocalCreated(result));
+    });
+}
+
+fn spawn_pick_folder(context: &Arc<Context>) {
+    let context = Arc::clone(context);
+    tokio::spawn(async move {
+        let picked = rfd::AsyncFileDialog::new()
+            .set_title("Choose Folder")
+            .pick_folder()
+            .await;
+        let path = picked.map(|handle| handle.path().to_path_buf());
+        context.emitter.send(Event::FolderPicked(path));
+    });
+}
+
+fn spawn_create_sync(context: &Arc<Context>, new: NewSync) {
+    let context = Arc::clone(context);
+    tokio::spawn(async move {
+        let id = new.id.clone();
+        let created = match rclone() {
+            Ok(rclone) => sheet_io::create_sync(&context.paths, &rclone, new).await,
+            Err(text) => Err(text),
+        };
+        let result = match created {
+            Ok(()) => {
+                if let Err(text) = apply_config(&context.paths).await {
+                    fail(&context, text);
+                }
+                Ok(id)
+            }
+            Err(text) => Err(text),
+        };
+        context.emitter.send(Event::SyncCreated(result));
+        context.refresh.notify_one();
+    });
+}
+
+fn abort_preview(context: &Context) {
+    if let Some(running) = context.tasks().preview.take() {
+        running.abort();
+    }
+}
+
+fn spawn_preview(context: &Arc<Context>, pair_id: String, kind: ReviewKind) {
+    abort_preview(context);
+    let task_context = Arc::clone(context);
+    let job = tokio::spawn(async move {
+        let result = match rclone() {
+            Ok(rclone) => sheet_io::run_preview(&task_context.paths, &rclone, &pair_id, kind).await,
+            Err(text) => Err(PreviewFailure::Failed(text)),
+        };
+        task_context
+            .emitter
+            .send(Event::Preview { pair_id, result });
+    });
+    context.tasks().preview = Some(job.abort_handle());
+}
+
+fn spawn_confirm_review(
+    context: &Arc<Context>,
+    pair_id: String,
+    kind: ReviewKind,
+    filters_hash: String,
+) {
+    let context = Arc::clone(context);
+    tokio::spawn(async move {
+        match sheet_io::confirm_review(&context.paths, &pair_id, kind, filters_hash).await {
+            Ok(()) => spawn_sync(&context, vec![pair_id]),
+            Err(text) => fail(&context, text),
+        }
+    });
+}
+
+fn spawn_load_credentials(context: &Arc<Context>, name: String) {
+    let context = Arc::clone(context);
+    tokio::spawn(async move {
+        let loaded = match rclone() {
+            Ok(rclone) => sheet_io::load_credentials(&rclone, &name).await,
+            Err(text) => Err(text),
+        };
+        match loaded {
+            Ok((client_id, client_secret)) => context.emitter.send(Event::Credentials {
+                name,
+                client_id,
+                client_secret,
+            }),
+            Err(text) => fail(&context, text),
+        }
+    });
+}
+
+fn cancel_connect(context: &Context) {
+    if let Some(cancel) = context.tasks().connect.take() {
+        let _ = cancel.send(());
+    }
+}
+
+fn spawn_connect(context: &Arc<Context>, request: ConnectRequest) {
+    let (cancel, cancelled) = oneshot::channel();
+    context.tasks().connect = Some(cancel);
+    let context = Arc::clone(context);
+    tokio::spawn(async move {
+        let account = match &request.mode {
+            AccountMode::Add => request.name.clone(),
+            AccountMode::Update { name } => name.clone(),
+        };
+        let signed_in = match rclone() {
+            Ok(rclone) => sheet_io::connect(&rclone, &request, cancelled).await,
+            Err(text) => Err(text),
+        };
+        match signed_in {
+            Ok(true) => reconnected(&context, account).await,
+            Ok(false) => {}
+            Err(text) => context.emitter.send(Event::Connected(Err(text))),
+        }
+    });
+}
+
+/// A sign-in worked: the remote list changed, and syncs that waited for
+/// access can run.
+async fn reconnected(context: &Arc<Context>, account: String) {
+    publish_remotes(context).await;
+    match sheet_io::clear_auth_gates(&context.paths, &account).await {
+        Ok(ids) if ids.is_empty() => {}
+        Ok(ids) => spawn_sync(context, ids),
+        Err(text) => fail(context, text),
+    }
+    context.emitter.send(Event::Connected(Ok(account)));
 }
 
 #[cfg(test)]
