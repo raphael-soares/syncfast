@@ -52,9 +52,23 @@ pub fn decide(input: &DecideInput<'_>) -> Decision {
         return Decision::Skip(SkipReason::Paused);
     }
     if !input.local_exists {
-        return Decision::SetGate(GateKind::LocalMissing);
+        // Another gate keeps its place: a review still pending must survive
+        // the folder going away and coming back.
+        return if matches!(input.gate, None | Some(GateKind::LocalMissing)) {
+            Decision::SetGate(GateKind::LocalMissing)
+        } else {
+            Decision::Skip(SkipReason::Gated)
+        };
     }
-    let gate = input.gate.filter(|kind| *kind != GateKind::LocalMissing);
+    let gate = match input.gate {
+        // The pair is valid again. One that never synced still owes its
+        // first review.
+        Some(GateKind::ConfigError) if input.applied_filters_hash.is_none() => {
+            return Decision::SetGate(GateKind::NeedsReviewFirstRun);
+        }
+        Some(GateKind::LocalMissing | GateKind::ConfigError) => None,
+        other => other,
+    };
     if !input.online {
         return Decision::Skip(SkipReason::Offline);
     }
@@ -247,7 +261,7 @@ mod tests {
         for gate in [
             GateKind::NeedsReviewFirstRun,
             GateKind::TooManyDeletes,
-            GateKind::ConfigError,
+            GateKind::AllFilesChanged,
             GateKind::AuthError,
         ] {
             let decision = decide(&DecideInput {
@@ -257,6 +271,59 @@ mod tests {
 
             assert_eq!(decision, Decision::Skip(SkipReason::Gated), "{gate:?}");
         }
+    }
+
+    #[test]
+    fn review_gate_is_kept_while_the_local_folder_is_missing() {
+        for gate in [
+            GateKind::NeedsReviewFirstRun,
+            GateKind::NeedsReviewFiltersChanged,
+            GateKind::NeedsReviewCriticalError,
+            GateKind::TooManyDeletes,
+            GateKind::AllFilesChanged,
+            GateKind::AuthError,
+            GateKind::ConfigError,
+        ] {
+            let decision = decide(&DecideInput {
+                local_exists: false,
+                gate: Some(gate),
+                ..input()
+            });
+
+            assert_eq!(decision, Decision::Skip(SkipReason::Gated), "{gate:?}");
+        }
+    }
+
+    #[test]
+    fn local_missing_gate_stays_set_while_the_folder_is_still_missing() {
+        let decision = decide(&DecideInput {
+            local_exists: false,
+            gate: Some(GateKind::LocalMissing),
+            ..input()
+        });
+
+        assert_eq!(decision, Decision::SetGate(GateKind::LocalMissing));
+    }
+
+    #[test]
+    fn config_error_gate_of_a_valid_pair_is_ignored_once_it_has_synced() {
+        let decision = decide(&DecideInput {
+            gate: Some(GateKind::ConfigError),
+            ..input()
+        });
+
+        assert_eq!(decision, Decision::Run(Mode::Normal));
+    }
+
+    #[test]
+    fn config_error_gate_of_a_valid_pair_that_never_synced_asks_for_the_first_review() {
+        let decision = decide(&DecideInput {
+            gate: Some(GateKind::ConfigError),
+            applied_filters_hash: None,
+            ..input()
+        });
+
+        assert_eq!(decision, Decision::SetGate(GateKind::NeedsReviewFirstRun));
     }
 
     #[test]

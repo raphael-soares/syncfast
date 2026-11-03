@@ -286,14 +286,14 @@ pub async fn run(env: &RunEnv<'_>, pair_id: &str) -> Result<RunReport, RunError>
         ConfirmMarker::remove(env.paths, pair_id).await?;
     }
     let mut dirty = false;
-    if gate_kind == Some(GateKind::LocalMissing)
+    // These two gates end by themselves once the cause is gone; the next
+    // announcement of the same gate must notify again.
+    if let Some(kind @ (GateKind::LocalMissing | GateKind::ConfigError)) = gate_kind
         && local_exists
         && decision != Decision::Skip(SkipReason::Paused)
     {
         state.gate = None;
-        state
-            .notified
-            .retain(|key| *key != GateKind::LocalMissing.notified_key());
+        state.notified.retain(|key| *key != kind.notified_key());
         dirty = true;
     }
     match decision {
@@ -505,10 +505,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let rclone = script(
             dir.path(),
-            "trap 'exit 42' INT\nwhile true; do sleep 0.05; done",
+            "trap 'exit 42' INT\ntouch \"$0.ready\"\nwhile true; do sleep 0.05; done",
         );
+        let ready = dir.path().join("fake-rclone.sh.ready");
         let interrupter = async {
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while !ready.exists() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
             let own = Pid::from_raw(i32::try_from(std::process::id()).unwrap()).unwrap();
             rustix::process::kill_process(own, Signal::INT).unwrap();
         };
@@ -516,6 +523,49 @@ mod tests {
         let (code, ()) = tokio::join!(execute(&rclone, vec![]), interrupter);
 
         assert_eq!(code.unwrap(), 42);
+    }
+
+    fn stamp_clock() -> Zoned {
+        jiff::civil::date(2026, 1, 2)
+            .at(15, 4, 5, 0)
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .unwrap()
+    }
+
+    #[test]
+    fn fresh_start_keeps_the_clock_when_no_log_has_that_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(
+            dir.path().join("h"),
+            dir.path().join("c"),
+            dir.path().join("s"),
+            dir.path().join("d"),
+            dir.path().join("r"),
+        );
+
+        let now = fresh_start(&paths, "p", Mode::Normal, stamp_clock());
+
+        assert_eq!(now, stamp_clock());
+    }
+
+    #[test]
+    fn fresh_start_moves_one_second_on_for_each_log_already_taking_the_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(
+            dir.path().join("h"),
+            dir.path().join("c"),
+            dir.path().join("s"),
+            dir.path().join("d"),
+            dir.path().join("r"),
+        );
+        std::fs::create_dir_all(paths.runs_dir("p")).unwrap();
+        for name in ["20260102-150405.jsonl", "20260102-150406.jsonl"] {
+            std::fs::write(paths.runs_dir("p").join(name), "").unwrap();
+        }
+
+        let now = fresh_start(&paths, "p", Mode::Normal, stamp_clock());
+
+        assert_eq!(now.strftime("%Y%m%d-%H%M%S").to_string(), "20260102-150407");
     }
 
     #[test]
