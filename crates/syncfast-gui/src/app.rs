@@ -424,14 +424,13 @@ impl App {
             self.title = Some(title);
         }
         let mut actions = Vec::new();
-        if !self.sheets.is_open() {
-            actions.extend(ui::shortcuts(&ctx, &vm));
-        }
+        actions.extend(modal_shortcuts(
+            ui::shortcuts(&ctx, &vm),
+            self.sheets.is_open(),
+        ));
         if welcome {
             let view = WelcomeView {
                 has_remote: !vm.remotes.is_empty(),
-                has_sync: false,
-                reviewed: false,
             };
             actions.extend(welcome::show(ui, &view));
         } else {
@@ -592,6 +591,18 @@ impl App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
         }
     }
+}
+
+/// With a sheet open, only the window's own shortcuts work: hide and quit.
+/// The rest would act on what the sheet covers.
+fn modal_shortcuts(actions: Vec<Action>, sheet_open: bool) -> Vec<Action> {
+    if !sheet_open {
+        return actions;
+    }
+    actions
+        .into_iter()
+        .filter(|action| matches!(action, Action::HideWindow | Action::Quit))
+        .collect()
 }
 
 /// What a close request of the window means, given what the app planned and
@@ -808,6 +819,23 @@ mod tests {
 
         app.handle_event(Event::Snapshot(Snapshot::default()));
         assert!(app.gui.welcome_done, "it never comes back");
+    }
+
+    #[test]
+    fn with_a_sheet_open_only_hide_and_quit_shortcuts_remain() {
+        let all = vec![
+            Action::AddSync,
+            Action::SyncNow("a".into()),
+            Action::OpenSettings,
+            Action::HideWindow,
+            Action::Quit,
+        ];
+
+        assert_eq!(
+            modal_shortcuts(all.clone(), true),
+            [Action::HideWindow, Action::Quit]
+        );
+        assert_eq!(modal_shortcuts(all.clone(), false), all);
     }
 
     #[test]
