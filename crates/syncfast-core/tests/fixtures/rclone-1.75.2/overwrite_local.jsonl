@@ -1,0 +1,20 @@
+{"time":"2026-11-03T13:45:46.541403496-03:00","level":"info","msg":"Setting --ignore-listing-checksum as neither --checksum nor --compare checksum are set.","source":"bisync/compare.go:90"}
+{"time":"2026-11-03T13:45:46.541690646-03:00","level":"info","msg":"Bisyncing with Comparison Settings: \n{\n\t\"Modtime\": true,\n\t\"Size\": true,\n\t\"Checksum\": false,\n\t\"HashType1\": 0,\n\t\"HashType2\": 0,\n\t\"NoSlowHash\": false,\n\t\"SlowHashSyncOnly\": false,\n\t\"SlowHashDetected\": true,\n\t\"DownloadHash\": false\n}\n","source":"bisync/compare.go:108"}
+{"time":"2026-11-03T13:45:46.542039057-03:00","level":"info","msg":"lock file renewed for 2m0s. New expiration: 2026-11-03 13:47:46.541910422 -0300 -03 m=+120.061459774","source":"bisync/lockfile.go:91"}
+{"time":"2026-11-03T13:45:46.542205811-03:00","level":"info","msg":"Synching Path1 \"/tmp/tmp.qqL7n4YNvC/local/\" with Path2 \"/tmp/tmp.qqL7n4YNvC/remote/\"","source":"bisync/operations.go:238"}
+{"time":"2026-11-03T13:45:46.542263816-03:00","level":"info","msg":"Using filters file /tmp/tmp.qqL7n4YNvC/state/filters/x.txt","source":"bisync/cmd.go:240"}
+{"time":"2026-11-03T13:45:46.543481294-03:00","level":"info","msg":"Building Path1 and Path2 listings","source":"bisync/operations.go:310"}
+{"time":"2026-11-03T13:45:46.543952462-03:00","level":"info","msg":"Path1 checking for diffs","source":"bisync/operations.go:320"}
+{"time":"2026-11-03T13:45:46.544103067-03:00","level":"info","msg":"Path2 checking for diffs","source":"bisync/operations.go:328"}
+{"time":"2026-11-03T13:45:46.544206236-03:00","level":"info","msg":"- Path2             File changed: size (larger), time (newer)   - doc.txt","source":"bisync/deltas.go:232"}
+{"time":"2026-11-03T13:45:46.544259128-03:00","level":"info","msg":"Path2:    1 changes:    0 new,    1 modified,    0 deleted","source":"bisync/deltas.go:126"}
+{"time":"2026-11-03T13:45:46.544296982-03:00","level":"info","msg":"(Modified:    1 newer,    0 older,    1 larger,    0 smaller)","source":"bisync/deltas.go:145"}
+{"time":"2026-11-03T13:45:46.544331824-03:00","level":"info","msg":"Applying changes","source":"bisync/operations.go:381"}
+{"time":"2026-11-03T13:45:46.544471522-03:00","level":"info","msg":"- Path2             Queue copy to Path1                         - /tmp/tmp.qqL7n4YNvC/local/doc.txt","source":"bisync/deltas.go:475"}
+{"time":"2026-11-03T13:45:46.544526821-03:00","level":"info","msg":"- Path2             Do queued copies to                         - Path1","source":"bisync/deltas.go:487"}
+{"time":"2026-11-03T13:45:46.545360913-03:00","level":"info","msg":"Moved (server-side)","object":"doc.txt","objectType":"*local.Object","source":"operations/operations.go:495"}
+{"time":"2026-11-03T13:45:46.545862376-03:00","level":"info","msg":"Copied (new)","size":12,"object":"doc.txt","objectType":"*local.Object","source":"operations/copy.go:382"}
+{"time":"2026-11-03T13:45:46.546261082-03:00","level":"info","msg":"Updating listings","source":"bisync/operations.go:395"}
+{"time":"2026-11-03T13:45:46.546835837-03:00","level":"info","msg":"Validating listings for Path1 \"/tmp/tmp.qqL7n4YNvC/local/\" vs Path2 \"/tmp/tmp.qqL7n4YNvC/remote/\"","source":"bisync/operations.go:434"}
+{"time":"2026-11-03T13:45:46.546973154-03:00","level":"info","msg":"Bisync successful","source":"bisync/operations.go:218"}
+{"time":"2026-11-03T13:45:46.547084363-03:00","level":"notice","msg":"\nTransferred:   \t         12 B / 12 B, 100%, 0 B/s, ETA -\nChecks:                 6 / 6, 100%, Listed 6\nRenamed:                1\nTransferred:            1 / 1, 100%\nServer Side Moves:      1 @ 5 B\nElapsed time:         0.0s\n\n","stats":{"bytes":12,"checks":6,"deletedDirs":0,"deletes":0,"elapsedTime":0.003428174,"errors":0,"eta":null,"fatalError":false,"listed":6,"renames":1,"retryError":false,"serverSideCopies":0,"serverSideCopyBytes":0,"serverSideMoveBytes":5,"serverSideMoves":1,"speed":0,"totalBytes":12,"totalChecks":6,"totalTransfers":1,"transferTime":0.000985918,"transfers":1},"source":"accounting/stats.go:549"}

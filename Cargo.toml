@@ -1,0 +1,87 @@
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+version = "0.1.0"
+
+[workspace.dependencies]
+anyhow = "1"
+cargo_metadata = "0.21"
+clap = { version = "4.5", features = ["derive"] }
+eframe = { version = "0.36.2", default-features = false, features = ["accesskit", "glow", "default_fonts", "wayland", "x11", "persistence"] }
+egui = "0.36.2"
+egui_extras = { version = "0.36.2", features = ["svg"] }
+egui_kittest = "0.36.2"
+globset = "0.4"
+inotify = { version = "0.11", features = ["stream"] }
+jiff = "0.2"
+log = "0.4"
+regex = "1"
+resvg = { version = "0.45", default-features = false }
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "wayland"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "2"
+tokio = "1"
+toml = "0.9"
+toml_edit = "0.23"
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+
+fastframe-file = { git = "https://github.com/crmne/fastframe", tag = "v0.15.6" }
+fastframe-fonts = { git = "https://github.com/crmne/fastframe", tag = "v0.15.6" }
+fastframe-icons = { git = "https://github.com/crmne/fastframe", tag = "v0.15.6" }
+fastframe-instance = { git = "https://github.com/crmne/fastframe", tag = "v0.15.6" }
+fastframe-log = { git = "https://github.com/crmne/fastframe", tag = "v0.15.6" }
+fastframe-notifications = { git = "https://github.com/crmne/fastframe", tag = "v0.15.6" }
+fastframe-shell = { git = "https://github.com/crmne/fastframe", tag = "v0.15.6" }
+fastframe-text = { git = "https://github.com/crmne/fastframe", tag = "v0.15.6", features = ["watch"] }
+fastframe-theme = { git = "https://github.com/crmne/fastframe", tag = "v0.15.6" }
+fastframe-tray = { git = "https://github.com/crmne/fastframe", tag = "v0.15.6" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+module_name_repetitions = "allow"
+
+[patch.crates-io]
+ecolor = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
+eframe = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
+egui = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
+egui-wgpu = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
+egui-winit = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
+egui_extras = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
+egui_glow = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
+egui_kittest = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
+emath = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
+epaint = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
+epaint_default_fonts = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
+winit = { git = "https://github.com/crmne/winit", rev = "ed7caa9023f10b397f5b6ec8284a840cbd8a6f65" }
