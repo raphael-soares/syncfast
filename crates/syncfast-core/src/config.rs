@@ -417,7 +417,9 @@ fn reject_unknown_keys(document: &DocumentMut) -> Result<(), GlobalConfigError> 
     Ok(())
 }
 
-fn expand_tilde(path: &Path, home: &Path) -> PathBuf {
+/// `path` with a leading `~` replaced by `home`.
+#[must_use]
+pub fn expand_tilde(path: &Path, home: &Path) -> PathBuf {
     match path.strip_prefix("~") {
         Ok(rest) => home.join(rest),
         Err(_) => path.to_owned(),
