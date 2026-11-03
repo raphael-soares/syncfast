@@ -1,0 +1,31 @@
+{"time":"2026-11-03T12:40:41.600047792-03:00","level":"info","msg":"Setting --ignore-listing-checksum as neither --checksum nor --compare checksum are set.","source":"bisync/compare.go:90"}
+{"time":"2026-11-03T12:40:41.600343311-03:00","level":"info","msg":"Bisyncing with Comparison Settings: \n{\n\t\"Modtime\": true,\n\t\"Size\": true,\n\t\"Checksum\": false,\n\t\"HashType1\": 0,\n\t\"HashType2\": 0,\n\t\"NoSlowHash\": false,\n\t\"SlowHashSyncOnly\": false,\n\t\"SlowHashDetected\": true,\n\t\"DownloadHash\": false\n}\n","source":"bisync/compare.go:108"}
+{"time":"2026-11-03T12:40:41.600608579-03:00","level":"info","msg":"lock file renewed for 2m0s. New expiration: 2026-11-03 12:42:41.600514956 -0300 -03 m=+120.223749613","source":"bisync/lockfile.go:91"}
+{"time":"2026-11-03T12:40:41.603289364-03:00","level":"info","msg":"Synching Path1 \"/tmp/tmp.heoDddTS4C/local/\" with Path2 \"/tmp/tmp.heoDddTS4C/remote/\"","source":"bisync/operations.go:238"}
+{"time":"2026-11-03T12:40:41.603405951-03:00","level":"info","msg":"Using filters file /tmp/tmp.heoDddTS4C/state/filters/x.txt","source":"bisync/cmd.go:240"}
+{"time":"2026-11-03T12:40:41.604502819-03:00","level":"info","msg":"Building Path1 and Path2 listings","source":"bisync/operations.go:310"}
+{"time":"2026-11-03T12:40:41.605043643-03:00","level":"info","msg":"Path1 checking for diffs","source":"bisync/operations.go:320"}
+{"time":"2026-11-03T12:40:41.605163632-03:00","level":"info","msg":"- Path1             File changed: size (larger), time (newer)   - doc.txt","source":"bisync/deltas.go:232"}
+{"time":"2026-11-03T12:40:41.605221216-03:00","level":"info","msg":"Path1:    1 changes:    0 new,    1 modified,    0 deleted","source":"bisync/deltas.go:126"}
+{"time":"2026-11-03T12:40:41.605257667-03:00","level":"info","msg":"(Modified:    1 newer,    0 older,    1 larger,    0 smaller)","source":"bisync/deltas.go:145"}
+{"time":"2026-11-03T12:40:41.605292122-03:00","level":"info","msg":"Path2 checking for diffs","source":"bisync/operations.go:328"}
+{"time":"2026-11-03T12:40:41.605371249-03:00","level":"info","msg":"- Path2             File changed: size (larger), time (newer)   - doc.txt","source":"bisync/deltas.go:232"}
+{"time":"2026-11-03T12:40:41.605419889-03:00","level":"info","msg":"Path2:    1 changes:    0 new,    1 modified,    0 deleted","source":"bisync/deltas.go:126"}
+{"time":"2026-11-03T12:40:41.605455097-03:00","level":"info","msg":"(Modified:    1 newer,    0 older,    1 larger,    0 smaller)","source":"bisync/deltas.go:145"}
+{"time":"2026-11-03T12:40:41.605487022-03:00","level":"info","msg":"Applying changes","source":"bisync/operations.go:381"}
+{"time":"2026-11-03T12:40:41.605604706-03:00","level":"notice","msg":"- WARNING           New or changed in both paths                - doc.txt","source":"bisync/deltas.go:391"}
+{"time":"2026-11-03T12:40:41.605658326-03:00","level":"info","msg":"Path2 is newer. Path1: 2026-01-01 11:00:00 -0300 -03, Path2: 2026-01-01 12:00:00 -0300 -03, Difference: 1h0m0s","object":"doc.txt","objectType":"string","source":"bisync/resolve.go:401"}
+{"time":"2026-11-03T12:40:41.605703951-03:00","level":"info","msg":"The winner is: Path2","object":"doc.txt","objectType":"string","source":"bisync/resolve.go:143"}
+{"time":"2026-11-03T12:40:41.605763549-03:00","level":"notice","msg":"- Path1             Renaming Path1 copy                         - /tmp/tmp.heoDddTS4C/local/doc.conflict1.txt","source":"bisync/resolve.go:318"}
+{"time":"2026-11-03T12:40:41.605945566-03:00","level":"info","msg":"Moved (server-side) to: doc.conflict1.txt","object":"doc.txt","objectType":"*local.Object","source":"operations/operations.go:493"}
+{"time":"2026-11-03T12:40:41.606115693-03:00","level":"notice","msg":"- Path1             Queue copy to Path2                         - /tmp/tmp.heoDddTS4C/remote/doc.conflict1.txt","source":"bisync/resolve.go:329"}
+{"time":"2026-11-03T12:40:41.60617615-03:00","level":"notice","msg":"- Path2             Not renaming Path2 copy, as it was determined the winner - /tmp/tmp.heoDddTS4C/remote/doc.txt","source":"bisync/resolve.go:314"}
+{"time":"2026-11-03T12:40:41.60621788-03:00","level":"notice","msg":"- Path2             Queue copy to Path1                         - /tmp/tmp.heoDddTS4C/local/doc.txt","source":"bisync/resolve.go:329"}
+{"time":"2026-11-03T12:40:41.606273427-03:00","level":"info","msg":"- Path2             Do queued copies to                         - Path1","source":"bisync/deltas.go:487"}
+{"time":"2026-11-03T12:40:41.607269218-03:00","level":"info","msg":"Copied (new)","size":19,"object":"doc.txt","objectType":"*local.Object","source":"operations/copy.go:382"}
+{"time":"2026-11-03T12:40:41.607695612-03:00","level":"info","msg":"- Path1             Do queued copies to                         - Path2","source":"bisync/deltas.go:503"}
+{"time":"2026-11-03T12:40:41.608337206-03:00","level":"info","msg":"Copied (new)","size":11,"object":"doc.conflict1.txt","objectType":"*local.Object","source":"operations/copy.go:382"}
+{"time":"2026-11-03T12:40:41.60852417-03:00","level":"info","msg":"Updating listings","source":"bisync/operations.go:395"}
+{"time":"2026-11-03T12:40:41.610247212-03:00","level":"info","msg":"Validating listings for Path1 \"/tmp/tmp.heoDddTS4C/local/\" vs Path2 \"/tmp/tmp.heoDddTS4C/remote/\"","source":"bisync/operations.go:434"}
+{"time":"2026-11-03T12:40:41.610449339-03:00","level":"info","msg":"Bisync successful","source":"bisync/operations.go:218"}
+{"time":"2026-11-03T12:40:41.612981858-03:00","level":"notice","msg":"\nTransferred:   \t         41 B / 41 B, 100%, 0 B/s, ETA -\nChecks:                 4 / 4, 100%, Listed 6\nRenamed:                1\nTransferred:            3 / 3, 100%\nServer Side Moves:      1 @ 11 B\nElapsed time:         0.0s\n\n","stats":{"bytes":41,"checks":4,"deletedDirs":0,"deletes":0,"elapsedTime":0.008227586,"errors":0,"eta":null,"fatalError":false,"listed":6,"renames":1,"retryError":false,"serverSideCopies":0,"serverSideCopyBytes":0,"serverSideMoveBytes":11,"serverSideMoves":1,"speed":0,"totalBytes":41,"totalChecks":4,"totalTransfers":3,"transferTime":0.00087283,"transfers":3},"source":"accounting/stats.go:549"}
