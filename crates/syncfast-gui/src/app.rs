@@ -445,6 +445,12 @@ impl App {
         if let Some(wait) = wait {
             ctx.request_repaint_after(wait);
         }
+        // An action changes what the next frame draws (a sheet opens, a tab
+        // changes); without this the window shows the old state until the
+        // next input.
+        if !actions.is_empty() {
+            ctx.request_repaint();
+        }
         self.actions.extend(actions);
         self.apply_actions(&ctx);
         ctx.request_repaint_after(REPAINT_EVERY);
