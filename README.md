@@ -12,7 +12,7 @@ just check
 just run-gui-dev
 ```
 
-`just run-gui-dev` and `just run-cli-dev` run against an isolated `./.dev/` tree with a local rclone remote (`devremote`) and no systemd. `just dev-reset` wipes it.
+`just run-gui-dev` and `just run-cli-dev` run against an isolated `./.dev/` tree with a rclone remote (`devremote`, an alias of `./.dev/remote`) and no systemd. `just dev-reset` wipes it.
 
 If the build reports a missing native library, install the one named in the error with `pacman -S --needed`. Likely candidates: `libxkbcommon wayland libx11 libxcursor libxrandr libxi mesa fontconfig dbus`.
 

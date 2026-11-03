@@ -16,7 +16,7 @@ capture-fixtures *scenarios:
 
 dev-env:
     mkdir -p .dev/config/syncfast .dev/state .dev/data .dev/run .dev/remote
-    printf '[devremote]\ntype = local\n' > .dev/rclone.conf
+    printf '[devremote]\ntype = alias\nremote = %s/.dev/remote\n' "$PWD" > .dev/rclone.conf
 
 # The Wayland socket lives in the real XDG_RUNTIME_DIR, which dev mode replaces.
 run-gui-dev: dev-env
