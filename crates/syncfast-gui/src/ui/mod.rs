@@ -215,6 +215,8 @@ pub enum Action {
         presets: Vec<String>,
         rules: Vec<String>,
     },
+    /// The user edited the filters again: the `Saved.` notice goes away.
+    DismissFiltersSaved(String),
 }
 
 /// The whole window: sidebar and detail.

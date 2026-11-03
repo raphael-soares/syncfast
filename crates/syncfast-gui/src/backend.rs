@@ -581,8 +581,9 @@ async fn save_filters(
     rules: &[String],
 ) -> Result<bool, String> {
     pair_tools::write_filters(paths, id, presets, rules).await?;
+    let was_clear = pair_tools::after_filters_saved(paths, id).await?;
     apply_config(paths).await?;
-    pair_tools::after_filters_saved(paths, id).await
+    Ok(was_clear)
 }
 
 fn spawn_remove_sync(context: &Arc<Context>, id: String, delete_versions: bool) {

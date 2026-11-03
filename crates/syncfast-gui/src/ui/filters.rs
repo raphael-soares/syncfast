@@ -59,6 +59,13 @@ impl FilterDraft {
             .collect()
     }
 
+    /// Whether both hold the same rules once saved: blank lines and trailing
+    /// spaces do not count.
+    #[must_use]
+    pub fn same_rules(&self, other: &Self) -> bool {
+        self.presets == other.presets && self.custom_rules() == other.custom_rules()
+    }
+
     fn is_on(&self, name: &str) -> bool {
         self.presets.iter().any(|on| on == name)
     }
@@ -115,7 +122,7 @@ pub fn show(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
     let mut draft = ctx
         .data(|data| data.get_temp::<FilterDraft>(key))
         .unwrap_or_else(|| saved.clone());
-    let dirty = draft != saved;
+    let dirty = !draft.same_rules(&saved);
     let problems = draft.problems();
     let mut actions = Vec::new();
     let save = Action::SaveFilters {
@@ -134,6 +141,7 @@ pub fn show(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
             }
         });
     });
+    let dirty_now = !draft.same_rules(&saved);
     if test_clicked {
         actions.push(Action::TestFilters {
             id: pair.id.clone(),
@@ -142,13 +150,18 @@ pub fn show(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
             rules: draft.custom_rules(),
         });
     }
-    if vm.filters_saved && draft == saved {
+    if vm.filters_saved && dirty_now {
+        actions.push(Action::DismissFiltersSaved(pair.id.clone()));
+    }
+    if vm.filters_saved && !dirty_now {
         ui.label(
             RichText::new(SAVED)
                 .font(theme::callout())
                 .color(theme::palette(ui.ctx()).secondary),
         );
     }
+    // Only an exact match drops the draft: a trailing Enter is the user
+    // still typing, so it must survive until the next frame.
     ctx.data_mut(|data| {
         if draft == saved {
             data.remove::<FilterDraft>(key);

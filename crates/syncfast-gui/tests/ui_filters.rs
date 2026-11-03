@@ -178,3 +178,46 @@ fn after_a_save_the_screen_warns_that_the_next_sync_asks_for_a_review() {
 
     harness.get_by_label("Saved. The next sync will ask you to review the changes.");
 }
+
+#[test]
+fn a_trailing_enter_is_not_a_change_and_keeps_save_disabled() {
+    let mut harness = harness(view(notes(&["- *.bak"])), screen());
+    let field = harness.get_by_label("Custom rules");
+    field.click();
+    harness.run();
+
+    harness.key_press(egui::Key::End);
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+
+    let typed = harness
+        .get_by_label("Custom rules")
+        .accesskit_node()
+        .value();
+    assert_eq!(typed.as_deref(), Some("- *.bak\n"));
+    assert!(is_disabled(&harness, "Save"));
+}
+
+#[test]
+fn editing_after_a_save_dismisses_the_saved_notice() {
+    let mut vm = view(notes(&["- *.bak"]));
+    vm.filters_saved = true;
+    let mut harness = harness(vm, screen());
+    let field = harness.get_by_label("Custom rules");
+    field.click();
+    field.type_text("- *.tmp");
+
+    harness.run();
+
+    assert!(
+        harness
+            .state()
+            .actions
+            .contains(&Action::DismissFiltersSaved("notes".to_owned()))
+    );
+    assert!(
+        harness
+            .query_by_label("Saved. The next sync will ask you to review the changes.")
+            .is_none()
+    );
+}

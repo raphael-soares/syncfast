@@ -164,26 +164,46 @@ fn occupied(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok()
 }
 
-/// Moves a file, creating the destination's folders. Across file systems
-/// (the versions folder may be on another disk) it copies and deletes.
-fn move_file(from: &Path, to: &Path) -> io::Result<()> {
-    if let Some(parent) = to.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    match std::fs::rename(from, to) {
-        Err(err) if err.kind() == io::ErrorKind::CrossesDevices => {
-            std::fs::copy(from, to)?;
-            std::fs::remove_file(from)
+/// Copies `from` to `to`, creating the destination's folders, and never over
+/// an existing file: when `to` is taken the copy gets ` 2`, ` 3`... before
+/// the extension. Returns where it went.
+fn copy_without_overwriting(from: &Path, to: &Path) -> io::Result<PathBuf> {
+    let (Some(dir), Some(name)) = (to.parent(), to.file_name().and_then(|name| name.to_str()))
+    else {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "no file name"));
+    };
+    std::fs::create_dir_all(dir)?;
+    let (stem, ext) = split_extension(name);
+    let mut source = std::fs::File::open(from)?;
+    let mut attempt = 1_u32;
+    loop {
+        let candidate = if attempt == 1 {
+            dir.join(name)
+        } else {
+            dir.join(format!("{stem} {attempt}{ext}"))
+        };
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(mut target) => {
+                io::copy(&mut source, &mut target)?;
+                target.set_permissions(source.metadata()?.permissions())?;
+                return Ok(candidate);
+            }
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => attempt += 1,
+            Err(err) => return Err(err),
         }
-        other => other,
     }
 }
 
 /// Settles the conflict `conflict` (a path relative to `root`, as
-/// [`find_conflicts`] returns it). `Keep Conflicted Copy` first moves the
+/// [`find_conflicts`] returns it). `Keep Conflicted Copy` first copies the
 /// current file to `<versions>/<AAAAMMDD-HHMMSS>/<relative path>`, the layout
 /// of a round's `--backup-dir1`, so the old content stays for the retention
-/// period.
+/// period, then renames the conflicted copy over the file in one step: the
+/// file is never missing and a failed copy leaves everything as it was.
 ///
 /// # Errors
 /// `conflict` is not a relative `<name>.conflict<N>` path under `root`, or a
@@ -217,7 +237,7 @@ pub fn resolve(
                 let kept = versions
                     .join(stamp(now))
                     .join(conflict.with_file_name(original));
-                move_file(&current, &kept)?;
+                copy_without_overwriting(&current, &kept)?;
             }
             std::fs::rename(&from, &current)
         }
@@ -489,5 +509,30 @@ mod tests {
 
         assert_eq!(read(dir.path(), "a.md"), "old");
         assert_eq!(read(versions.path(), "20260102-150405/a.md"), "current");
+    }
+
+    #[test]
+    fn two_conflicted_copies_kept_in_one_second_preserve_both_older_versions() {
+        let dir = tempfile::tempdir().unwrap();
+        let versions = tempfile::tempdir().unwrap();
+        put(dir.path(), "a.md", "first");
+        put(dir.path(), "a.md.conflict1", "second");
+        put(dir.path(), "a.md.conflict2", "third");
+        let now = at("2026-01-02T15:04:05[UTC]");
+
+        for conflict in ["a.md.conflict1", "a.md.conflict2"] {
+            resolve(
+                dir.path(),
+                Path::new(conflict),
+                Resolution::KeepConflicted,
+                versions.path(),
+                &now,
+            )
+            .unwrap();
+        }
+
+        assert_eq!(read(dir.path(), "a.md"), "third");
+        assert_eq!(read(versions.path(), "20260102-150405/a.md"), "first");
+        assert_eq!(read(versions.path(), "20260102-150405/a 2.md"), "second");
     }
 }

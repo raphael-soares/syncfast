@@ -562,7 +562,8 @@ impl App {
             | Action::RefreshConflicts(_)
             | Action::ResolveConflict { .. }
             | Action::TestFilters { .. }
-            | Action::SaveFilters { .. }) => {
+            | Action::SaveFilters { .. }
+            | Action::DismissFiltersSaved(_)) => {
                 if let Some(command) = self.screens.act(action) {
                     self.error = None;
                     self.backend.send(command);

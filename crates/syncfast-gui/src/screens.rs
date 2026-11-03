@@ -3,6 +3,7 @@
 
 use jiff::Timestamp;
 use syncfast_core::conflicts::Conflict;
+use syncfast_core::state::GateKind;
 
 use crate::backend::{Command, Event};
 use crate::snapshot::Snapshot;
@@ -20,6 +21,8 @@ pub struct Screens {
     conflict_key: Option<ConflictKey>,
     filter_test: Option<FilterTest>,
     filters_saved: Option<String>,
+    /// The saved sync was seen held for the review of its new filters.
+    filters_review_seen: bool,
 }
 
 impl Screens {
@@ -57,7 +60,10 @@ impl Screens {
                     },
                 });
             }
-            Event::FiltersSaved(id) => self.filters_saved = Some(id),
+            Event::FiltersSaved(id) => {
+                self.filters_saved = Some(id);
+                self.filters_review_seen = false;
+            }
             _ => {}
         }
     }
@@ -65,6 +71,7 @@ impl Screens {
     /// A new snapshot: when the selected sync was just synced or the number
     /// of its conflicts changed, look at its folder again.
     pub fn on_snapshot(&mut self, snapshot: &Snapshot, selected: Option<&str>) -> Option<Command> {
+        self.expire_saved_notice(snapshot);
         let key = snapshot
             .pairs
             .iter()
@@ -86,6 +93,26 @@ impl Screens {
                 self.conflicts = None;
                 None
             }
+        }
+    }
+
+    /// The `Saved.` notice lasts until the review of the new filters is done:
+    /// it goes when the sync leaves the `filters changed` hold it was seen in.
+    fn expire_saved_notice(&mut self, snapshot: &Snapshot) {
+        let Some(id) = self.filters_saved.as_deref() else {
+            return;
+        };
+        let held = snapshot
+            .pairs
+            .iter()
+            .find(|pair| pair.pair.id == id)
+            .and_then(|pair| pair.state.gate.as_ref())
+            .is_some_and(|gate| gate.kind == GateKind::NeedsReviewFiltersChanged);
+        if held {
+            self.filters_review_seen = true;
+        } else if self.filters_review_seen {
+            self.filters_saved = None;
+            self.filters_review_seen = false;
         }
     }
 
@@ -140,6 +167,12 @@ impl Screens {
                     presets,
                     rules,
                 })
+            }
+            Action::DismissFiltersSaved(id) => {
+                if self.filters_saved.as_ref() == Some(&id) {
+                    self.filters_saved = None;
+                }
+                None
             }
             Action::SaveFilters { id, presets, rules } => {
                 self.filters_saved = None;
@@ -283,6 +316,61 @@ mod tests {
         });
         screens.fill(&mut vm);
 
+        assert!(!vm.filters_saved);
+    }
+
+    fn held_in_review(mut snapshot: Snapshot, held: bool) -> Snapshot {
+        snapshot.pairs[0].state.gate = held.then(|| syncfast_core::state::Gate {
+            kind: GateKind::NeedsReviewFiltersChanged,
+            since: Timestamp::UNIX_EPOCH,
+            detail: String::new(),
+        });
+        snapshot
+    }
+
+    #[test]
+    fn the_saved_notice_stays_through_the_review_hold_and_goes_when_it_ends() {
+        let mut screens = Screens::default();
+        screens.on_event(Event::FiltersSaved("notes".to_owned()));
+        let mut vm = ViewModel {
+            selected: Some("notes".to_owned()),
+            ..ViewModel::default()
+        };
+
+        screens.on_snapshot(
+            &held_in_review(snapshot("notes", 0, None), false),
+            Some("notes"),
+        );
+        screens.fill(&mut vm);
+        assert!(vm.filters_saved, "the round has not held the sync yet");
+
+        screens.on_snapshot(
+            &held_in_review(snapshot("notes", 0, None), true),
+            Some("notes"),
+        );
+        screens.fill(&mut vm);
+        assert!(vm.filters_saved, "held for review");
+
+        screens.on_snapshot(
+            &held_in_review(snapshot("notes", 0, None), false),
+            Some("notes"),
+        );
+        screens.fill(&mut vm);
+        assert!(!vm.filters_saved, "review confirmed");
+    }
+
+    #[test]
+    fn editing_the_filters_again_dismisses_the_saved_notice() {
+        let mut screens = Screens::default();
+        screens.on_event(Event::FiltersSaved("notes".to_owned()));
+
+        screens.act(Action::DismissFiltersSaved("notes".to_owned()));
+
+        let mut vm = ViewModel {
+            selected: Some("notes".to_owned()),
+            ..ViewModel::default()
+        };
+        screens.fill(&mut vm);
         assert!(!vm.filters_saved);
     }
 }
