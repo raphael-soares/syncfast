@@ -139,6 +139,7 @@ pub async fn run_preview(
         network: &NetworkManager,
         notifier: &NativeNotifier,
         clock: &clock,
+        forward_signals: false,
     };
     preview(&env, pair_id, kind).await.map_err(|err| match err {
         PreviewError::Busy => PreviewFailure::Busy,

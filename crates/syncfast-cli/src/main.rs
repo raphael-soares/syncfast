@@ -125,6 +125,7 @@ async fn dispatch(command: Command) -> anyhow::Result<ExitCode> {
                 network: &NetworkManager,
                 notifier: &notifier,
                 clock: &clock,
+                forward_signals: true,
             };
             run(&env, &id).await?;
             Ok(ExitCode::SUCCESS)
@@ -144,6 +145,7 @@ async fn dispatch(command: Command) -> anyhow::Result<ExitCode> {
                 network: &NetworkManager,
                 notifier: &notifier,
                 clock: &clock,
+                forward_signals: true,
             };
             let found = preview(&env, &id, kind.into()).await?;
             println!("{}", serde_json::to_string(&found.report())?);
