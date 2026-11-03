@@ -52,6 +52,7 @@ pub enum GateKind {
     NeedsReviewFiltersChanged,
     NeedsReviewCriticalError,
     TooManyDeletes,
+    AllFilesChanged,
     ConfigError,
     AuthError,
     LocalMissing,
@@ -65,6 +66,7 @@ impl GateKind {
             Self::NeedsReviewFiltersChanged => "needs_review_filters_changed",
             Self::NeedsReviewCriticalError => "needs_review_critical_error",
             Self::TooManyDeletes => "too_many_deletes",
+            Self::AllFilesChanged => "all_files_changed",
             Self::ConfigError => "config_error",
             Self::AuthError => "auth_error",
             Self::LocalMissing => "local_missing",
@@ -79,6 +81,12 @@ impl GateKind {
                 | Self::NeedsReviewFiltersChanged
                 | Self::NeedsReviewCriticalError
         )
+    }
+
+    /// Gates that only a confirmed `--force` round clears.
+    #[must_use]
+    pub fn is_force_review(self) -> bool {
+        matches!(self, Self::TooManyDeletes | Self::AllFilesChanged)
     }
 
     /// Key in [`State::notified`] that records the gate was announced.
@@ -176,14 +184,22 @@ pub struct ConfirmMarker {
 }
 
 impl ConfirmMarker {
+    /// A marker that is not valid JSON counts as no marker: it is logged
+    /// and deleted, so a bad file never blocks the pair.
+    ///
     /// # Errors
-    /// The file exists but cannot be read or parsed.
+    /// The file exists but cannot be read or deleted.
     pub async fn load(paths: &Paths, pair_id: &str) -> Result<Option<Self>, StateError> {
         let path = paths.confirm_file(pair_id);
         match tokio::fs::read(&path).await {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map(Some)
-                .map_err(|source| StateError::Parse { path, source }),
+            Ok(bytes) => match serde_json::from_slice(&bytes) {
+                Ok(marker) => Ok(Some(marker)),
+                Err(err) => {
+                    log::warn!("ignoring {}: {err}", path.display());
+                    Self::remove(paths, pair_id).await?;
+                    Ok(None)
+                }
+            },
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(source) => Err(StateError::Read { path, source }),
         }
@@ -236,6 +252,30 @@ pub fn is_running(paths: &Paths, pair_id: &str) -> bool {
         Err(std::fs::TryLockError::WouldBlock) => true,
         Err(std::fs::TryLockError::Error(_)) => false,
     }
+}
+
+/// Takes the pair's lock for a round or a preview, creating the runtime
+/// folder and the lock file. `None` when another round holds it. The lock
+/// is released when the returned file is dropped.
+///
+/// # Errors
+/// The lock file cannot be created or locked.
+pub fn try_lock_pair(paths: &Paths, pair_id: &str) -> Result<Option<File>, StateError> {
+    let path = paths.lock_file(pair_id);
+    let open = || -> std::io::Result<Option<File>> {
+        std::fs::create_dir_all(paths.runtime_subdir())?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(file)),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+            Err(std::fs::TryLockError::Error(err)) => Err(err),
+        }
+    };
+    open().map_err(|source| StateError::Write { path, source })
 }
 
 /// Keeps the [`RUNS_KEPT`] newest logs in the pair's `runs/` folder (names
@@ -555,6 +595,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_marker_that_is_not_valid_json_counts_as_none_and_is_deleted() {
+        let (_dir, paths) = temp_paths();
+        let file = paths.confirm_file("drive");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        for garbage in [
+            "{\"kind\": \"res",
+            "",
+            "{\"kind\": \"sideways\", \"filters_hash\": \"x\"}",
+        ] {
+            std::fs::write(&file, garbage).unwrap();
+
+            let loaded = ConfirmMarker::load(&paths, "drive").await.unwrap();
+
+            assert_eq!(loaded, None, "{garbage:?}");
+            assert!(!file.exists(), "{garbage:?}");
+        }
+    }
+
+    #[tokio::test]
     async fn removing_an_absent_marker_is_fine() {
         let (_dir, paths) = temp_paths();
 
@@ -583,6 +642,21 @@ mod tests {
 
         assert!(while_held);
         assert!(!after);
+    }
+
+    #[test]
+    fn only_one_holder_gets_the_pair_lock_and_it_shows_as_running() {
+        let (_dir, paths) = temp_paths();
+
+        let first = try_lock_pair(&paths, "drive").unwrap();
+        let second = try_lock_pair(&paths, "drive").unwrap();
+        let running = is_running(&paths, "drive");
+        drop(first);
+        let after = try_lock_pair(&paths, "drive").unwrap();
+
+        assert!(second.is_none());
+        assert!(running);
+        assert!(after.is_some());
     }
 
     #[test]
@@ -703,6 +777,7 @@ mod tests {
             GateKind::NeedsReviewFiltersChanged,
             GateKind::NeedsReviewCriticalError,
             GateKind::TooManyDeletes,
+            GateKind::AllFilesChanged,
         ] {
             let state = State {
                 gate: Some(gate(kind)),
@@ -863,6 +938,7 @@ mod tests {
                 "needs_review_critical_error",
             ),
             (GateKind::TooManyDeletes, "too_many_deletes"),
+            (GateKind::AllFilesChanged, "all_files_changed"),
             (GateKind::ConfigError, "config_error"),
             (GateKind::AuthError, "auth_error"),
             (GateKind::LocalMissing, "local_missing"),

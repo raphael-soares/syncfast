@@ -22,6 +22,7 @@ const AUTH_PATTERNS: [&str; 4] = [
     "token expired",
 ];
 const TOO_MANY_DELETES: &str = "too many deletes";
+const ALL_FILES_CHANGED: &str = "Safety abort: all files were changed";
 const MUST_RESYNC: &str = "Must run --resync to recover";
 const FAILED_TO_BISYNC: &str = "Failed to bisync";
 const EXIT_NOT_CRITICAL: i32 = 1;
@@ -162,6 +163,9 @@ pub enum Outcome {
     Ok,
     NeedsReview(NeedsReviewCause),
     TooManyDeletes,
+    /// rclone's safety abort when every file of a side changed at once;
+    /// like [`Outcome::TooManyDeletes`], `--force` lets it through.
+    AllFilesChanged,
     AuthError,
     /// rclone rejected the arguments: a syncfast bug.
     ConfigError,
@@ -206,6 +210,11 @@ pub fn classify(exit_code: i32, lines: &[LogLine], workdir: &Path) -> Outcome {
         && failure_msgs(lines).any(|msg| msg.contains(TOO_MANY_DELETES))
     {
         return Outcome::TooManyDeletes;
+    }
+    if exit_code == EXIT_NOT_CRITICAL
+        && failure_msgs(lines).any(|msg| msg.contains(ALL_FILES_CHANGED))
+    {
+        return Outcome::AllFilesChanged;
     }
     if exit_code == EXIT_CRITICAL && failure_msgs(lines).any(|msg| msg.contains(MUST_RESYNC)) {
         return Outcome::NeedsReview(NeedsReviewCause::CriticalError);
@@ -510,6 +519,26 @@ mod tests {
         assert_eq!(
             classify_fixture("too_many_deletes", workdir.path()),
             Outcome::TooManyDeletes
+        );
+    }
+
+    #[test]
+    fn exit_one_with_the_all_files_changed_safety_abort_is_all_files_changed() {
+        let workdir = workdir_with(&[]);
+
+        assert_eq!(
+            classify_fixture("all_files_changed", workdir.path()),
+            Outcome::AllFilesChanged
+        );
+    }
+
+    #[test]
+    fn all_files_changed_text_with_another_exit_code_is_transient() {
+        let workdir = workdir_with(&[]);
+
+        assert_eq!(
+            classify(5, &fixture("all_files_changed"), workdir.path()),
+            Outcome::Transient
         );
     }
 

@@ -229,6 +229,7 @@ Cenários:
 | `overwrite_local` | altera um arquivo no remoto, rodada normal (testa `--backup-dir1`) |
 | `too_many_deletes` | apaga 3 de 4 arquivos locais, rodada normal |
 | `force_dry_run` | o mesmo com `--force --dry-run` |
+| `all_files_changed` | pasta com um só arquivo, editado no local, rodada normal (o `Safety abort`) |
 | `filters_changed` | troca o filters-file, rodada normal |
 | `critical` | renomeia os `*.lst` do workdir para `*.lst-err` antes da rodada |
 | `stats` | 200 arquivos de 64 KiB e `--stats 1s`, para pegar linhas de stats |
@@ -339,9 +340,10 @@ Cenários:
   2. Existe `*.lst-err` em `<workdir>`: `NeedsReview(CriticalError)`.
   3. Alguma linha casa com o padrão de autenticação (`invalid_grant`, `couldn't fetch token`, `oauth2: cannot fetch token`, `token expired`, sem diferenciar maiúsculas): `AuthError`. Se um erro de autenticação real aparecer com outro texto, acrescentar o texto a essa lista com teste.
   4. Código 1 e alguma linha com `too many deletes`: `TooManyDeletes`.
-  5. Código 7 e alguma linha com `Must run --resync to recover`: `NeedsReview(CriticalError)`.
-  6. Código 2: `ConfigError` (bug de flags do syncfast).
-  7. Qualquer outro caso: `Transient`.
+  5. Código 1 e alguma linha error+ com `Safety abort: all files were changed`: `AllFilesChanged`.
+  6. Código 7 e alguma linha com `Must run --resync to recover`: `NeedsReview(CriticalError)`.
+  7. Código 2: `ConfigError` (bug de flags do syncfast).
+  8. Qualquer outro caso: `Transient`.
   - Um teste por ramo, usando os fixtures do passo 2.
 - `summarize(log_lines) -> RunSummary`:
   - Contadores `uploaded`, `downloaded`, `deleted_local`, `deleted_remote`, `conflicts_new` (todos `Option<u32>`) e `changes: Vec<Change { kind, path }>`.
@@ -377,7 +379,7 @@ Cenários:
   }
   ```
 
-  - `gate`: `null` ou um objeto `{ "kind": ..., "since": "<rfc3339>", "detail": "<texto>" }`. O `kind` ∈ `needs_review_first_run`, `needs_review_filters_changed`, `needs_review_critical_error`, `too_many_deletes`, `config_error`, `auth_error`, `local_missing`. Todo gate bloqueia rodadas normais.
+  - `gate`: `null` ou um objeto `{ "kind": ..., "since": "<rfc3339>", "detail": "<texto>" }`. O `kind` ∈ `needs_review_first_run`, `needs_review_filters_changed`, `needs_review_critical_error`, `too_many_deletes`, `all_files_changed`, `config_error`, `auth_error`, `local_missing`. Todo gate bloqueia rodadas normais.
   - `last_outcome` ∈ `null`, `ok`, `error`.
   - `offline`: true quando a última tentativa foi pulada por falta de rede. Não muda `gate` nem `last_outcome`.
   - `last_run`: `{ "started", "finished", "exit_code", "summary": RunSummary, "log_file" }`.
@@ -392,7 +394,7 @@ Cenários:
   |---|---|---|---|
   | 1 | `running` | `Syncing` | `accent` |
   | 2 | gate `config_error`, `auth_error`, `local_missing` | `Error` | `danger` |
-  | 3 | gate `needs_review_*`, `too_many_deletes` | `NeedsReview` | `warning` |
+  | 3 | gate `needs_review_*`, `too_many_deletes`, `all_files_changed` | `NeedsReview` | `warning` |
   | 4 | `conflicts_pending > 0` | `Conflicts` | `warning` |
   | 5 | `!enabled` | `Paused` | `dim` |
   | 6 | `offline` | `Offline` | `dim` |
@@ -426,19 +428,23 @@ Cenários:
 | # | Condição | Decisão |
 |---|---|---|
 | 1 | `!pair_enabled` | `Skip(Paused)` |
-| 2 | `!local_exists` | `SetGate(local_missing)` |
+| 2 | `!local_exists` e gate `null` ou `local_missing` | `SetGate(local_missing)` |
+| 2b | `!local_exists` e qualquer outro gate | `Skip(Gated)`, o gate fica |
 | 3 | gate `local_missing` e local existe | trata como gate `null` e continua |
+| 3b | gate `config_error` (o par é válido, senão o `run` nem chega aqui) e `applied_filters_hash` não nulo | trata como gate `null` e continua |
+| 3c | gate `config_error` e `applied_filters_hash` nulo (nunca sincronizou) | `SetGate(needs_review_first_run)` |
 | 4 | `!online` | `Skip(Offline)` |
 | 5 | marker `resync` e gate ∈ `needs_review_*` e `marker.filters_hash == current` | `Run(Resync)` |
-| 6 | marker `force` e gate `too_many_deletes` e `marker.filters_hash == current` | `Run(Force)` |
+| 6 | marker `force` e gate `too_many_deletes` ou `all_files_changed` e `marker.filters_hash == current` | `Run(Force)` |
 | 7 | marker presente sem casar com 5 ou 6 | descarta o marker e continua |
 | 8 | gate não nulo (exceto `local_missing` já tratado) | `Skip(Gated)` |
 | 9 | `applied_filters_hash` não nulo e diferente de `current` | `SetGate(needs_review_filters_changed)` |
 | 10 | senão | `Run(Normal)` |
 
-- `config_error` e `auth_error` não têm marker. Eles saem do gate na próxima rodada depois que o usuário corrige: a GUI limpa o gate ao salvar config válida ou ao reconectar a conta, e então chama `Sync Now`.
-- Mudar o filtro com gate `too_many_deletes` cai na linha 6 com hash diferente, depois na 7 e na 8. O gate continua até a próxima revisão.
-- Para isso não travar, a GUI, ao salvar filtros, troca qualquer gate `too_many_deletes` por `needs_review_filters_changed`.
+- `config_error` e `auth_error` não têm marker. `config_error` sai sozinho na próxima rodada com config válida (linhas 3b e 3c), mesmo sem GUI. `auth_error` sai pela GUI: ela limpa o gate ao reconectar a conta e então chama `Sync Now`.
+- Um gate nunca é sobrescrito por `local_missing` (linha 2b): uma revisão pendente (inclusive a primeira) sobrevive à pasta sumir e voltar. Quando `local_missing` ou `config_error` terminam, a chave `gate:<kind>` sai de `notified`, para a próxima ocorrência notificar de novo.
+- Mudar o filtro com gate `too_many_deletes` ou `all_files_changed` cai na linha 6 com hash diferente, depois na 7 e na 8. O gate continua até a próxima revisão.
+- Para isso não travar, a GUI, ao salvar filtros, troca qualquer gate `too_many_deletes` ou `all_files_changed` por `needs_review_filters_changed`.
 - Teste unitário para cada linha da tabela, mais o caso "needs_review → pausa → retoma → ainda pede revisão".
 
 Fluxo do `run`:
@@ -462,7 +468,7 @@ Fluxo do `run`:
      - Apagar o marker.
      - `conflicts_pending` = número de arquivos `*.conflict<N>` na árvore local, varrida com o `DirMatcher`.
      - Se `summary.conflicts_new > 0`, notificar conflitos.
-   - `TooManyDeletes`, `NeedsReview(CriticalError)`, `AuthError`, `ConfigError`: gravar o gate correspondente e notificar se for transição.
+   - `TooManyDeletes`, `AllFilesChanged`, `NeedsReview(CriticalError)`, `AuthError`, `ConfigError`: gravar o gate correspondente e notificar se for transição.
    - `Transient`: `last_outcome = error`, `consecutive_failures += 1`. Ao chegar em 3 sem `"failures"` em `notified`, notificar e acrescentar `"failures"`.
 8. Depois de `Ok`, podar versões: em `versions/<id>/`, apagar os subdiretórios diretos cujo nome casa `^\d{8}-\d{6}$` e cuja data é mais antiga que `versions_keep_days`. Tudo o mais em `versions/<id>/` fica intocado. Remover diretórios datados que ficarem vazios. Podar `runs/`.
 9. Sair 0. Erro interno do próprio syncfast (I/O de estado, por exemplo): log e sair 1.
@@ -480,6 +486,7 @@ Notificações (`notify.rs`, no core):
 | `needs_review_filters_changed` | `<name>: review needed` | `Filters changed. Review what will sync.` |
 | `needs_review_critical_error` | `<name>: review needed` | `Sync stopped after an error. Review to resume.` |
 | `too_many_deletes` | `<name>: many deletions` | `More than half of the files would be deleted. Review before continuing.` |
+| `all_files_changed` | `<name>: review needed` | `Every file changed at once. Review before continuing.` |
 | `config_error` | `<name>: configuration error` | a mensagem |
 | `auth_error` | `<name>: account disconnected` | `Reconnect "<remote>" in Settings > Accounts.` |
 | `local_missing` | `<name>: folder not found` | `<local> is missing. Sync resumes when it is back.` |
@@ -739,12 +746,12 @@ Toda tela é função de um `ViewModel` imutável e devolve `Vec<Action>`. O `ap
   - Duas `switch` com os presets (`System junk files`, `Developer folders`). Cada uma tem um disclosure `Show rules` com a lista em monospace.
   - `text_area` `Custom rules`, uma regra por linha, com `inline_error` por linha inválida.
   - `secondary_button` `Test Filters`: chama `list_files` com e sem filtro na pasta local e mostra `<x> of <y> files excluded` e uma lista das 20 pastas de primeiro nível com mais arquivos excluídos (`<pasta> · <n> files`).
-  - `primary_button` `Save` (desabilitado sem mudança ou com erro): grava, roda `apply`, troca gate `too_many_deletes` por `needs_review_filters_changed` e mostra o aviso `Saved. The next sync will ask you to review the changes.`
+  - `primary_button` `Save` (desabilitado sem mudança ou com erro): grava, roda `apply`, troca gate `too_many_deletes` ou `all_files_changed` por `needs_review_filters_changed` e mostra o aviso `Saved. The next sync will ask you to review the changes.`
 
 **Sheet Review** (HIG: sheet modal com Cancel):
 
-- Título `Review Changes for <name>`. Subtítulo conforme o motivo: `First sync`, `Filters changed`, `Sync stopped after an error`, `Many files would be deleted`.
-- Ao abrir, roda o preview (`resync` para `needs_review_*`, `force` para `too_many_deletes`) com `progress_bar` indeterminada e `Checking what would change…`.
+- Título `Review Changes for <name>`. Subtítulo conforme o motivo: `First sync`, `Filters changed`, `Sync stopped after an error`, `Many files would be deleted`, `Every file changed`.
+- Ao abrir, roda o preview (`resync` para `needs_review_*`, `force` para `too_many_deletes` e `all_files_changed`) com `progress_bar` indeterminada e `Checking what would change…`.
 - Resultado: seções recolhíveis, só as não vazias, com contagem:
   - `Would upload to <remote>`
   - `Would download to this computer`
@@ -835,9 +842,9 @@ Toda tela é função de um `ViewModel` imutável e devolve `Vec<Action>`. O `ap
     2. Arquivo novo local → `run` → aparece no remoto, `uploaded = 1`.
     3. Mesmo arquivo alterado nos dois lados → vence o mais novo, existe `.conflict1`, `conflicts_new = 1`, `conflicts_pending = 1`.
     4. Arquivo alterado no remoto → versão local antiga em `versions/<id>/<AAAAMMDD-HHMMSS>/`.
-    5. Apagar 3 de 4 arquivos locais → gate `too_many_deletes`, remoto intacto. Marker `force` → remoto apagado, `ok`.
+    5. Apagar 3 de 4 arquivos locais → gate `too_many_deletes`, remoto intacto. Marker `force` → remoto apagado, `ok`. Pasta com um só arquivo, editado no local → gate `all_files_changed`; marker `force` → remoto atualizado, `ok`.
     6. Mudar `filters` → gate `needs_review_filters_changed`, nada sincronizado.
-    7. Pasta local renomeada → gate `local_missing`. Pasta de volta → `run` normal, `ok`.
+    7. Pasta local renomeada → gate `local_missing`. Pasta de volta → `run` normal, `ok`. Partindo de `needs_review_first_run`: pasta some e volta, o gate continua e a revisão ainda é pedida.
     8. `needs_review` → `enabled = false` → `run` (Skip) → `enabled = true` → `run` ainda `Skip(Gated)`.
     9. `apply` em modo Off com par removido → arquivos de estado, filtro, `.md5` e workdir apagados; `versions/` mantido.
 - **Fronteira:** `boundary.rs` (passo 1).
