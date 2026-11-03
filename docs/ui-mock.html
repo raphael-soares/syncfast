@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>syncfast UI mock (phase 1)</title>
+<style>
+:root{
+  --window:#0F1114;--panel:#15181C;--surface:#1D2127;--surface-hover:#262B33;--surface-active:#2F353F;
+  --outline:#2A3038;--text:#F2F4F6;--secondary:#A9B1BC;--dim:#6E7784;--accent:#A78BFA;--accent-hover:#C4B5FD;
+  --on-accent:#1E1033;--danger:#F5717F;--warning:#F2B85C;--overlay:#22272E;--shadow:#0000008C;
+}
+*{box-sizing:border-box}
+body{margin:0;padding:32px;background:#08090b;color:var(--text);font:13px/16px Inter,"Inter Variable",system-ui,sans-serif;display:flex;flex-direction:column;gap:40px;align-items:center}
+h1.caption{font-size:15px;font-weight:600;color:var(--secondary);margin:0 0 -28px;width:960px}
+.win{width:960px;height:640px;background:var(--window);border:1px solid var(--outline);border-radius:10px;overflow:hidden;position:relative;display:flex;flex-direction:column;box-shadow:0 6px 24px var(--shadow)}
+.titlebar{height:36px;display:flex;align-items:center;justify-content:center;color:var(--secondary);font-weight:600;border-bottom:1px solid var(--outline);background:var(--panel);flex:none}
+.body{flex:1;display:flex;min-height:0}
+.sidebar{width:240px;background:var(--panel);border-right:1px solid var(--outline);padding:12px 8px 12px 12px;display:flex;flex-direction:column;gap:2px;flex:none}
+.side-head{display:flex;justify-content:space-between;align-items:center;padding:4px 8px 8px;color:var(--secondary);font-weight:600;font-size:11px;letter-spacing:.02em;text-transform:uppercase}
+.iconbtn{width:24px;height:24px;border-radius:6px;display:grid;place-items:center;color:var(--secondary);background:transparent;border:0}
+.iconbtn:hover{background:var(--surface-hover)}
+.row{display:flex;gap:10px;align-items:center;padding:6px 8px;border-radius:8px;min-height:44px}
+.row.sel{background:var(--surface-active)}
+.row .t{font-weight:600}
+.row .s{font-size:11px;line-height:14px;color:var(--secondary)}
+.row .grow{flex:1;min-width:0}
+.ico{width:16px;height:16px;flex:none;display:inline-block}
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.toolbar{display:flex;align-items:center;gap:8px;padding:16px 20px 12px}
+.toolbar .name{font-size:17px;line-height:22px;font-weight:600}
+.toolbar .path{font-size:12px;color:var(--secondary)}
+.spacer{flex:1}
+.btn{height:28px;padding:0 12px;border-radius:6px;border:0;font:600 13px Inter,system-ui,sans-serif;display:inline-flex;align-items:center;gap:6px;cursor:default}
+.btn.primary{background:var(--accent);color:var(--on-accent)}
+.btn.secondary{background:var(--surface);color:var(--text)}
+.btn.destructive{background:var(--surface);color:var(--danger)}
+.btn[disabled]{opacity:.45}
+.card{margin:0 20px;background:var(--surface);border-radius:8px;padding:14px 16px;display:flex;flex-direction:column;gap:8px}
+.badge{display:inline-flex;align-items:center;gap:6px;font-weight:600}
+.badge.accent{color:var(--accent)}.badge.warning{color:var(--warning)}.badge.danger{color:var(--danger)}.badge.ok{color:var(--secondary)}.badge.dim{color:var(--dim)}
+.bar{height:6px;background:var(--surface-active);border-radius:3px;overflow:hidden}
+.bar>i{display:block;height:100%;background:var(--accent);border-radius:3px}
+.callout{font-size:12px;line-height:15px;color:var(--secondary)}
+.sub{font-size:11px;line-height:14px;color:var(--dim)}
+.seg{margin:16px 20px 8px;display:inline-flex;background:var(--surface);border-radius:6px;padding:2px;align-self:flex-start}
+.seg span{padding:4px 12px;border-radius:5px;color:var(--secondary);font-weight:600}
+.seg span.on{background:var(--surface-active);color:var(--text)}
+.list{margin:0 20px;border-top:1px solid var(--outline);overflow:hidden}
+.lrow{display:flex;align-items:center;gap:12px;min-height:44px;border-bottom:1px solid var(--outline);padding:0 4px}
+.lrow .when{width:140px;color:var(--text)}
+.lrow .dur{width:60px;color:var(--secondary)}
+.lrow .res{width:130px}
+.lrow .cnt{color:var(--secondary);font-variant-numeric:tabular-nums}
+.scrim{position:absolute;inset:36px 0 0 0;background:#0009;display:flex;justify-content:center;align-items:flex-start;padding-top:36px}
+.sheet{width:560px;background:var(--overlay);border:1px solid var(--outline);border-radius:10px;box-shadow:0 6px 24px var(--shadow);padding:20px;display:flex;flex-direction:column;gap:12px}
+.sheet h2{margin:0;font-size:17px;line-height:22px;font-weight:600}
+.sheet .foot{display:flex;gap:8px;justify-content:flex-end;padding-top:8px}
+.sheet .foot .left{margin-right:auto}
+.group{border:1px solid var(--outline);border-radius:8px}
+.group>.gh{display:flex;align-items:center;gap:8px;padding:8px 12px;font-weight:600}
+.group>.gh .n{margin-left:auto;color:var(--secondary);font-weight:400}
+.group>.gb{border-top:1px solid var(--outline);padding:6px 12px 8px 34px;color:var(--secondary);font-family:ui-monospace,monospace;font-size:12px;line-height:18px}
+.foot-note{font-size:10px;line-height:13px;color:var(--dim)}
+.steps{display:flex;gap:6px;font-size:11px;color:var(--dim)}
+.steps b{color:var(--text)}
+.tree .tr{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:6px}
+.tree .tr.sel{background:var(--surface-active)}
+.tree .tr .ch{width:12px;color:var(--dim)}
+.field{display:flex;flex-direction:column;gap:4px}
+.field label{font-weight:600}
+.input{height:28px;background:var(--surface);border:1px solid var(--outline);border-radius:6px;padding:0 8px;display:flex;align-items:center;color:var(--text)}
+.err{color:var(--danger);font-size:12px;display:flex;gap:6px;align-items:center}
+.welcome{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;text-align:center}
+.welcome h1{font-size:26px;line-height:32px;font-weight:700;margin:0}
+.wsteps{display:flex;flex-direction:column;gap:10px;text-align:left;margin:8px 0 8px}
+.wstep{display:flex;gap:12px;align-items:center}
+.num{width:24px;height:24px;border-radius:12px;display:grid;place-items:center;font-weight:700;background:var(--surface);color:var(--secondary)}
+.num.cur{background:var(--accent);color:var(--on-accent)}
+.settings .sidebar{width:200px}
+.warn-row{display:flex;gap:10px;align-items:flex-start;background:#F2B85C14;border:1px solid #F2B85C40;border-radius:8px;padding:10px 12px}
+.tray{position:absolute;right:24px;top:52px;width:250px;background:var(--overlay);border:1px solid var(--outline);border-radius:8px;box-shadow:0 4px 16px var(--shadow);padding:6px}
+.tray .mi{padding:6px 10px;border-radius:6px}
+.tray .mi.dis{color:var(--dim)}
+.tray .sep{height:1px;background:var(--outline);margin:4px 2px}
+.trayicon{position:absolute;right:30px;top:12px;width:22px;height:22px}
+.mono{font-family:ui-monospace,monospace;font-size:12px}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+ <defs>
+  <symbol id="folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+  <symbol id="plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M12 5v14"/></symbol>
+  <symbol id="refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></symbol>
+  <symbol id="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></symbol>
+  <symbol id="pause" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></symbol>
+  <symbol id="more" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></symbol>
+  <symbol id="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 18 6-6-6-6"/></symbol>
+  <symbol id="chevd" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="8" y="8" width="14" height="14" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
+  <symbol id="user" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></symbol>
+  <symbol id="palette" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="8" cy="10" r="1"/><circle cx="12" cy="7" r="1"/><circle cx="16" cy="10" r="1"/></symbol>
+  <symbol id="fsync" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v.5"/><path d="M12 10v4h4"/><path d="m12 14 1.53-1.53a5 5 0 0 1 8 1.06"/><path d="M22 22v-4h-4"/><path d="m22 18-1.53 1.53a5 5 0 0 1-8-1.06"/></symbol>
+ </defs>
+</svg>
+
+<h1 class="caption">1. Welcome (first launch, no syncs)</h1>
+<div class="win">
+ <div class="titlebar">Welcome</div>
+ <div class="welcome">
+  <svg class="ico" style="width:48px;height:48px;color:var(--accent)"><use href="#fsync"/></svg>
+  <h1>Welcome to syncfast</h1>
+  <div style="color:var(--secondary);max-width:420px">Keep folders on this computer in sync with Google Drive. Your files stay local first.</div>
+  <div class="wsteps">
+   <div class="wstep"><span class="num cur">1</span><span><b>Connect your Google account</b></span></div>
+   <div class="wstep"><span class="num">2</span><span style="color:var(--secondary)">Choose a folder</span></div>
+   <div class="wstep"><span class="num">3</span><span style="color:var(--secondary)">Review the first sync</span></div>
+  </div>
+  <button class="btn primary">Get Started</button>
+ </div>
+</div>
+
+<h1 class="caption">2. Main window, sync running (Activity tab)</h1>
+<div class="win">
+ <div class="titlebar">Google Drive</div>
+ <div class="body">
+  <div class="sidebar">
+   <div class="side-head">Syncs <button class="iconbtn" title="Add Sync…"><svg class="ico"><use href="#plus"/></svg></button></div>
+   <div class="row sel"><svg class="ico" style="color:var(--secondary)"><use href="#folder"/></svg><div class="grow"><div class="t">Google Drive</div><div class="s">Syncing…</div></div><svg class="ico" style="color:var(--accent)"><use href="#refresh"/></svg></div>
+   <div class="row"><svg class="ico" style="color:var(--secondary)"><use href="#folder"/></svg><div class="grow"><div class="t">Udesc</div><div class="s">Synced 2 hours ago</div></div><svg class="ico" style="color:var(--warning)"><use href="#eye"/></svg></div>
+   <div class="row"><svg class="ico" style="color:var(--secondary)"><use href="#folder"/></svg><div class="grow"><div class="t">Notes</div><div class="s">Synced 3 min ago</div></div><svg class="ico" style="color:var(--secondary)"><use href="#check"/></svg></div>
+   <div class="row"><svg class="ico" style="color:var(--secondary)"><use href="#folder"/></svg><div class="grow"><div class="t">Livros</div><div class="s">Paused</div></div><svg class="ico" style="color:var(--dim)"><use href="#pause"/></svg></div>
+  </div>
+  <div class="main">
+   <div class="toolbar">
+    <div><div class="name">Google Drive</div><div class="path">~/Drive ↔ gdrive:</div></div>
+    <div class="spacer"></div>
+    <button class="btn primary" disabled><svg class="ico"><use href="#refresh"/></svg>Sync Now</button>
+    <button class="btn secondary"><svg class="ico"><use href="#pause"/></svg>Pause</button>
+    <button class="btn secondary" title="More"><svg class="ico"><use href="#more"/></svg></button>
+   </div>
+   <div class="card">
+    <span class="badge accent"><svg class="ico"><use href="#refresh"/></svg>Syncing…</span>
+    <div class="bar"><i style="width:42%"></i></div>
+    <div class="callout">412 of 980 files · 1.8 GB/4.3 GB · 12.4 MB/s · 3 min left</div>
+    <div class="sub">Current: Fotos/23-12-2025/IMG_4471.jpg</div>
+   </div>
+   <div class="seg"><span class="on">Activity</span><span>Conflicts</span><span>Filters</span></div>
+   <div class="list">
+    <div class="lrow"><span class="when">Today 14:02</span><span class="dur">running</span><span class="res badge accent"><svg class="ico"><use href="#refresh"/></svg>Syncing…</span><span class="cnt">↑ 412  ↓ 0  ✕ 0</span></div>
+    <div class="lrow"><span class="when">Today 13:55</span><span class="dur">4 s</span><span class="res badge ok"><svg class="ico"><use href="#check"/></svg>Up to date</span><span class="cnt">↑ 2  ↓ 1  ✕ 0</span></div>
+    <div class="lrow"><span class="when">Today 13:50</span><span class="dur">6 s</span><span class="res badge dim"><svg class="ico"><use href="#alert"/></svg>Will retry</span><span class="cnt">network error</span></div>
+    <div class="lrow"><span class="when">Today 13:45</span><span class="dur">3 s</span><span class="res badge ok"><svg class="ico"><use href="#check"/></svg>Up to date</span><span class="cnt">↑ 0  ↓ 0  ✕ 0</span></div>
+    <div class="lrow"><span class="when">Today 13:40</span><span class="dur">5 s</span><span class="res badge ok"><svg class="ico"><use href="#check"/></svg>Up to date</span><span class="cnt">↑ 1  ↓ 0  ✕ 1</span></div>
+   </div>
+  </div>
+ </div>
+</div>
+
+<h1 class="caption">3. Review sheet (filters changed)</h1>
+<div class="win">
+ <div class="titlebar">Udesc</div>
+ <div class="body">
+  <div class="sidebar">
+   <div class="side-head">Syncs <button class="iconbtn"><svg class="ico"><use href="#plus"/></svg></button></div>
+   <div class="row"><svg class="ico" style="color:var(--secondary)"><use href="#folder"/></svg><div class="grow"><div class="t">Google Drive</div><div class="s">Synced just now</div></div><svg class="ico" style="color:var(--secondary)"><use href="#check"/></svg></div>
+   <div class="row sel"><svg class="ico" style="color:var(--secondary)"><use href="#folder"/></svg><div class="grow"><div class="t">Udesc</div><div class="s">Synced 2 hours ago</div></div><svg class="ico" style="color:var(--warning)"><use href="#eye"/></svg></div>
+  </div>
+  <div class="main">
+   <div class="toolbar"><div><div class="name">Udesc</div><div class="path">~/Desktop/Udesc ↔ gdrive:Faculdade</div></div></div>
+   <div class="card"><span class="badge warning"><svg class="ico"><use href="#eye"/></svg>Review needed</span><div class="callout">Review what will change before syncing resumes.</div><div><button class="btn primary">Review…</button></div></div>
+  </div>
+ </div>
+ <div class="scrim">
+  <div class="sheet">
+   <h2>Review Changes for Udesc</h2>
+   <div class="callout">Filters changed</div>
+   <div class="group"><div class="gh"><svg class="ico" style="color:var(--dim)"><use href="#chevd"/></svg>Would upload to gdrive<span class="n">3</span></div>
+    <div class="gb">estrutura-de-dados-ii/lista3.pdf<br>sistemas-operacionais/trab1/relatorio.md<br>sistemas-operacionais/trab1/main.c</div></div>
+   <div class="group"><div class="gh"><svg class="ico" style="color:var(--dim)"><use href="#chev"/></svg>Would download to this computer<span class="n">12</span></div></div>
+   <div class="group"><div class="gh"><svg class="ico" style="color:var(--dim)"><use href="#chev"/></svg>Would replace on this computer (old version kept for 30 days)<span class="n">1</span></div></div>
+   <div class="foot-note">Preview from a dry run. A few listed deletions may not happen in the real sync.</div>
+   <div class="foot"><button class="btn secondary">Cancel</button><button class="btn primary">Sync</button></div>
+  </div>
+ </div>
+</div>
+
+<h1 class="caption">4. Add Sync sheet, step 2 of 5</h1>
+<div class="win">
+ <div class="titlebar">Syncs</div>
+ <div class="body"><div class="sidebar"><div class="side-head">Syncs</div></div><div class="main"></div></div>
+ <div class="scrim">
+  <div class="sheet">
+   <div class="steps"><span>Account</span>›<b>Folder in gdrive</b>›<span>Folder on This Computer</span>›<span>Filters</span>›<span>Name</span></div>
+   <h2>Folder in gdrive</h2>
+   <div class="tree">
+    <div class="tr"><svg class="ico" style="color:var(--accent)"><use href="#fsync"/></svg><b>Entire gdrive</b></div>
+    <div class="tr"><span class="ch"><svg class="ico" style="width:12px"><use href="#chev"/></svg></span><svg class="ico" style="color:var(--secondary)"><use href="#folder"/></svg>Faculdade</div>
+    <div class="tr"><span class="ch"><svg class="ico" style="width:12px"><use href="#chev"/></svg></span><svg class="ico" style="color:var(--secondary)"><use href="#folder"/></svg>Fotos</div>
+    <div class="tr"><span class="ch"><svg class="ico" style="width:12px"><use href="#chev"/></svg></span><svg class="ico" style="color:var(--secondary)"><use href="#folder"/></svg>Livros</div>
+    <div class="tr sel"><span class="ch"><svg class="ico" style="width:12px"><use href="#chevd"/></svg></span><svg class="ico" style="color:var(--secondary)"><use href="#folder"/></svg>Pessoal</div>
+    <div class="tr" style="padding-left:40px"><svg class="ico" style="color:var(--secondary)"><use href="#folder"/></svg>Financeiro</div>
+    <div class="tr" style="padding-left:40px"><svg class="ico" style="color:var(--secondary)"><use href="#folder"/></svg>TEAjudo</div>
+   </div>
+   <div><button class="btn secondary"><svg class="ico"><use href="#plus"/></svg>New Folder…</button></div>
+   <div class="err"><svg class="ico"><use href="#alert"/></svg>remote folder overlaps "Google Drive"</div>
+   <div class="foot"><button class="btn secondary left">Cancel</button><button class="btn secondary">Back</button><button class="btn primary" disabled>Continue</button></div>
+  </div>
+ </div>
+</div>
+
+<h1 class="caption">5. Conflicts tab</h1>
+<div class="win">
+ <div class="titlebar">Notes</div>
+ <div class="body">
+  <div class="sidebar">
+   <div class="side-head">Syncs <button class="iconbtn"><svg class="ico"><use href="#plus"/></svg></button></div>
+   <div class="row sel"><svg class="ico" style="color:var(--secondary)"><use href="#folder"/></svg><div class="grow"><div class="t">Notes</div><div class="s">Synced 1 min ago</div></div><svg class="ico" style="color:var(--warning)"><use href="#copy"/></svg></div>
+  </div>
+  <div class="main">
+   <div class="toolbar"><div><div class="name">Notes</div><div class="path">~/Desktop/Personal/Notes ↔ gdrive:Notes</div></div><div class="spacer"></div><button class="btn primary"><svg class="ico"><use href="#refresh"/></svg>Sync Now</button><button class="btn secondary"><svg class="ico"><use href="#pause"/></svg>Pause</button><button class="btn secondary"><svg class="ico"><use href="#more"/></svg></button></div>
+   <div class="card"><span class="badge warning"><svg class="ico"><use href="#copy"/></svg>2 conflicts</span><div class="callout">Both versions were kept. Choose which one to keep.</div></div>
+   <div class="seg"><span>Activity</span><span class="on">Conflicts</span><span>Filters</span></div>
+   <div class="list">
+    <div class="lrow" style="min-height:64px"><div style="flex:1"><div style="font-weight:600">inbox/2026-11-02.md</div><div class="sub">Current: 4.1 KB, today 09:12 · Conflicted copy: 3.8 KB, today 09:10</div></div><button class="btn secondary">Keep Current</button><button class="btn secondary">Keep Conflicted Copy</button><button class="btn secondary">Keep Both</button></div>
+    <div class="lrow" style="min-height:64px"><div style="flex:1"><div style="font-weight:600">principios-ageis/scrum.md</div><div class="sub">Current: 12 KB, yesterday 18:40 · Conflicted copy: 11 KB, yesterday 18:31</div></div><button class="btn secondary">Keep Current</button><button class="btn secondary">Keep Conflicted Copy</button><button class="btn secondary">Keep Both</button></div>
+   </div>
+  </div>
+ </div>
+</div>
+
+<h1 class="caption">6. Settings › Accounts, plus tray menu</h1>
+<div class="win settings">
+ <div class="titlebar">Accounts</div>
+ <svg class="trayicon" style="color:var(--text)"><use href="#fsync"/></svg>
+ <span style="position:absolute;right:28px;top:26px;width:8px;height:8px;border-radius:4px;background:#F2B85C"></span>
+ <div class="body">
+  <div class="sidebar">
+   <div class="row sel" style="min-height:32px"><svg class="ico"><use href="#user"/></svg>Accounts</div>
+   <div class="row" style="min-height:32px"><svg class="ico" style="color:var(--secondary)"><use href="#palette"/></svg>Appearance</div>
+  </div>
+  <div class="main" style="padding:20px;gap:12px">
+   <div style="font-size:15px;font-weight:600">Accounts</div>
+   <div class="warn-row"><svg class="ico" style="color:var(--warning);margin-top:1px"><use href="#alert"/></svg><div style="flex:1"><div style="font-weight:600">gdrive · Google Drive</div><div class="callout">Uses rclone's shared client ID, which stops working in 2026.</div></div><button class="btn secondary">Use My Client ID…</button></div>
+   <div class="lrow" style="border:1px solid var(--outline);border-radius:8px;padding:0 12px"><svg class="ico" style="color:var(--secondary)"><use href="#user"/></svg><div style="flex:1"><b>trabalho</b> · Google Drive</div></div>
+   <div><button class="btn secondary"><svg class="ico"><use href="#plus"/></svg>Add Google Drive Account…</button></div>
+  </div>
+ </div>
+ <div class="tray">
+  <div class="mi dis">1 sync needs attention</div>
+  <div class="sep"></div>
+  <div class="mi">Show syncfast</div>
+  <div class="mi">Sync All Now</div>
+  <div class="mi">Pause All</div>
+  <div class="sep"></div>
+  <div class="mi">Settings…</div>
+  <div class="mi">Quit syncfast</div>
+ </div>
+</div>
+</body>
+</html>
