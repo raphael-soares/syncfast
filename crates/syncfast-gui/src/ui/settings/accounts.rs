@@ -16,6 +16,8 @@ pub const SHARED_CLIENT_ID: &str = "Uses rclone's shared client ID, which stops 
 pub const DISCONNECTED: &str = "Signed out. Reconnect to resume syncing.";
 
 const DRIVE: &str = "drive";
+const ROW_HEIGHT: f32 = 28.0;
+const FLAGGED_HEIGHT: f32 = 44.0;
 
 /// The type as people know it: `drive` is Google Drive.
 fn kind_label(kind: &str) -> &str {
@@ -88,36 +90,36 @@ fn row(
         .inner_margin(Margin::symmetric(12, 10))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = space::S;
-                if shared && secondary_button(ui, "Use My Client ID…").clicked() {
-                    actions.push(Action::EditAccount(remote.name.clone()));
-                }
-                if reconnect && primary_button(ui, "Reconnect…").clicked() {
-                    actions.push(Action::EditAccount(remote.name.clone()));
-                }
-                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = space::M;
-                    let (icon, color) = if flagged {
-                        (Icon::CircleAlert, palette.warning)
-                    } else {
-                        (Icon::User, palette.secondary)
-                    };
-                    ui.add(icon.image(color, size::ICON));
-                    ui.vertical(|ui| {
-                        ui.spacing_mut().item_spacing.y = 2.0;
-                        ui.label(title(palette, remote));
-                        for (text, shown) in [(DISCONNECTED, reconnect), (SHARED_CLIENT_ID, shared)]
-                        {
-                            if shown {
-                                ui.label(
-                                    RichText::new(text)
-                                        .font(theme::callout())
-                                        .color(palette.secondary),
-                                );
-                            }
+            ui.horizontal(|ui| {
+                ui.set_min_height(if flagged { FLAGGED_HEIGHT } else { ROW_HEIGHT });
+                ui.spacing_mut().item_spacing.x = space::M;
+                let (icon, color) = if flagged {
+                    (Icon::CircleAlert, palette.warning)
+                } else {
+                    (Icon::User, palette.secondary)
+                };
+                ui.add(icon.image(color, size::ICON));
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    ui.label(title(palette, remote));
+                    for (text, shown) in [(DISCONNECTED, reconnect), (SHARED_CLIENT_ID, shared)] {
+                        if shown {
+                            ui.label(
+                                RichText::new(text)
+                                    .font(theme::callout())
+                                    .color(palette.secondary),
+                            );
                         }
-                    });
+                    }
+                });
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = space::S;
+                    if shared && secondary_button(ui, "Use My Client ID…").clicked() {
+                        actions.push(Action::EditAccount(remote.name.clone()));
+                    }
+                    if reconnect && primary_button(ui, "Reconnect…").clicked() {
+                        actions.push(Action::EditAccount(remote.name.clone()));
+                    }
                 });
             });
         });

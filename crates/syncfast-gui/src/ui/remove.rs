@@ -6,6 +6,7 @@ use syncfast_core::config::split_remote;
 
 use super::widgets::{AlertButton, alert};
 use super::{Action, ViewModel};
+use crate::theme;
 
 const CANCEL: usize = 0;
 const REMOVE: usize = 1;
@@ -36,6 +37,8 @@ pub fn show(ctx: &egui::Context, vm: &ViewModel) -> Vec<Action> {
             AlertButton::destructive("Remove"),
         ],
         |ui| {
+            let outline = egui::Stroke::new(1.0, theme::palette(ctx).dim);
+            ui.visuals_mut().widgets.inactive.bg_stroke = outline;
             ui.checkbox(&mut delete_versions, "Also delete saved versions");
         },
     );

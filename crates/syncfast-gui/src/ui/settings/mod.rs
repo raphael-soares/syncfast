@@ -45,12 +45,8 @@ pub fn window(ctx: &egui::Context, vm: &ViewModel, app_id: &str) -> Vec<Action> 
         .with_min_inner_size(MIN_SIZE);
     let id = egui::ViewportId::from_hash_of("syncfast-settings");
     ctx.show_viewport_immediate(id, builder, |ui, _class| {
-        let close_requested = ui.ctx().input(|input| input.viewport().close_requested());
-        let escape = ui
-            .ctx()
-            .input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         actions.extend(content(ui, vm));
-        if close_requested || escape {
+        if ui.ctx().input(|input| input.viewport().close_requested()) {
             actions.push(Action::CloseSettings);
         }
     });
@@ -62,6 +58,8 @@ pub fn window(ctx: &egui::Context, vm: &ViewModel, app_id: &str) -> Vec<Action> 
 pub fn content(ui: &mut egui::Ui, vm: &ViewModel) -> Vec<Action> {
     let palette = theme::palette(ui.ctx());
     let mut actions = Vec::new();
+    // An open selector takes the first Esc to close itself.
+    let popup_open = egui::Popup::is_any_open(ui.ctx());
     egui::Panel::left("settings-sidebar")
         .resizable(false)
         .exact_size(SIDEBAR_WIDTH)
@@ -105,5 +103,11 @@ pub fn content(ui: &mut egui::Ui, vm: &ViewModel) -> Vec<Action> {
                     SettingsPane::Appearance => actions.extend(appearance::show(ui, vm)),
                 });
         });
+    let escape = ui
+        .ctx()
+        .input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+    if escape && !popup_open {
+        actions.push(Action::CloseSettings);
+    }
     actions
 }

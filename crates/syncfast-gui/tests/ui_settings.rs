@@ -185,3 +185,27 @@ fn theme_files_that_could_not_be_read_are_listed() {
 
     harness.get_by_label("broken.json: expected value at line 1");
 }
+
+#[test]
+fn escape_closes_the_window() {
+    let mut harness = harness(accounts(Vec::new()), screen());
+    harness.run();
+
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+
+    assert_eq!(harness.state().actions, [Action::CloseSettings]);
+}
+
+#[test]
+fn escape_with_the_theme_selector_open_only_closes_the_selector() {
+    let mut harness = harness(appearance(ThemeChoice::System, Vec::new()), screen());
+    harness.run();
+    harness.get_by_role(egui::accesskit::Role::ComboBox).click();
+    harness.run();
+
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+
+    assert!(harness.state().actions.is_empty());
+}

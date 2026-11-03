@@ -12,6 +12,7 @@ use crate::icons::Icon;
 use crate::theme::{self, space};
 
 const ROW_HEIGHT: f32 = 64.0;
+const LINE_GAP: f32 = 2.0;
 
 pub fn show(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
     let Some(pair) = vm.selected_pair() else {
@@ -73,26 +74,29 @@ fn row(
                     });
                 }
             }
-            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(conflict.original.display().to_string())
-                                .font(theme::headline())
-                                .color(palette.text),
-                        )
-                        .truncate(),
-                    );
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(describe(conflict, now, tz))
-                                .font(theme::subheadline())
-                                .color(palette.secondary),
-                        )
-                        .truncate(),
-                    );
-                });
+            let (title, detail) = (theme::headline(), theme::subheadline());
+            let text_height = ui
+                .ctx()
+                .fonts_mut(|fonts| fonts.row_height(&title) + LINE_GAP + fonts.row_height(&detail));
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = LINE_GAP;
+                ui.add_space(((ui.available_height() - text_height) / 2.0).max(0.0));
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(conflict.original.display().to_string())
+                            .font(title)
+                            .color(palette.text),
+                    )
+                    .truncate(),
+                );
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(describe(conflict, now, tz))
+                            .font(detail)
+                            .color(palette.secondary),
+                    )
+                    .truncate(),
+                );
             });
         });
     });
