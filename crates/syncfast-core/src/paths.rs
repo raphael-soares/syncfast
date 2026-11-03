@@ -108,6 +108,43 @@ impl Paths {
             .join("filters")
             .join(format!("{pair_id}.txt"))
     }
+
+    /// Where bisync keeps its listings for the pair.
+    #[must_use]
+    pub fn bisync_workdir(&self, pair_id: &str) -> PathBuf {
+        self.state_dir().join("bisync").join(pair_id)
+    }
+
+    #[must_use]
+    pub fn pair_state_dir(&self, pair_id: &str) -> PathBuf {
+        self.state_dir().join("pairs").join(pair_id)
+    }
+
+    #[must_use]
+    pub fn state_file(&self, pair_id: &str) -> PathBuf {
+        self.pair_state_dir(pair_id).join("state.json")
+    }
+
+    #[must_use]
+    pub fn confirm_file(&self, pair_id: &str) -> PathBuf {
+        self.pair_state_dir(pair_id).join("confirm.json")
+    }
+
+    #[must_use]
+    pub fn runs_dir(&self, pair_id: &str) -> PathBuf {
+        self.pair_state_dir(pair_id).join("runs")
+    }
+
+    #[must_use]
+    pub fn versions_dir(&self, pair_id: &str) -> PathBuf {
+        self.data_dir().join("versions").join(pair_id)
+    }
+
+    /// Held exclusively while a round runs; see [`crate::state::is_running`].
+    #[must_use]
+    pub fn lock_file(&self, pair_id: &str) -> PathBuf {
+        self.runtime_subdir().join(format!("{pair_id}.lock"))
+    }
 }
 
 fn current_uid() -> std::io::Result<u32> {
@@ -171,6 +208,30 @@ mod tests {
 
         assert_eq!(paths.config_home, Path::new("/home/ada/.config"));
         assert_eq!(paths.state_home, Path::new("/home/ada/.local/state"));
+    }
+
+    #[test]
+    fn per_pair_locations_live_under_their_xdg_roots() {
+        let paths = Paths::new(
+            "/home/ada".into(),
+            "/c".into(),
+            "/s".into(),
+            "/d".into(),
+            "/r".into(),
+        );
+
+        assert_eq!(paths.bisync_workdir("p"), Path::new("/s/syncfast/bisync/p"));
+        assert_eq!(
+            paths.state_file("p"),
+            Path::new("/s/syncfast/pairs/p/state.json")
+        );
+        assert_eq!(
+            paths.confirm_file("p"),
+            Path::new("/s/syncfast/pairs/p/confirm.json")
+        );
+        assert_eq!(paths.runs_dir("p"), Path::new("/s/syncfast/pairs/p/runs"));
+        assert_eq!(paths.versions_dir("p"), Path::new("/d/syncfast/versions/p"));
+        assert_eq!(paths.lock_file("p"), Path::new("/r/syncfast/p.lock"));
     }
 
     #[test]
