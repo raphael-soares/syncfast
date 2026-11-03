@@ -1,0 +1,11 @@
+pre-commit:
+  commands:
+    fmt:
+      run: cargo fmt --all --check
+    clippy:
+      run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+commit-msg:
+  commands:
+    conventional:
+      run: scripts/check-commit-msg.sh {1}
