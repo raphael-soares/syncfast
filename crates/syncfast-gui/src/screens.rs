@@ -1,5 +1,7 @@
-//! What the Conflicts and Filters tabs and the `Remove Sync` alert remember
-//! between frames, and what they ask of the backend.
+//! What the Conflicts and Filters tabs, the `Remove Sync` alert and the
+//! accounts pane remember between frames, and what they ask of the backend.
+
+use std::collections::BTreeMap;
 
 use jiff::Timestamp;
 use syncfast_core::conflicts::Conflict;
@@ -8,7 +10,7 @@ use syncfast_core::state::GateKind;
 use crate::backend::{Command, Event};
 use crate::snapshot::Snapshot;
 use crate::ui::filters::{FilterRules, FilterTest, FilterTestState};
-use crate::ui::{Action, ViewModel};
+use crate::ui::{AccountStatus, Action, ViewModel};
 
 /// What tells that a round changed the conflicts of a sync.
 type ConflictKey = (String, Option<Timestamp>, u32);
@@ -17,6 +19,8 @@ type ConflictKey = (String, Option<Timestamp>, u32);
 pub struct Screens {
     pub settings_open: bool,
     removing: Option<String>,
+    account_status: BTreeMap<String, AccountStatus>,
+    removing_account: Option<String>,
     conflicts: Option<(String, Vec<Conflict>)>,
     conflict_key: Option<ConflictKey>,
     filter_test: Option<FilterTest>,
@@ -29,6 +33,8 @@ impl Screens {
     /// Puts what these screens show into the view model.
     pub fn fill(&self, vm: &mut ViewModel) {
         vm.removing.clone_from(&self.removing);
+        vm.account_status.clone_from(&self.account_status);
+        vm.removing_account.clone_from(&self.removing_account);
         vm.conflicts = self
             .conflicts
             .as_ref()
@@ -41,6 +47,9 @@ impl Screens {
 
     pub fn on_event(&mut self, event: Event) {
         match event {
+            Event::AccountStatus { name, status } => {
+                self.account_status.insert(name, status);
+            }
             Event::Conflicts { id, found } => self.conflicts = Some((id, found)),
             Event::FilterTest {
                 id,
@@ -136,6 +145,18 @@ impl Screens {
                     id,
                     delete_versions,
                 })
+            }
+            Action::RemoveAccount(name) => {
+                self.removing_account = Some(name);
+                None
+            }
+            Action::CancelRemoveAccount => {
+                self.removing_account = None;
+                None
+            }
+            Action::ConfirmRemoveAccount(name) => {
+                self.removing_account = None;
+                Some(Command::RemoveAccount(name))
             }
             Action::RefreshConflicts(id) => Some(Command::ScanConflicts(id)),
             Action::ResolveConflict {
@@ -372,5 +393,56 @@ mod tests {
         };
         screens.fill(&mut vm);
         assert!(!vm.filters_saved);
+    }
+
+    #[test]
+    fn confirming_the_removal_of_an_account_closes_the_alert_and_sends_the_name_on() {
+        let mut screens = Screens::default();
+        let mut vm = ViewModel::default();
+
+        let asked = screens.act(Action::RemoveAccount("gdrive".to_owned()));
+        screens.fill(&mut vm);
+        assert_eq!(asked, None);
+        assert_eq!(vm.removing_account.as_deref(), Some("gdrive"));
+
+        let command = screens.act(Action::ConfirmRemoveAccount("gdrive".to_owned()));
+        screens.fill(&mut vm);
+
+        assert_eq!(command, Some(Command::RemoveAccount("gdrive".to_owned())));
+        assert_eq!(vm.removing_account, None);
+    }
+
+    #[test]
+    fn cancelling_the_removal_of_an_account_sends_nothing() {
+        let mut screens = Screens::default();
+        screens.act(Action::RemoveAccount("gdrive".to_owned()));
+
+        let command = screens.act(Action::CancelRemoveAccount);
+
+        let mut vm = ViewModel::default();
+        screens.fill(&mut vm);
+        assert_eq!(command, None);
+        assert_eq!(vm.removing_account, None);
+    }
+
+    #[test]
+    fn the_last_status_of_each_account_reaches_the_view() {
+        let mut screens = Screens::default();
+        screens.on_event(Event::AccountStatus {
+            name: "gdrive".to_owned(),
+            status: AccountStatus::Checking,
+        });
+        screens.on_event(Event::AccountStatus {
+            name: "gdrive".to_owned(),
+            status: AccountStatus::SignedOut,
+        });
+
+        let mut vm = ViewModel::default();
+        screens.fill(&mut vm);
+
+        assert_eq!(
+            vm.account_status.get("gdrive"),
+            Some(&AccountStatus::SignedOut)
+        );
     }
 }

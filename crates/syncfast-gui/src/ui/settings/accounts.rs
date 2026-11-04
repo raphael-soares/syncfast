@@ -1,16 +1,18 @@
-//! Settings > Accounts: the rclone remotes, with a warning for a Google Drive
-//! remote on the shared client ID and a `Reconnect…` for one whose sync lost
-//! its sign-in.
+//! Settings > Accounts: the rclone remotes, each with the state of its
+//! sign-in, a warning for a Google Drive remote on the shared client ID and
+//! the buttons that reconnect, change the client ID, rename or remove it.
 
 use egui::text::{LayoutJob, TextFormat};
-use egui::{Align, Frame, Layout, Margin, RichText, Ui};
+use egui::{Align, Color32, Frame, Layout, Margin, RichText, Ui};
 use syncfast_core::config::split_remote;
 use syncfast_core::state::GateKind;
 
 use crate::icons::Icon;
 use crate::theme::{self, Palette, radius, size, space};
-use crate::ui::widgets::{ButtonKind, button_with_icon, primary_button, secondary_button};
-use crate::ui::{Action, RemoteRow, ViewModel};
+use crate::ui::widgets::{
+    ButtonKind, button_with_icon, destructive_button, primary_button, secondary_button,
+};
+use crate::ui::{AccountStatus, Action, RemoteRow, ViewModel};
 
 pub const SHARED_CLIENT_ID: &str = "Uses rclone's shared client ID, which stops working in 2026.";
 pub const DISCONNECTED: &str = "Signed out. Reconnect to resume syncing.";
@@ -41,7 +43,8 @@ pub fn show(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
     for remote in &vm.remotes {
         let shared = remote.shares_client_id();
         let reconnect = needs_reconnect(vm, &remote.name);
-        actions.extend(row(ui, &palette, remote, shared, reconnect));
+        let status = vm.account_status.get(&remote.name);
+        actions.extend(row(ui, &palette, remote, shared, reconnect, status));
     }
     if vm.remotes.is_empty() {
         ui.label(
@@ -78,15 +81,38 @@ fn title(palette: &Palette, remote: &RemoteRow) -> LayoutJob {
     job
 }
 
+/// The line under the title that says how the sign-in stands, if any.
+/// `Signed out` shows once, whether the status or a held sync says it.
+fn status_line(
+    palette: &Palette,
+    status: Option<&AccountStatus>,
+    disconnected: bool,
+) -> Option<(String, Color32)> {
+    if disconnected && !matches!(status, Some(AccountStatus::Problem(_))) {
+        return Some((DISCONNECTED.to_owned(), palette.warning));
+    }
+    match status? {
+        AccountStatus::Checking => Some(("Checking…".to_owned(), palette.secondary)),
+        AccountStatus::SignedIn => Some(("Signed in".to_owned(), palette.secondary)),
+        AccountStatus::SignedOut => Some((DISCONNECTED.to_owned(), palette.warning)),
+        AccountStatus::Offline => Some(("Offline. Not checked.".to_owned(), palette.secondary)),
+        AccountStatus::Problem(detail) => Some((format!("Problem: {detail}"), palette.warning)),
+    }
+}
+
 fn row(
     ui: &mut Ui,
     palette: &Palette,
     remote: &RemoteRow,
     shared: bool,
     reconnect: bool,
+    status: Option<&AccountStatus>,
 ) -> Vec<Action> {
     let mut actions = Vec::new();
-    let flagged = shared || reconnect;
+    let signed_out = reconnect || status == Some(&AccountStatus::SignedOut);
+    let problem = matches!(status, Some(AccountStatus::Problem(_)));
+    let flagged = shared || signed_out || problem;
+    let line = status_line(palette, status, signed_out);
     Frame::new()
         .stroke(egui::Stroke::new(1.0, palette.outline))
         .corner_radius(radius::CARD)
@@ -94,7 +120,11 @@ fn row(
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.set_min_height(if flagged { FLAGGED_HEIGHT } else { ROW_HEIGHT });
+                ui.set_min_height(if line.is_some() || shared {
+                    FLAGGED_HEIGHT
+                } else {
+                    ROW_HEIGHT
+                });
                 ui.spacing_mut().item_spacing.x = space::M;
                 let (icon, color) = if flagged {
                     (Icon::CircleAlert, palette.warning)
@@ -105,22 +135,36 @@ fn row(
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     ui.label(title(palette, remote));
-                    for (text, shown) in [(DISCONNECTED, reconnect), (SHARED_CLIENT_ID, shared)] {
-                        if shown {
-                            ui.label(
-                                RichText::new(text)
-                                    .font(theme::callout())
-                                    .color(palette.secondary),
-                            );
-                        }
+                    if let Some((text, color)) = &line {
+                        ui.label(RichText::new(text).font(theme::callout()).color(*color));
+                    }
+                    if shared {
+                        ui.label(
+                            RichText::new(SHARED_CLIENT_ID)
+                                .font(theme::callout())
+                                .color(palette.secondary),
+                        );
                     }
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = space::S;
-                    if shared && secondary_button(ui, "Use My Client ID…").clicked() {
-                        actions.push(Action::ChangeClientId(remote.name.clone()));
+                    if destructive_button(ui, "Remove…").clicked() {
+                        actions.push(Action::RemoveAccount(remote.name.clone()));
                     }
-                    if reconnect && primary_button(ui, "Reconnect…").clicked() {
+                    if remote.is_drive() && secondary_button(ui, "Rename…").clicked() {
+                        actions.push(Action::RenameAccount(remote.name.clone()));
+                    }
+                    if remote.is_drive() {
+                        let label = if shared {
+                            "Use My Client ID…"
+                        } else {
+                            "Change Client ID…"
+                        };
+                        if secondary_button(ui, label).clicked() {
+                            actions.push(Action::ChangeClientId(remote.name.clone()));
+                        }
+                    }
+                    if signed_out && primary_button(ui, "Reconnect…").clicked() {
                         actions.push(Action::ReconnectAccount(remote.name.clone()));
                     }
                 });

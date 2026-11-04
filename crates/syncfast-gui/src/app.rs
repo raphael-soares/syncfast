@@ -1,6 +1,7 @@
 //! The app that outlives its window: it owns the backend, the tray and the
 //! state the screens show, and applies the actions they emit.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -185,6 +186,8 @@ impl App {
             filter_test: None,
             filters_saved: false,
             removing: None,
+            account_status: BTreeMap::new(),
+            removing_account: None,
         };
         self.screens.fill(&mut vm);
         vm
@@ -330,7 +333,8 @@ impl App {
             Event::Failed(text) => self.error = Some(text),
             event @ (Event::Conflicts { .. }
             | Event::FilterTest { .. }
-            | Event::FiltersSaved(_)) => self.screens.on_event(event),
+            | Event::FiltersSaved(_)
+            | Event::AccountStatus { .. }) => self.screens.on_event(event),
             other => {
                 for command in self.sheets.handle_event(&other) {
                     self.backend.send(command);
@@ -496,6 +500,7 @@ impl App {
         }
         actions.extend(sheet_actions);
         actions.extend(ui::remove::show(&ctx, &vm));
+        actions.extend(ui::remove_account::show(&ctx, &vm));
         let (commands, wait) = self.sheets.tick(Instant::now());
         for command in commands {
             self.backend.send(command);
@@ -560,6 +565,7 @@ impl App {
             | Action::AddAccount
             | Action::ReconnectAccount(_)
             | Action::ChangeClientId(_)
+            | Action::RenameAccount(_)
             | Action::Review(_)
             | Action::AddSyncSheet(_)
             | Action::Account(_) => {
@@ -571,6 +577,9 @@ impl App {
             | Action::SetSettingsPane(_)
             | Action::SetTheme(_) => self.apply_to_settings(action, ctx),
             action @ (Action::RemoveSync(_)
+            | Action::RemoveAccount(_)
+            | Action::CancelRemoveAccount
+            | Action::ConfirmRemoveAccount(_)
             | Action::CancelRemove
             | Action::ConfirmRemove { .. }
             | Action::RefreshConflicts(_)
@@ -648,13 +657,26 @@ impl App {
 
     fn apply_to_settings(&mut self, action: Action, ctx: &egui::Context) {
         match action {
-            Action::OpenSettings => self.open_settings(ctx),
+            Action::OpenSettings => {
+                self.open_settings(ctx);
+                if self.gui.settings_pane == SettingsPane::Accounts {
+                    self.backend.send(Command::CheckAccounts);
+                }
+            }
             Action::OpenAccounts => {
                 self.remember_pane(SettingsPane::Accounts);
                 self.open_settings(ctx);
+                self.backend.send(Command::CheckAccounts);
             }
             Action::CloseSettings => self.screens.settings_open = false,
-            Action::SetSettingsPane(pane) => self.remember_pane(pane),
+            Action::SetSettingsPane(pane) => {
+                let entering_accounts =
+                    pane == SettingsPane::Accounts && self.gui.settings_pane != pane;
+                self.remember_pane(pane);
+                if entering_accounts {
+                    self.backend.send(Command::CheckAccounts);
+                }
+            }
             Action::SetTheme(choice) if self.gui.theme != choice => {
                 self.gui.theme = choice;
                 self.mark_gui_dirty();

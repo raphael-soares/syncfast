@@ -12,12 +12,14 @@ pub mod format;
 pub mod menu;
 pub mod relative;
 pub mod remove;
+pub mod remove_account;
 pub mod review;
 pub mod settings;
 pub mod sidebar;
 pub mod welcome;
 pub mod widgets;
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use jiff::Timestamp;
@@ -115,6 +117,19 @@ impl RemoteRow {
     }
 }
 
+/// Whether the sign-in of an account works, as the last check found it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AccountStatus {
+    Checking,
+    SignedIn,
+    SignedOut,
+    /// The check failed and the computer is offline.
+    Offline,
+    /// The check failed for a reason that signing in again does not fix:
+    /// rclone's last error line.
+    Problem(String),
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ViewModel {
     pub pairs: Vec<PairRow>,
@@ -137,6 +152,10 @@ pub struct ViewModel {
     pub filters_saved: bool,
     /// The sync the `Remove Sync` alert asks about.
     pub removing: Option<String>,
+    /// What the last check of each account found, by account name.
+    pub account_status: BTreeMap<String, AccountStatus>,
+    /// The account the `Remove` alert asks about.
+    pub removing_account: Option<String>,
 }
 
 impl ViewModel {
@@ -207,6 +226,12 @@ pub enum Action {
     ReconnectAccount(String),
     /// Opens the account sheet to give a remote the user's own client ID.
     ChangeClientId(String),
+    /// Asks to remove an account (the alert decides).
+    RemoveAccount(String),
+    CancelRemoveAccount,
+    ConfirmRemoveAccount(String),
+    /// Opens the account sheet to sign in again under a new name.
+    RenameAccount(String),
     Review(review::ReviewAction),
     AddSyncSheet(add_sync::AddSyncAction),
     Account(account_sheet::AccountAction),

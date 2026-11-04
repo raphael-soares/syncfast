@@ -309,6 +309,28 @@ impl Config {
         )
     }
 
+    /// Points every sync on the account `from` at `to`, keeping the folder
+    /// and the comments. Returns the ids of the syncs it changed, in config
+    /// order.
+    pub fn rename_account(&mut self, from: &str, to: &str) -> Vec<String> {
+        let moved: Vec<(String, String)> = self
+            .pairs
+            .iter()
+            .filter_map(|pair| {
+                let (account, folder) = split_remote(&pair.remote)?;
+                (account == from).then(|| (pair.id.clone(), format!("{to}:{folder}")))
+            })
+            .collect();
+        for (id, remote) in &moved {
+            self.edit_pair(
+                id,
+                |pair| pair.remote.clone_from(remote),
+                |table| replace_value(table, "remote", Value::from(remote.as_str())),
+            );
+        }
+        moved.into_iter().map(|(id, _)| id).collect()
+    }
+
     /// The file contents with comments and ordering intact.
     #[must_use]
     pub fn to_toml(&self) -> String {
@@ -1132,6 +1154,26 @@ mod tests {
             config.to_toml(),
             "# my syncs\nversion = 1\n\n# the main one\n[[pair]]\nid = \"drive\" # short id\nname = \"Drive\"\nlocal = \"/data/Drive\"\nremote = \"gdrive:\"\n# pause with false\nenabled = false\npresets = [\"dev_dirs\"] # defaults\nfilters = [\"- *.bak\"]\n"
         );
+    }
+
+    #[test]
+    fn rename_account_moves_only_its_syncs_and_keeps_comments() {
+        let text = "version = 1\n\n# the notes\n[[pair]]\nid = \"notes\"\nname = \"Notes\"\nlocal = \"/data/Notes\"\nremote = \"gdrive:Notes\" # on drive\n\n[[pair]]\nid = \"all\"\nname = \"All\"\nlocal = \"/data/All\"\nremote = \"gdrive:\"\n\n[[pair]]\nid = \"elsewhere\"\nname = \"Elsewhere\"\nlocal = \"/data/Elsewhere\"\nremote = \"other:x\"\n";
+        let mut config = Config::parse(text, Path::new(HOME)).unwrap();
+
+        let moved = config.rename_account("gdrive", "personal");
+
+        assert_eq!(moved, ["notes", "all"]);
+        assert_eq!(
+            config.to_toml(),
+            "version = 1\n\n# the notes\n[[pair]]\nid = \"notes\"\nname = \"Notes\"\nlocal = \"/data/Notes\"\nremote = \"personal:Notes\" # on drive\n\n[[pair]]\nid = \"all\"\nname = \"All\"\nlocal = \"/data/All\"\nremote = \"personal:\"\n\n[[pair]]\nid = \"elsewhere\"\nname = \"Elsewhere\"\nlocal = \"/data/Elsewhere\"\nremote = \"other:x\"\n"
+        );
+        let remotes: Vec<_> = config
+            .pairs()
+            .iter()
+            .map(|pair| pair.remote.as_str())
+            .collect();
+        assert_eq!(remotes, ["personal:Notes", "personal:", "other:x"]);
     }
 
     #[test]

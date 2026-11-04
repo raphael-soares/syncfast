@@ -7,6 +7,7 @@ use std::ffi::{OsStr, OsString};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
+use std::time::Duration;
 
 use serde::Deserialize;
 use tokio::process::{Child, Command};
@@ -21,6 +22,9 @@ const DRIVE_TYPE: &str = "drive";
 /// rclone's exit codes for a folder and for a file that is not there.
 const NOT_FOUND: i32 = 3;
 const FILE_NOT_FOUND: i32 = 4;
+/// How long the short calls (`listremotes`, `about`, `lsjson`...) may take
+/// before they count as failed. Rounds and sign-ins have no such limit.
+pub(crate) const SHORT_CALL_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, thiserror::Error)]
 pub enum RcloneError {
@@ -109,13 +113,32 @@ impl Rclone {
         args: Vec<OsString>,
         keep_stderr: bool,
     ) -> Result<Vec<u8>, RcloneError> {
-        let output = self
+        self.output_within(SHORT_CALL_TIMEOUT, name, args, keep_stderr)
+            .await
+    }
+
+    /// The child is killed when the wait runs out: `kill_on_drop`.
+    async fn output_within(
+        &self,
+        limit: Duration,
+        name: &'static str,
+        args: Vec<OsString>,
+        keep_stderr: bool,
+    ) -> Result<Vec<u8>, RcloneError> {
+        let call = self
             .command(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .output()
-            .await
-            .map_err(RcloneError::Spawn)?;
+            .output();
+        let output = match tokio::time::timeout(limit, call).await {
+            Ok(done) => done.map_err(RcloneError::Spawn)?,
+            Err(_) => {
+                return Err(RcloneError::Failed {
+                    command: name,
+                    detail: format!("no answer within {} seconds", limit.as_secs()),
+                });
+            }
+        };
         if output.status.success() {
             return Ok(output.stdout);
         }
@@ -128,6 +151,37 @@ impl Rclone {
             command: name,
             detail,
         })
+    }
+
+    /// Removes the remote `name` from the rclone config.
+    ///
+    /// # Errors
+    /// rclone cannot run or fails.
+    pub async fn delete_remote(&self, name: &str) -> Result<(), RcloneError> {
+        self.output(
+            "config delete",
+            ["config", "delete", name].map(OsString::from).to_vec(),
+            true,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Opens the remote with `about`, which needs a working sign-in. The
+    /// detail of a failure is rclone's last stderr line, never a token.
+    ///
+    /// # Errors
+    /// rclone cannot run, or the remote refuses.
+    pub async fn check_remote(&self, name: &str) -> Result<(), RcloneError> {
+        self.output(
+            "about",
+            ["about".to_owned(), format!("{name}:"), "--json".to_owned()]
+                .map(OsString::from)
+                .to_vec(),
+            true,
+        )
+        .await?;
+        Ok(())
     }
 
     /// Remote names, without the trailing `:`.
@@ -284,6 +338,37 @@ impl Rclone {
             format!("client_id={client_id}"),
             format!("client_secret={client_secret}"),
         ])
+    }
+
+    /// Writes `client_id` and `client_secret` into the remote `name` without
+    /// a sign-in. Plain `config update` goes on to ask for a new token and
+    /// opens the browser; `--non-interactive` stops after saving the
+    /// options and leaves the saved token alone.
+    ///
+    /// # Errors
+    /// rclone cannot run or fails. The secret is never part of the error.
+    pub async fn set_drive_credentials(
+        &self,
+        name: &str,
+        client_id: &str,
+        client_secret: &str,
+    ) -> Result<(), RcloneError> {
+        self.output(
+            "config update",
+            [
+                "config".to_owned(),
+                "update".to_owned(),
+                name.to_owned(),
+                format!("client_id={client_id}"),
+                format!("client_secret={client_secret}"),
+                "--non-interactive".to_owned(),
+            ]
+            .map(OsString::from)
+            .to_vec(),
+            false,
+        )
+        .await?;
+        Ok(())
     }
 
     fn config_child(&self, args: impl IntoIterator<Item = String>) -> Result<Child, RcloneError> {
@@ -907,5 +992,138 @@ type = local
                 "client_secret=the-secret",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn delete_remote_removes_only_that_remote() {
+        let Some((rclone, _dir)) = rclone_with("[a]\ntype = local\n\n[b]\ntype = local\n") else {
+            return;
+        };
+
+        rclone.delete_remote("a").await.unwrap();
+
+        assert_eq!(rclone.listremotes().await.unwrap(), ["b"]);
+    }
+
+    #[tokio::test]
+    async fn check_remote_is_ok_for_a_local_remote_and_fails_for_an_unknown_one() {
+        let Some((rclone, _dir)) = rclone_with(LOCAL_REMOTE) else {
+            return;
+        };
+
+        assert!(rclone.check_remote("testremote").await.is_ok());
+        let error = rclone.check_remote("nothere").await.unwrap_err();
+        assert!(matches!(
+            error,
+            RcloneError::Failed {
+                command: "about",
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn check_remote_and_delete_remote_name_the_remote_in_the_arguments() {
+        let dir = tempfile::tempdir().unwrap();
+        let rclone = fake_rclone(dir.path(), "printf '%s\\n' \"$@\" >&2; exit 1");
+
+        let about = rclone.check_remote("mine").await.unwrap_err();
+        let delete = rclone.delete_remote("mine").await.unwrap_err();
+
+        // The detail is the last stderr line, so the last argument.
+        assert!(matches!(&about, RcloneError::Failed { detail, .. } if detail == "--json"));
+        assert!(matches!(&delete, RcloneError::Failed { detail, .. } if detail == "mine"));
+    }
+
+    #[tokio::test]
+    async fn a_short_call_that_does_not_answer_fails_and_the_child_is_killed() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
+        let rclone = fake_rclone(
+            dir.path(),
+            &format!("echo $$ > '{}'; exec sleep 30", pid_file.display()),
+        );
+
+        let error = rclone
+            .output_within(
+                Duration::from_secs(1),
+                "listremotes",
+                vec!["listremotes".into()],
+                true,
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "rclone listremotes failed: no answer within 1 seconds"
+        );
+        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        let proc = PathBuf::from(format!("/proc/{}", pid.trim()));
+        for _ in 0..40 {
+            if !proc.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(!proc.exists(), "the child {} is still running", pid.trim());
+    }
+
+    #[test]
+    fn short_calls_wait_sixty_seconds() {
+        assert_eq!(SHORT_CALL_TIMEOUT, Duration::from_secs(60));
+    }
+
+    #[tokio::test]
+    async fn set_drive_credentials_passes_the_options_non_interactively_and_keeps_the_secret_out_of_errors()
+     {
+        let dir = tempfile::tempdir().unwrap();
+        let failing = fake_rclone(
+            dir.path(),
+            "printf '%s\\n' \"$@\" > \"$0.args\"; echo TOPSECRET >&2; exit 4",
+        );
+        let error = failing
+            .set_drive_credentials("mine", "the-id", "TOPSECRET")
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "rclone config update failed: exit code 4"
+        );
+        let recorded = std::fs::read_to_string(dir.path().join("fake-rclone.args")).unwrap();
+        assert_eq!(
+            recorded.lines().collect::<Vec<_>>(),
+            [
+                "config",
+                "update",
+                "mine",
+                "client_id=the-id",
+                "client_secret=TOPSECRET",
+                "--non-interactive",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn set_drive_credentials_rewrites_a_signed_in_drive_remote_without_signing_in_again() {
+        let config = "[mine]\ntype = drive\nclient_id = old-id\nclient_secret = old-secret\ntoken = {\"access_token\":\"a\",\"refresh_token\":\"r\",\"expiry\":\"2020-01-01T00:00:00Z\"}\n";
+        let Some((rclone, dir)) = rclone_with(config) else {
+            return;
+        };
+
+        rclone
+            .set_drive_credentials("mine", "new-id", "new-secret")
+            .await
+            .unwrap();
+
+        let (id, secret) = rclone
+            .drive_client_credentials("mine")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((id.as_str(), secret.as_str()), ("new-id", "new-secret"));
+        let saved = std::fs::read_to_string(dir.path().join("rclone.conf")).unwrap();
+        assert!(saved.contains("\"refresh_token\":\"r\""), "{saved}");
     }
 }

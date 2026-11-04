@@ -52,6 +52,12 @@ pub enum AccountMode {
     ChangeClientId {
         name: String,
     },
+    /// Sign in again under a new name, with the credentials of `from`. The
+    /// backend then moves the syncs of `from` to the new account and removes
+    /// `from`.
+    Rename {
+        from: String,
+    },
 }
 
 impl AccountMode {
@@ -60,7 +66,9 @@ impl AccountMode {
     pub fn remote(&self) -> Option<&str> {
         match self {
             Self::Add => None,
-            Self::Update { name } | Self::ChangeClientId { name } => Some(name),
+            Self::Update { name } | Self::ChangeClientId { name } | Self::Rename { from: name } => {
+                Some(name)
+            }
         }
     }
 }
@@ -106,7 +114,7 @@ impl AccountState {
     #[must_use]
     pub fn new(mode: AccountMode) -> Self {
         let name = match &mode {
-            AccountMode::Add => String::new(),
+            AccountMode::Add | AccountMode::Rename { .. } => String::new(),
             AccountMode::Update { name } | AccountMode::ChangeClientId { name } => name.clone(),
         };
         Self {
@@ -154,7 +162,9 @@ fn can_connect(state: &AccountState, view: &AccountView<'_>) -> bool {
     let has_credentials =
         !state.client_id.trim().is_empty() && !state.client_secret.trim().is_empty();
     match state.mode {
-        AccountMode::Add => name_problem(&state.name, view.existing).is_none() && has_credentials,
+        AccountMode::Add | AccountMode::Rename { .. } => {
+            name_problem(&state.name, view.existing).is_none() && has_credentials
+        }
         AccountMode::ChangeClientId { .. } => has_credentials,
         AccountMode::Update { .. } => true,
     }
@@ -164,7 +174,8 @@ fn title(mode: &AccountMode) -> String {
     match mode {
         AccountMode::Add => "Add Google Drive Account".to_owned(),
         AccountMode::Update { name } => format!("Reconnect \"{name}\""),
-        AccountMode::ChangeClientId { name } => format!("Use My Client ID for \"{name}\""),
+        AccountMode::ChangeClientId { name } => format!("Client ID for \"{name}\""),
+        AccountMode::Rename { from } => format!("Rename \"{from}\""),
     }
 }
 
@@ -204,7 +215,16 @@ pub fn show(ctx: &egui::Context, view: &AccountView<'_>, state: &mut AccountStat
         }
         ui.add_space(space::XS);
         match &state.mode {
-            AccountMode::Add => {
+            AccountMode::Add | AccountMode::Rename { .. } => {
+                if let AccountMode::Rename { from } = &state.mode {
+                    ui.label(
+                        RichText::new(format!(
+                            "Renaming signs in again with the new name. Syncs on \"{from}\" move to it and ask for a review."
+                        ))
+                        .font(theme::callout())
+                        .color(palette.secondary),
+                    );
+                }
                 text_field(ui, "Account name", &mut state.name, "gdrive");
                 if !state.name.is_empty()
                     && let Some(problem) = name_problem(&state.name, view.existing)

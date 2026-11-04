@@ -323,7 +323,7 @@ fn using_my_client_id_names_the_account_and_needs_both_credentials() {
         screen.state.client_secret = "hunter2".into();
     });
 
-    empty.get_by_label("Use My Client ID for \"gdrive\"");
+    empty.get_by_label("Client ID for \"gdrive\"");
     assert!(empty.get_by_label("Connect").accesskit_node().is_disabled());
     assert!(
         !filled
@@ -332,4 +332,66 @@ fn using_my_client_id_names_the_account_and_needs_both_credentials() {
             .is_disabled()
     );
     assert!(empty.query_by_label("Account name").is_none());
+}
+
+fn rename() -> AccountMode {
+    AccountMode::Rename {
+        from: "gdrive".into(),
+    }
+}
+
+#[test]
+fn renaming_names_the_old_account_and_explains_the_new_sign_in() {
+    let harness = harness(rename(), |_| {});
+
+    harness.get_by_label("Rename \"gdrive\"");
+    harness.get_by_label(
+        "Renaming signs in again with the new name. Syncs on \"gdrive\" move to it and ask for a review.",
+    );
+    harness.get_by_label("Account name");
+    harness.get_by_label("Connect");
+}
+
+#[test]
+fn renaming_starts_with_an_empty_name_and_keeps_connect_disabled_until_it_is_new() {
+    let empty = harness(rename(), |_| {});
+    let taken = harness(rename(), |screen| {
+        filled(screen);
+        screen.state.name = "gdrive".into();
+    });
+    let no_secret = harness(rename(), |screen| {
+        filled(screen);
+        screen.state.client_secret.clear();
+    });
+    let ready = harness(rename(), filled);
+
+    assert_eq!(AccountState::new(rename()).name, "");
+    assert!(empty.get_by_label("Connect").accesskit_node().is_disabled());
+    taken.get_by_label("An account named \"gdrive\" already exists.");
+    assert!(taken.get_by_label("Connect").accesskit_node().is_disabled());
+    assert!(
+        no_secret
+            .get_by_label("Connect")
+            .accesskit_node()
+            .is_disabled()
+    );
+    assert!(!ready.get_by_label("Connect").accesskit_node().is_disabled());
+}
+
+#[test]
+fn renaming_sends_the_rename_mode_with_the_new_name() {
+    let mut harness = harness(rename(), filled);
+
+    harness.get_by_label("Connect").click();
+    harness.run();
+
+    assert_eq!(
+        harness.state().actions,
+        [Action::Account(AccountAction::Connect(ConnectRequest {
+            mode: rename(),
+            name: "trabalho".into(),
+            client_id: "123.apps.googleusercontent.com".into(),
+            client_secret: Secret::new("hunter2".into()),
+        }))]
+    );
 }

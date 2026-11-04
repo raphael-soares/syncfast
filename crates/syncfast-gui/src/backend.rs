@@ -14,6 +14,7 @@ use syncfast_core::config::Config;
 use syncfast_core::conflicts::{Conflict, Resolution};
 use syncfast_core::filters::ExclusionSummary;
 use syncfast_core::flatpak;
+use syncfast_core::network::{Network as _, NetworkManager};
 use syncfast_core::paths::Paths;
 use syncfast_core::preview::Preview;
 use syncfast_core::rclone::Rclone;
@@ -32,9 +33,9 @@ use crate::pair_tools;
 use crate::sheet_io::{self, PreviewFailure};
 use crate::snapshot::{self, Snapshot};
 use crate::theme::{ThemeChoice, Themes};
-use crate::ui::RemoteRow;
-use crate::ui::account_sheet::{ConnectRequest, Secret};
+use crate::ui::account_sheet::{AccountMode, ConnectRequest, Secret};
 use crate::ui::add_sync::{LocalFacts, NewSync};
+use crate::ui::{AccountStatus, RemoteRow};
 use syncfast_core::runs::{self, RunEntry};
 
 const POLL_ACTIVE: Duration = Duration::from_secs(1);
@@ -131,6 +132,11 @@ pub enum Command {
     ConnectAccount(ConnectRequest),
     /// Kill the sign-in in progress.
     CancelConnect,
+    /// Check the sign-in of every account, one `AccountStatus` event each.
+    CheckAccounts,
+    /// Take an account out of rclone's config. Its syncs stay in the config
+    /// and stop with the account missing.
+    RemoveAccount(String),
 }
 
 /// What the backend tells the UI.
@@ -177,6 +183,11 @@ pub enum Event {
     /// The sign-in ended: the account's name, or rclone's last error line.
     /// A cancelled sign-in sends nothing.
     Connected(Result<String, String>),
+    /// What the check of an account found so far.
+    AccountStatus {
+        name: String,
+        status: AccountStatus,
+    },
     /// The conflicts found in the folder of a sync.
     Conflicts {
         id: String,
@@ -402,6 +413,8 @@ async fn run(
                     }
                     Command::LoadCredentials(name) => spawn_load_credentials(&context, name),
                     Command::ConnectAccount(request) => spawn_connect(&context, request),
+                    Command::CheckAccounts => spawn_check_accounts(&context),
+                    Command::RemoveAccount(name) => spawn_remove_account(&context, name),
                     Command::CancelConnect => cancel_connect(&context),
                     Command::ScanConflicts(id) => spawn_scan_conflicts(&context, id),
                     Command::ResolveConflict {
@@ -930,13 +943,16 @@ fn spawn_connect(context: &Arc<Context>, request: ConnectRequest) {
             .remote()
             .map_or_else(|| request.name.clone(), str::to_owned);
         let signed_in = match rclone() {
-            Ok(rclone) => sheet_io::connect(&rclone, &request, cancelled).await,
+            Ok(rclone) => sheet_io::sign_in(&rclone, &request, cancelled).await,
             Err(text) => Err(text),
         };
-        match signed_in {
-            Ok(true) => reconnected(&context, account).await,
-            Ok(false) => {}
-            Err(text) => context.emitter.send(Event::Connected(Err(text))),
+        match (signed_in, &request.mode) {
+            (Ok(true), AccountMode::Rename { from }) => {
+                renamed(&context, from, &request.name).await;
+            }
+            (Ok(true), _) => reconnected(&context, account).await,
+            (Ok(false), _) => {}
+            (Err(text), _) => context.emitter.send(Event::Connected(Err(text))),
         }
     });
 }
@@ -951,6 +967,83 @@ async fn reconnected(context: &Arc<Context>, account: String) {
         Err(text) => fail(context, text),
     }
     context.emitter.send(Event::Connected(Ok(account)));
+    spawn_check_accounts(context);
+}
+
+/// The new account is signed in: the syncs of `from` move to it, held for a
+/// review, and `from` goes. A failure before the move leaves both accounts
+/// for the user to sort out.
+async fn renamed(context: &Arc<Context>, from: &str, to: &str) {
+    if let Err(text) = sheet_io::rename_account(&context.paths, from, to).await {
+        context.emitter.send(Event::Connected(Err(text)));
+        return;
+    }
+    let removed = match rclone() {
+        Ok(rclone) => rclone
+            .delete_remote(from)
+            .await
+            .map_err(|err| err.to_string()),
+        Err(text) => Err(text),
+    };
+    if let Err(text) = removed {
+        fail(
+            context,
+            format!("Renamed, but the old account \"{from}\" could not be removed: {text}"),
+        );
+    }
+    publish_remotes(context).await;
+    if let Err(text) = apply_config(&context.paths).await {
+        fail(context, text);
+    }
+    context.emitter.send(Event::Connected(Ok(to.to_owned())));
+    spawn_check_accounts(context);
+    context.refresh.notify_one();
+}
+
+fn spawn_check_accounts(context: &Arc<Context>) {
+    let context = Arc::clone(context);
+    tokio::spawn(async move {
+        let rclone = match rclone() {
+            Ok(rclone) => rclone,
+            Err(text) => return fail(&context, text),
+        };
+        let names = match rclone.listremotes().await {
+            Ok(names) => names,
+            Err(err) => return fail(&context, err.to_string()),
+        };
+        let online = NetworkManager.is_online().await;
+        for name in names {
+            context.emitter.send(Event::AccountStatus {
+                name: name.clone(),
+                status: AccountStatus::Checking,
+            });
+            let context = Arc::clone(&context);
+            let rclone = rclone.clone();
+            tokio::spawn(async move {
+                let status = sheet_io::check_account(&rclone, online, &name).await;
+                context.emitter.send(Event::AccountStatus { name, status });
+            });
+        }
+    });
+}
+
+fn spawn_remove_account(context: &Arc<Context>, name: String) {
+    let context = Arc::clone(context);
+    tokio::spawn(async move {
+        let removed = match rclone() {
+            Ok(rclone) => sheet_io::remove_account(&context.paths, &rclone, &name).await,
+            Err(text) => Err(text),
+        };
+        match removed {
+            Ok(ids) => {
+                publish_remotes(&context).await;
+                if !ids.is_empty() {
+                    spawn_sync(&context, ids);
+                }
+            }
+            Err(text) => fail(&context, text),
+        }
+    });
 }
 
 #[cfg(test)]
