@@ -17,6 +17,9 @@
 - Tests assert observable behaviour (see the `testes` skill). Integration tests use only `type = local` rclone remotes and an explicit `Paths`.
 - Definition of done: `just check` is green and the new behaviour has a test.
 
+## Docs
+- `PRODUCT.md` (scope and principles), `CONTRIBUTING.md`, `docs/guide/` (user guides), `docs/agents.md` (the agent guide, embedded in the CLI with `include_str!`), `docs/adr/`, `docs/design/` (phase 1 spec and UI mock). README images are in `assets/`.
+
 ## Environment
 - Toolchain is pinned in `rust-toolchain.toml`. Run `just hooks` once per clone.
 - Dev mode: `just run-gui-dev` / `just run-cli-dev <args>` use `./.dev/` and `SYNCFAST_SYSTEMD=off`.

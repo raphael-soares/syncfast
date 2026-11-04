@@ -45,7 +45,7 @@ Estado final da fase 1:
 - **Primeiro uso:** tela de boas-vindas com 3 passos (Account → Folder → Review), mostrada até o primeiro sync ser confirmado.
 - **Bandeja-first:** fechar a janela só esconde, e o app fica residente.
 - **Idioma:** só inglês, sem i18n. Todo texto de UI, log e notificação citado aqui vai literal.
-- **Mock aprovado:** `/home/raphael/.omp/agent/sessions/-tmp/2026-11-03T14-19-52-094Z_01a1a1c7-db9e-72d9-a8ed-8a8eaa7eda4b/local/syncfast-ui-mock.html` é a referência visual das telas Boas-vindas, Janela principal, Review, Add Sync, Conflicts e Settings › Accounts com o menu da bandeja. Na fatia S1, copiar para `docs/ui-mock.html` no repositório.
+- **Mock aprovado:** `/home/raphael/.omp/agent/sessions/-tmp/2026-11-03T14-19-52-094Z_01a1a1c7-db9e-72d9-a8ed-8a8eaa7eda4b/local/syncfast-ui-mock.html` é a referência visual das telas Boas-vindas, Janela principal, Review, Add Sync, Conflicts e Settings › Accounts com o menu da bandeja. Na fatia S1, copiar para `docs/design/ui-mock.html` no repositório.
 
 ### Técnicas
 
@@ -922,7 +922,7 @@ Decisão e limites em `docs/adr/0007-agent-interface.md`; guia em `docs/agents.m
   2. `gh repo create raphael-soares/syncfast --private --source . --remote origin --push`
   3. `gh auth switch -u soaresphael`, para devolver a conta ativa de antes.
   - Todo `gh` posterior usa `--repo raphael-soares/syncfast` e roda entre os mesmos dois `gh auth switch`.
-- Na S1, esta spec é copiada para `docs/spec-phase-1.md` e o mock para `docs/ui-mock.html`. As issues referenciam os passos da spec por número.
+- Na S1, esta spec é copiada para `docs/design/spec-phase-1.md` e o mock para `docs/design/ui-mock.html`. As issues referenciam os passos da spec por número.
 - Milestone `Phase 1` com uma issue por fatia:
   - Título `[S<n>] <título da tabela abaixo>`.
   - Corpo com o objetivo, os passos da spec cobertos e os critérios de aceite da tabela, em checklist.

@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest an improvement.
+labels: [enhancement]
+body:
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before requesting
+      options:
+        - label: I searched open and closed issues.
+          required: true
+        - label: I read PRODUCT.md and the request fits it.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem do you have?
+      description: Describe what you are trying to do, not the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like syncfast to do?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What do you do today instead?
