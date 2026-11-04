@@ -225,6 +225,7 @@ fn ready(ui: &mut Ui, remote: &str, preview: &Preview, toggles_id: Id) {
                 .font(theme::body())
                 .color(palette.text),
         );
+        left_out_repos(ui, &palette, &preview.excluded_repos);
         return;
     }
     let mut toggles = ui
@@ -245,11 +246,25 @@ fn ready(ui: &mut Ui, remote: &str, preview: &Preview, toggles_id: Id) {
     if toggles.0 != before {
         ui.data_mut(|data| data.insert_temp(toggles_id, toggles));
     }
+    left_out_repos(ui, &palette, &preview.excluded_repos);
     ui.label(
         RichText::new(NOTE)
             .font(theme::footnote())
             .color(palette.dim),
     );
+}
+
+fn left_out_repos(ui: &mut Ui, palette: &Palette, repos: &[String]) {
+    if repos.is_empty() {
+        return;
+    }
+    ui.label(
+        RichText::new(format!("Left out as Git repositories ({})", repos.len()))
+            .font(theme::callout())
+            .color(palette.secondary),
+    );
+    let paths: Vec<&str> = repos.iter().map(String::as_str).collect();
+    list(ui, palette, &paths);
 }
 
 /// One collapsible section. Returns `true` when its header was clicked.

@@ -28,7 +28,7 @@ fn is_disabled(harness: &egui_kittest::Harness<'_, common::Frame>, label: &str) 
 }
 
 #[test]
-fn both_presets_show_their_state_and_their_rules_behind_a_disclosure() {
+fn every_preset_shows_its_state_and_its_rules_or_what_it_leaves_out() {
     let mut vm = view(notes(&[]));
     vm.pairs[0].presets = vec!["dev_dirs".into()];
     let mut harness = harness(vm, screen());
@@ -37,6 +37,8 @@ fn both_presets_show_their_state_and_their_rules_behind_a_disclosure() {
 
     harness.get_by_label("System junk files");
     harness.get_by_label("Developer folders");
+    harness.get_by_label("Git repositories");
+    harness.get_by_label("Leaves out every folder with a .git inside, found on each sync");
     assert_eq!(harness.query_all_by_label("Show rules").count(), 2);
     harness.get_by_label("Custom rules");
 }
@@ -128,12 +130,50 @@ fn tested(state: FilterTestState) -> FilterTest {
 }
 
 #[test]
+fn a_test_result_lists_the_git_repositories_it_left_out() {
+    let mut vm = view(notes(&["- *.bak"]));
+    vm.filter_test = Some(tested(FilterTestState::Done(ExclusionSummary {
+        total: 10,
+        excluded: 3,
+        folders: Vec::new(),
+        git_repos: vec!["school/proj".into()],
+    })));
+    let mut harness = harness(vm, screen());
+
+    harness.run();
+
+    harness.get_by_label("Git repositories left out");
+    harness.get_by_label("school/proj/");
+}
+
+#[test]
+fn a_test_result_without_repos_has_no_git_section() {
+    let mut vm = view(notes(&["- *.bak"]));
+    vm.filter_test = Some(tested(FilterTestState::Done(ExclusionSummary {
+        total: 1,
+        excluded: 0,
+        folders: Vec::new(),
+        git_repos: Vec::new(),
+    })));
+    let mut harness = harness(vm, screen());
+
+    harness.run();
+
+    assert!(
+        harness
+            .query_by_label("Git repositories left out")
+            .is_none()
+    );
+}
+
+#[test]
 fn a_test_result_says_how_many_files_are_excluded_and_where() {
     let mut vm = view(notes(&["- *.bak"]));
     vm.filter_test = Some(tested(FilterTestState::Done(ExclusionSummary {
         total: 10,
         excluded: 3,
         folders: vec![("target".into(), 2), ("docs".into(), 1)],
+        git_repos: Vec::new(),
     })));
     let mut harness = harness(vm, screen());
 

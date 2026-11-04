@@ -649,6 +649,48 @@ async fn changing_the_filters_sets_the_gate_and_syncs_nothing() {
 }
 
 #[tokio::test]
+async fn a_folder_with_a_git_repo_is_left_out_of_the_first_sync_and_listed_in_the_review() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "school/proj/main.c", "int main;");
+    fs::create_dir_all(bed.local.join("school/proj/.git")).unwrap();
+    write(&bed.local, "school/notes.txt", "notes");
+
+    let reviewed = bed.preview(ReviewKind::Resync).await.unwrap();
+
+    assert_eq!(reviewed.excluded_repos, ["school/proj"]);
+    bed.first_sync().await;
+    assert_eq!(read(&bed.remote, "school/notes.txt"), "notes");
+    assert!(!bed.remote.join("school/proj").exists());
+}
+
+#[tokio::test]
+async fn a_git_init_in_a_synced_folder_holds_the_sync_for_review_and_deletes_nothing_on_the_remote()
+{
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "work/a.txt", "a");
+    bed.first_sync().await;
+    fs::create_dir_all(bed.local.join("work/.git")).unwrap();
+
+    let report = bed.run().await;
+
+    assert_eq!(
+        report,
+        RunReport::GateSet(GateKind::NeedsReviewFiltersChanged)
+    );
+    assert_eq!(read(&bed.remote, "work/a.txt"), "a");
+    bed.confirm(ReviewKind::Resync).await;
+    let confirmed = bed.run().await;
+    assert_eq!(
+        confirmed,
+        RunReport::Ran {
+            mode: Mode::Resync,
+            outcome: Outcome::Ok
+        }
+    );
+    assert_eq!(read(&bed.remote, "work/a.txt"), "a");
+}
+
+#[tokio::test]
 async fn missing_local_folder_sets_the_gate_and_the_next_round_resumes_when_it_is_back() {
     let Some(bed) = bed() else { return };
     write(&bed.local, "base.txt", "base");

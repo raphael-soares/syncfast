@@ -116,34 +116,36 @@ fn harness_with(state: AddSyncState, edit: impl FnOnce(&mut Sheet)) -> Harness<'
         actions: Vec::new(),
     };
     edit(&mut sheet);
-    let mut harness = Harness::new_ui_state(
-        |ui, sheet: &mut Sheet| {
-            if !ready(ui) {
-                return;
-            }
-            let view = AddSyncView {
-                remotes: &sheet.remotes,
-                existing: &sheet.existing,
-                dirs: &sheet.dirs,
-                local: sheet.local.as_ref(),
-                mkdir_error: sheet.mkdir_error.as_deref(),
-                create_error: sheet.create_error.as_deref(),
-                creating: sheet.creating,
-                home: std::path::Path::new("/home/ada"),
-                data_dir: std::path::Path::new("/home/ada/.local/share/syncfast"),
-                local_error: sheet.local_error.as_deref(),
-                filter_test: sheet.filter_test.as_ref(),
-            };
-            let actions = show(ui.ctx(), &view, &mut sheet.state);
-            for action in &actions {
-                if let Action::AddSyncSheet(AddSyncAction::LoadDirs(key)) = action {
-                    sheet.dirs.insert(key.clone(), DirListing::Loading);
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(800.0, 800.0))
+        .build_ui_state(
+            |ui, sheet: &mut Sheet| {
+                if !ready(ui) {
+                    return;
                 }
-            }
-            sheet.actions.extend(actions);
-        },
-        sheet,
-    );
+                let view = AddSyncView {
+                    remotes: &sheet.remotes,
+                    existing: &sheet.existing,
+                    dirs: &sheet.dirs,
+                    local: sheet.local.as_ref(),
+                    mkdir_error: sheet.mkdir_error.as_deref(),
+                    create_error: sheet.create_error.as_deref(),
+                    creating: sheet.creating,
+                    home: std::path::Path::new("/home/ada"),
+                    data_dir: std::path::Path::new("/home/ada/.local/share/syncfast"),
+                    local_error: sheet.local_error.as_deref(),
+                    filter_test: sheet.filter_test.as_ref(),
+                };
+                let actions = show(ui.ctx(), &view, &mut sheet.state);
+                for action in &actions {
+                    if let Action::AddSyncSheet(AddSyncAction::LoadDirs(key)) = action {
+                        sheet.dirs.insert(key.clone(), DirListing::Loading);
+                    }
+                }
+                sheet.actions.extend(actions);
+            },
+            sheet,
+        );
     harness.run_ok();
     harness
 }
@@ -809,7 +811,20 @@ fn clicking_a_preset_switch_turns_it_off() {
     click(&mut harness, "System junk files");
 
     let state = &harness.state().state;
-    assert_eq!((state.system_junk, state.dev_dirs), (false, true));
+    assert_eq!(state.presets, ["dev_dirs", "git_repos"]);
+}
+
+#[test]
+fn a_new_sync_starts_with_every_preset_and_the_git_switch_turns_one_off() {
+    let mut harness = harness_at(Step::Filters);
+    assert_eq!(
+        harness.state().state.presets,
+        ["system_junk", "dev_dirs", "git_repos"]
+    );
+
+    click(&mut harness, "Git repositories");
+
+    assert_eq!(harness.state().state.presets, ["system_junk", "dev_dirs"]);
 }
 
 #[test]
@@ -902,7 +917,7 @@ fn create_sync_asks_the_app_to_create_the_sync() {
     state.account = Some("gdrive".into());
     state.remote_path = Some("Pessoal/Notas".into());
     state.local = "~/Documents/Study Notes".into();
-    state.dev_dirs = false;
+    state.presets.retain(|name| name != "dev_dirs");
     state.rules = "- *.bak\n\n+ keep/**\n".into();
     let mut harness = harness_with(state, |_| {});
 
@@ -915,7 +930,7 @@ fn create_sync_asks_the_app_to_create_the_sync() {
             name: "Study Notes".into(),
             local: PathBuf::from("/home/ada/Documents/Study Notes"),
             remote: "gdrive:Pessoal/Notas".into(),
-            presets: vec!["system_junk".into()],
+            presets: vec!["system_junk".into(), "git_repos".into()],
             filters: vec!["- *.bak".into(), "+ keep/**".into()],
         })]
     );
@@ -1033,7 +1048,7 @@ fn test_filters_in_the_wizard_runs_on_the_chosen_folder_with_the_rules_on_screen
     assert!(harness.state().actions.contains(&Action::TestFilters {
         id: String::new(),
         local: "/home/ada/Documents/notes".into(),
-        presets: vec!["system_junk".into(), "dev_dirs".into()],
+        presets: vec!["system_junk".into(), "dev_dirs".into(), "git_repos".into()],
         rules: vec!["- *.bak".into()],
     }));
 }
@@ -1046,13 +1061,14 @@ fn a_filter_test_of_the_wizard_shows_how_many_files_are_excluded() {
         sheet.filter_test = Some(FilterTest {
             id: String::new(),
             rules: FilterRules {
-                presets: vec!["system_junk".into(), "dev_dirs".into()],
+                presets: vec!["system_junk".into(), "dev_dirs".into(), "git_repos".into()],
                 custom: vec!["- *.bak".into()],
             },
             state: FilterTestState::Done(syncfast_core::filters::ExclusionSummary {
                 total: 10,
                 excluded: 4,
                 folders: vec![("target".into(), 3)],
+                git_repos: Vec::new(),
             }),
         });
     });
@@ -1069,7 +1085,7 @@ fn a_filter_test_of_a_sync_is_not_shown_in_the_wizard() {
         sheet.filter_test = Some(FilterTest {
             id: "notes".into(),
             rules: FilterRules {
-                presets: vec!["system_junk".into(), "dev_dirs".into()],
+                presets: vec!["system_junk".into(), "dev_dirs".into(), "git_repos".into()],
                 custom: vec!["- *.bak".into()],
             },
             state: FilterTestState::Failed("nope".into()),

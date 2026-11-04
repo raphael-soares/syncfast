@@ -44,6 +44,7 @@ fn pair(id: &str, gate: Option<GateKind>) -> PairRow {
 fn found(hash: &str) -> Preview {
     Preview {
         filters_hash: hash.into(),
+        excluded_repos: Vec::new(),
         summary: RunSummary::default(),
     }
 }

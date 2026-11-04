@@ -35,7 +35,7 @@ Afterwards the status reads **Up to date** and syncfast runs a round every 5 min
 
 - **Activity** lists every round with its counts. Expand one for the file list.
 - **Conflicts** appears when a file changed on both sides. Choose **Keep Current**, **Keep Conflicted Copy** or **Keep Both**.
-- **Filters** keeps files out of the sync: presets for system junk and developer folders, and custom rules, one per line (`- *.bak` excludes, `+ ` includes). **Test Filters** says how many files a rule leaves out. Saving new filters holds the sync for a new review.
+- **Filters** keeps files out of the sync: presets for system junk, developer folders and Git repositories (every folder with a `.git` inside, including repos created later; **Test Filters** and the review list them), and custom rules, one per line (`- *.bak` excludes, `+ ` includes). **Test Filters** says how many files a rule leaves out. Saving new filters holds the sync for a new review.
 - **Pause** stops a sync until you resume it. **Remove Sync…** leaves the files on both sides.
 - Files replaced on this computer by a download are kept for 30 days: **Open Versions Folder** in the **…** menu.
 

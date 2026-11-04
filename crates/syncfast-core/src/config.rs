@@ -683,7 +683,7 @@ mod tests {
         assert_eq!(pair.local, Path::new("/data/Drive"));
         assert_eq!(pair.remote, "gdrive:");
         assert!(pair.enabled);
-        assert_eq!(pair.presets, ["system_junk", "dev_dirs"]);
+        assert_eq!(pair.presets, ["system_junk", "dev_dirs", "git_repos"]);
         assert!(pair.filters.is_empty());
     }
 

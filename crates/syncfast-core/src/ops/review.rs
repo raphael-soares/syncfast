@@ -48,6 +48,8 @@ pub struct ReviewView {
     pub changes: Vec<Change>,
     /// Changes that are not in `changes`, because the list is capped.
     pub changes_omitted: usize,
+    /// Folders left out of the sync because they hold a `.git`.
+    pub excluded_repos: Vec<String>,
     pub note: String,
 }
 
@@ -129,6 +131,7 @@ impl Ops {
             agent_can_confirm: !deletes_files,
             changes,
             changes_omitted: omitted,
+            excluded_repos: found.excluded_repos,
             note,
         })
     }
@@ -196,7 +199,7 @@ impl Ops {
                     .to_owned(),
             ));
         }
-        if shown.filters_hash != filters::hash(&filters::render(&pair)) {
+        if shown.filters_hash != filters::hash(&filters::render_live(&pair).await.text) {
             return Err(OpError::ReviewNotShown(
                 "the filters changed after the review was shown; show it again".to_owned(),
             ));

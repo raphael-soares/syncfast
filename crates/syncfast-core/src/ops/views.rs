@@ -236,7 +236,7 @@ impl Ops {
         let state = load_state(self, id).await;
         Ok(PairDetail {
             sync,
-            filters_hash: filters::hash(&filters::render(&pair)),
+            filters_hash: filters::hash(&filters::render_live(&pair).await.text),
             versions_dir: self.paths.versions_dir(id),
             last_run: LastRunView::of(&state),
         })

@@ -16,7 +16,7 @@ use crate::bisync::{Mode, Outcome, bisync_args, classify, is_empty_prior_listing
 use crate::bisync_log::{LogLine, read_log, summarize};
 use crate::config::{Config, GlobalConfigError, Pair, PairError};
 use crate::conflicts::find_conflicts;
-use crate::filters::{self, DirMatcher, FiltersError};
+use crate::filters::{self, DirMatcher, FiltersError, FiltersFile};
 use crate::network::Network;
 use crate::notify::{Alert, Notice, Notifier, last_error_message, notice};
 use crate::paths::Paths;
@@ -379,7 +379,7 @@ pub async fn run(env: &RunEnv<'_>, pair_id: &str) -> Result<RunReport, RunError>
                 env,
                 pair: &pair,
                 behavior: &behavior,
-                filters_hash: &filters_file.hash,
+                filters: &filters_file,
             };
             let (mode, outcome) = round.execute(&mut state, mode).await?;
             Ok(RunReport::Ran { mode, outcome })
@@ -397,7 +397,7 @@ struct Round<'a> {
     env: &'a RunEnv<'a>,
     pair: &'a Pair,
     behavior: &'a Behavior,
-    filters_hash: &'a str,
+    filters: &'a FiltersFile,
 }
 
 impl Round<'_> {
@@ -490,7 +490,7 @@ impl Round<'_> {
                 state.gate = None;
                 state.last_outcome = Some(LastOutcome::Ok);
                 state.consecutive_failures = 0;
-                state.applied_filters_hash = Some(self.filters_hash.to_owned());
+                state.applied_filters_hash = Some(self.filters.hash.clone());
                 state.last_success = Some(finished);
                 state
                     .notified
@@ -538,7 +538,7 @@ impl Round<'_> {
     /// cannot be scanned.
     async fn count_conflicts(&self, previous: u32) -> u32 {
         let root = self.pair.local.clone();
-        let matcher = DirMatcher::new(&filters::render(self.pair));
+        let matcher = DirMatcher::new(&self.filters.rendered);
         let scanned = tokio::task::spawn_blocking(move || find_conflicts(&root, &matcher))
             .await
             .unwrap_or_else(|join| Err(std::io::Error::other(join)));

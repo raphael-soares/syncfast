@@ -692,7 +692,7 @@ async fn load_pairs(env: &WatchEnv) -> Result<Vec<Watched>, WatchError> {
         watched.push(Watched {
             id: pair.id.clone(),
             root: pair.local.clone(),
-            matcher: DirMatcher::new(&filters::render(pair)),
+            matcher: DirMatcher::new(&filters::render_live(pair).await.text),
             timing: Timing {
                 debounce: behavior.debounce,
                 max_wait: behavior.max_wait,

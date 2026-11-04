@@ -74,8 +74,13 @@ fn changes(kind: ChangeKind, prefix: &str, count: usize) -> Vec<Change> {
 }
 
 fn preview(changes: Vec<Change>) -> ReviewPhase {
+    preview_with_repos(changes, Vec::new())
+}
+
+fn preview_with_repos(changes: Vec<Change>, excluded_repos: Vec<String>) -> ReviewPhase {
     ReviewPhase::Ready(Preview {
         filters_hash: "hash".to_owned(),
+        excluded_repos,
         summary: RunSummary {
             changes,
             ..RunSummary::default()
@@ -188,6 +193,34 @@ fn non_empty_preview_shows_the_dry_run_footnote() {
             .is_some()
     );
     assert!(harness.query_by_label("Nothing to change.").is_none());
+}
+
+#[test]
+fn left_out_git_repos_are_listed_with_and_without_changes() {
+    for changes in [Vec::new(), changes(ChangeKind::Upload, "up/", 1)] {
+        let harness = open_sheet(
+            GateKind::NeedsReviewFirstRun,
+            preview_with_repos(changes, vec!["school/proj".to_owned()]),
+        );
+
+        assert!(
+            harness
+                .query_by_label("Left out as Git repositories (1)")
+                .is_some()
+        );
+        assert!(harness.query_by_label("school/proj").is_some());
+    }
+}
+
+#[test]
+fn a_review_without_git_repos_has_no_left_out_section() {
+    let harness = ready_sheet(changes(ChangeKind::Upload, "up/", 1));
+
+    assert!(
+        harness
+            .query_by_label_contains("Left out as Git repositories")
+            .is_none()
+    );
 }
 
 #[test]

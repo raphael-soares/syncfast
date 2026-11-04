@@ -34,6 +34,8 @@ pub struct FilterTestView {
     pub summary: String,
     /// The top-level folders with the most excluded files, most first.
     pub folders: Vec<FolderCount>,
+    /// Folders left out because they hold a `.git`.
+    pub git_repos: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -104,7 +106,7 @@ impl Ops {
         }
         config.save(&self.paths).await?;
         let saved = self.find_pair(id).await?;
-        let hash = filters::hash(&filters::render(&saved));
+        let hash = filters::hash(&filters::render_live(&saved).await.text);
         let before = State::load(&self.paths, id).await?;
         let was_clear = after_filters_saved(&self.paths, id).await?;
         let warnings = self.reapply(&[]).await;
@@ -182,6 +184,7 @@ impl Ops {
                     excluded_files,
                 })
                 .collect(),
+            git_repos: found.git_repos,
         })
     }
 
@@ -194,7 +197,10 @@ impl Ops {
         let folder = local
             .to_str()
             .ok_or_else(|| OpError::Invalid("the folder's path is not valid text".to_owned()))?;
-        let rendered = filters::render(&Pair {
+        let filters::Rendered {
+            text: rendered,
+            git_repos,
+        } = filters::render_live(&Pair {
             id: "test".to_owned(),
             name: "test".to_owned(),
             local: local.to_owned(),
@@ -202,7 +208,8 @@ impl Ops {
             enabled: true,
             presets,
             filters: rules,
-        });
+        })
+        .await;
         let dir = self.paths.state_dir().join("filters");
         let write_failed =
             |err: std::io::Error| OpError::Failed(format!("cannot write the test filters: {err}"));
@@ -222,7 +229,7 @@ impl Ops {
             log::warn!("cannot delete {}: {err}", file.display());
         }
         let (all, kept) = listed?;
-        Ok(filters::summarize_exclusions(&all, &kept))
+        Ok(filters::summarize_exclusions(&all, &kept, git_repos))
     }
 
     async fn list_both(

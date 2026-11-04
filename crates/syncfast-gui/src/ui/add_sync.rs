@@ -126,8 +126,7 @@ pub struct AddSyncState {
     pub new_folder: Option<String>,
     /// The path as typed.
     pub local: String,
-    pub system_junk: bool,
-    pub dev_dirs: bool,
+    pub presets: Vec<String>,
     /// Custom rules, one per line.
     pub rules: String,
     pub name: String,
@@ -144,8 +143,10 @@ impl Default for AddSyncState {
             expanded: HashSet::new(),
             new_folder: None,
             local: String::new(),
-            system_junk: true,
-            dev_dirs: true,
+            presets: PRESETS
+                .iter()
+                .map(|preset| preset.name.to_owned())
+                .collect(),
             rules: String::new(),
             name: String::new(),
             name_edited: false,
@@ -749,14 +750,6 @@ fn local_step(
     }
 }
 
-fn preset_enabled(state: &AddSyncState, name: &str) -> bool {
-    match name {
-        "system_junk" => state.system_junk,
-        "dev_dirs" => state.dev_dirs,
-        _ => false,
-    }
-}
-
 /// One entry per non-blank line, numbered as the user sees the lines.
 fn rule_problems(rules: &str) -> Vec<String> {
     rules
@@ -781,15 +774,8 @@ fn filters_step(
     state: &mut AddSyncState,
     actions: &mut Vec<Action>,
 ) {
-    let presets = |system_junk: bool, dev_dirs: bool| {
-        [("system_junk", system_junk), ("dev_dirs", dev_dirs)]
-            .into_iter()
-            .filter(|(_, on)| *on)
-            .map(|(name, _)| name.to_owned())
-            .collect::<Vec<_>>()
-    };
     let mut draft = FilterDraft {
-        presets: presets(state.system_junk, state.dev_dirs),
+        presets: state.presets.clone(),
         rules: state.rules.clone(),
     };
     let before = draft.clone();
@@ -800,8 +786,7 @@ fn filters_step(
     });
     let test_clicked = tab::form(ui, "add-sync", &mut draft, tested, |_| {});
     if draft != before {
-        state.system_junk = draft.presets.iter().any(|name| name == "system_junk");
-        state.dev_dirs = draft.presets.iter().any(|name| name == "dev_dirs");
+        state.presets.clone_from(&draft.presets);
         state.rules.clone_from(&draft.rules);
         ui.ctx().request_repaint();
     }
@@ -860,11 +845,7 @@ fn new_sync(view: &AddSyncView<'_>, state: &AddSyncState) -> Option<NewSync> {
         name: name.to_owned(),
         local: local_target(view, state)?,
         remote: remote_key(state.account.as_deref()?, state.remote_path.as_deref()?),
-        presets: PRESETS
-            .iter()
-            .filter(|preset| preset_enabled(state, preset.name))
-            .map(|preset| preset.name.to_owned())
-            .collect(),
+        presets: state.presets.clone(),
         filters: rule_lines(&state.rules),
     })
 }
