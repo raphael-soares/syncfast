@@ -702,12 +702,14 @@ async fn set_all_enabled(paths: &Paths, enabled: bool) -> Result<(), String> {
 }
 
 async fn write_enabled(paths: &Paths, enabled: bool) -> Result<(), String> {
-    let mut config = Config::load(paths).await.map_err(|err| err.to_string())?;
-    let ids: Vec<String> = config.pairs().iter().map(|pair| pair.id.clone()).collect();
-    for id in &ids {
-        config.set_enabled(id, enabled);
-    }
-    config.save(paths).await.map_err(|err| err.to_string())
+    Config::edit(paths, |config| {
+        let ids: Vec<String> = config.pairs().iter().map(|pair| pair.id.clone()).collect();
+        for id in &ids {
+            config.set_enabled(id, enabled);
+        }
+    })
+    .await
+    .map_err(|err| err.to_string())
 }
 
 fn spawn_load_runs(context: &Arc<Context>, id: String) {
@@ -730,11 +732,12 @@ fn spawn_set_enabled(context: &Arc<Context>, id: String, enabled: bool) {
 }
 
 async fn set_enabled(paths: &Paths, id: &str, enabled: bool) -> Result<(), String> {
-    let mut config = Config::load(paths).await.map_err(|err| err.to_string())?;
-    if !config.set_enabled(id, enabled) {
+    let found = Config::edit(paths, |config| config.set_enabled(id, enabled))
+        .await
+        .map_err(|err| err.to_string())?;
+    if !found {
         return Err(format!("There is no sync named \"{id}\"."));
     }
-    config.save(paths).await.map_err(|err| err.to_string())?;
     apply_config(paths).await
 }
 

@@ -141,11 +141,14 @@ pub async fn write_filters(
     presets: &[String],
     rules: &[String],
 ) -> Result<(), String> {
-    let mut config = Config::load(paths).await.map_err(|err| err.to_string())?;
-    if !config.set_filters(id, presets, rules) {
-        return Err(format!("there is no sync with id \"{id}\""));
+    let found = Config::edit(paths, |config| config.set_filters(id, presets, rules))
+        .await
+        .map_err(|err| err.to_string())?;
+    if found {
+        Ok(())
+    } else {
+        Err(format!("there is no sync with id \"{id}\""))
     }
-    config.save(paths).await.map_err(|err| err.to_string())
 }
 
 /// After the filters changed: see [`ops::after_filters_saved`]. Returns whether
@@ -164,11 +167,14 @@ pub async fn after_filters_saved(paths: &Paths, id: &str) -> Result<bool, String
 /// # Errors
 /// The config cannot be read or written, or there is no such sync.
 pub async fn remove_from_config(paths: &Paths, id: &str) -> Result<(), String> {
-    let mut config = Config::load(paths).await.map_err(|err| err.to_string())?;
-    if !config.remove_pair(id) {
-        return Err(format!("there is no sync with id \"{id}\""));
+    let found = Config::edit(paths, |config| config.remove_pair(id))
+        .await
+        .map_err(|err| err.to_string())?;
+    if found {
+        Ok(())
+    } else {
+        Err(format!("there is no sync with id \"{id}\""))
     }
-    config.save(paths).await.map_err(|err| err.to_string())
 }
 
 #[cfg(test)]

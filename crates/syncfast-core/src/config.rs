@@ -46,6 +46,23 @@ pub enum ConfigSaveError {
         #[source]
         source: std::io::Error,
     },
+    #[error("cannot lock {}: {source}", path.display())]
+    Lock {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("config.toml is a link to a missing file: {}", target.display())]
+    DanglingLink { target: PathBuf },
+}
+
+/// Why [`Config::edit`] did not write.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigUpdateError {
+    #[error(transparent)]
+    Load(#[from] GlobalConfigError),
+    #[error(transparent)]
+    Save(#[from] ConfigSaveError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -337,14 +354,48 @@ impl Config {
         self.document.to_string()
     }
 
+    /// Loads the config, applies `change` and saves, all under an exclusive
+    /// lock on `config.lock`, so concurrent edits (the GUI, the CLI, an
+    /// agent) never overwrite each other. Nothing is written when `change`
+    /// leaves the document as it was, so it must validate before it mutates.
+    ///
+    /// # Errors
+    /// The lock cannot be taken, the file cannot be loaded, or the changed
+    /// config cannot be saved.
+    pub async fn edit<T>(
+        paths: &Paths,
+        change: impl FnOnce(&mut Self) -> T,
+    ) -> Result<T, ConfigUpdateError> {
+        let _lock = lock_config(paths).await?;
+        let mut config = Self::load(paths).await?;
+        let before = config.to_toml();
+        let outcome = change(&mut config);
+        if config.to_toml() != before {
+            config.save(paths).await?;
+        }
+        Ok(outcome)
+    }
+
     /// Writes `config.toml` atomically. A symlinked file (GNU stow) is
     /// followed, so the link survives and its target is updated.
     ///
     /// # Errors
-    /// The file cannot be written.
+    /// The file cannot be written, or is a link to a file that does not
+    /// exist (writing would replace the link).
     pub async fn save(&self, paths: &Paths) -> Result<(), ConfigSaveError> {
         let file = paths.config_file();
-        let target = tokio::fs::canonicalize(&file).await.unwrap_or(file);
+        let target = match tokio::fs::canonicalize(&file).await {
+            Ok(target) => target,
+            Err(_) => {
+                if let Ok(meta) = tokio::fs::symlink_metadata(&file).await
+                    && meta.is_symlink()
+                {
+                    let target = tokio::fs::read_link(&file).await.unwrap_or(file);
+                    return Err(ConfigSaveError::DanglingLink { target });
+                }
+                file
+            }
+        };
         let contents = self.to_toml();
         let written = target.clone();
         let outcome =
@@ -379,6 +430,27 @@ impl Config {
         }
         found
     }
+}
+
+/// Blocks until this process holds `config.lock` exclusively; the lock is
+/// released when the returned file is dropped.
+async fn lock_config(paths: &Paths) -> Result<std::fs::File, ConfigSaveError> {
+    let dir = paths.config_dir();
+    let path = dir.join("config.lock");
+    let locked = path.clone();
+    tokio::task::spawn_blocking(move || -> std::io::Result<std::fs::File> {
+        std::fs::create_dir_all(&dir)?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&locked)?;
+        file.lock()?;
+        Ok(file)
+    })
+    .await
+    .unwrap_or_else(|join| Err(std::io::Error::other(join)))
+    .map_err(|source| ConfigSaveError::Lock { path, source })
 }
 
 fn table_id(table: &Table) -> Option<&str> {
@@ -1329,6 +1401,91 @@ mod tests {
         let stowed = std::fs::read_to_string(&target).unwrap();
         assert!(stowed.starts_with("# stowed\nversion = 1\n"));
         assert!(stowed.contains("id = \"a\""));
+    }
+
+    fn sample_pair(id: &str) -> Pair {
+        Pair {
+            id: id.into(),
+            name: id.to_uppercase(),
+            local: PathBuf::from(format!("/{id}")),
+            remote: "gdrive:".into(),
+            enabled: true,
+            presets: vec![],
+            filters: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_edits_of_different_pairs_both_persist() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths_in(root.path());
+        let mut config = Config::empty();
+        config.add_pair(sample_pair("a")).unwrap();
+        config.add_pair(sample_pair("b")).unwrap();
+        config.save(&paths).await.unwrap();
+
+        let (first, second) = tokio::join!(
+            Config::edit(&paths, |config| config.set_enabled("a", false)),
+            Config::edit(&paths, |config| config.set_enabled("b", false)),
+        );
+
+        assert!(first.unwrap() && second.unwrap());
+        let loaded = Config::load(&paths).await.unwrap();
+        assert!(loaded.pairs().iter().all(|pair| !pair.enabled));
+    }
+
+    #[tokio::test]
+    async fn an_edit_that_changes_nothing_does_not_write_the_file() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths_in(root.path());
+
+        let found = Config::edit(&paths, |config| config.remove_pair("missing"))
+            .await
+            .unwrap();
+
+        assert!(!found);
+        assert!(!paths.config_file().exists());
+    }
+
+    #[tokio::test]
+    async fn an_edit_of_a_broken_config_reports_the_load_error_and_keeps_the_file() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths_in(root.path());
+        std::fs::create_dir_all(paths.config_dir()).unwrap();
+        std::fs::write(paths.config_file(), "version = 9\n").unwrap();
+
+        let err = Config::edit(&paths, |config| config.set_enabled("a", false))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            ConfigUpdateError::Load(GlobalConfigError::UnsupportedVersion(9))
+        ));
+        assert_eq!(
+            std::fs::read_to_string(paths.config_file()).unwrap(),
+            "version = 9\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn save_refuses_a_link_to_a_missing_file_and_keeps_the_link() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths_in(root.path());
+        std::fs::create_dir_all(paths.config_dir()).unwrap();
+        let missing = root.path().join("dotfiles/config.toml");
+        std::os::unix::fs::symlink(&missing, paths.config_file()).unwrap();
+
+        let err = Config::empty().save(&paths).await.unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "config.toml is a link to a missing file: {}",
+                missing.display()
+            )
+        );
+        assert_eq!(std::fs::read_link(paths.config_file()).unwrap(), missing);
     }
 
     #[test]

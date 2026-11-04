@@ -104,23 +104,25 @@ pub async fn create_local(home: &Path, typed: &str) -> Result<(), String> {
 pub async fn create_sync(paths: &Paths, rclone: &Rclone, new: NewSync) -> Result<(), String> {
     let mut config = Config::load(paths).await.map_err(|e| e.to_string())?;
     let id = new.id.clone();
-    config
-        .add_pair(Pair {
-            id: new.id,
-            name: new.name,
-            local: new.local,
-            remote: new.remote,
-            enabled: true,
-            presets: new.presets,
-            filters: new.filters,
-        })
-        .map_err(|e| e.to_string())?;
+    let pair = Pair {
+        id: new.id,
+        name: new.name,
+        local: new.local,
+        remote: new.remote,
+        enabled: true,
+        presets: new.presets,
+        filters: new.filters,
+    };
+    config.add_pair(pair.clone()).map_err(|e| e.to_string())?;
     let accounts = rclone.listremotes().await.map_err(|e| e.to_string())?;
     let validation = config.validate(paths, &accounts);
     if let Some(error) = validation.errors.iter().find(|error| error.pair_id == id) {
         return Err(error.message.clone());
     }
-    config.save(paths).await.map_err(|e| e.to_string())
+    Config::edit(paths, |config| config.add_pair(pair))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
 }
 
 /// The dry run behind the Review sheet.

@@ -8,7 +8,7 @@ use jiff::Timestamp;
 use serde::Serialize;
 
 use super::{DEFAULT_WAIT_SECONDS, OpError, Ops, PairView};
-use crate::config::{Pair, expand_tilde, filter_line_problem};
+use crate::config::{Config, Pair, expand_tilde, filter_line_problem};
 use crate::filters::{self, ExclusionSummary, PRESETS};
 use crate::paths::Paths;
 use crate::state::{Gate, GateKind, State};
@@ -100,11 +100,9 @@ impl Ops {
         let presets = presets.unwrap_or(current.presets);
         let rules = rules.unwrap_or(current.filters);
         check_rules(&presets, &rules)?;
-        let mut config = self.load_config().await?;
-        if !config.set_filters(id, &presets, &rules) {
+        if !Config::edit(&self.paths, |config| config.set_filters(id, &presets, &rules)).await? {
             return Err(OpError::NotFound(id.to_owned()));
         }
-        config.save(&self.paths).await?;
         let saved = self.find_pair(id).await?;
         let hash = filters::hash(&filters::render_live(&saved).await.text);
         let before = State::load(&self.paths, id).await?;

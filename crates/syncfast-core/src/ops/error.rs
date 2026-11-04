@@ -1,4 +1,4 @@
-use crate::config::{ConfigEditError, ConfigSaveError, GlobalConfigError};
+use crate::config::{ConfigEditError, ConfigSaveError, ConfigUpdateError, GlobalConfigError};
 use crate::preview::PreviewError;
 use crate::rclone::RcloneError;
 use crate::run::RunError;
@@ -67,6 +67,15 @@ impl From<GlobalConfigError> for OpError {
 impl From<ConfigSaveError> for OpError {
     fn from(err: ConfigSaveError) -> Self {
         Self::Failed(err.to_string())
+    }
+}
+
+impl From<ConfigUpdateError> for OpError {
+    fn from(err: ConfigUpdateError) -> Self {
+        match err {
+            ConfigUpdateError::Load(err) => err.into(),
+            ConfigUpdateError::Save(err) => err.into(),
+        }
     }
 }
 
