@@ -1,10 +1,11 @@
 //! The right side of the window: toolbar, status card and the tabs.
 
-use egui::{Frame, Margin, RichText, Sense, Ui, Vec2};
+use egui::{Frame, Margin, RichText, Ui};
 use syncfast_core::bisync_log::Progress;
 use syncfast_core::state::{DisplayStatus, GateKind};
 
 use super::format::{progress_fraction, progress_line};
+use super::menu::{self, Tone};
 use super::relative::synced;
 use super::widgets::{
     BadgeSize, ButtonKind, button_with_icon, icon_button, inline_error, primary_button,
@@ -16,9 +17,6 @@ use crate::theme::{self, Palette, radius, space};
 
 /// The side margin of everything under the toolbar, which has its own.
 const SIDE: i8 = 20;
-const MENU_WIDTH: f32 = 220.0;
-const MENU_ROW_HEIGHT: f32 = 28.0;
-const MENU_ICON_GAP: f32 = 8.0;
 
 /// What the detail shows under the status card.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -144,58 +142,24 @@ fn more_menu(
     palette: &Palette,
     actions: &mut Vec<Action>,
 ) {
-    let frame = Frame::new()
-        .fill(palette.overlay)
-        .stroke(egui::Stroke::new(1.0, palette.outline))
-        .corner_radius(radius::CARD)
-        .inner_margin(Margin::same(6));
-    egui::Popup::menu(button)
-        .width(MENU_WIDTH)
-        .frame(frame)
-        .show(|ui| {
-            if menu_item(ui, palette, Icon::Folder, "Open Local Folder", false) {
-                actions.push(Action::OpenLocalFolder(pair.id.clone()));
-            }
-            if menu_item(ui, palette, Icon::History, "Open Versions Folder", false) {
-                actions.push(Action::OpenVersionsFolder(pair.id.clone()));
-            }
-            ui.separator();
-            if menu_item(ui, palette, Icon::Trash, "Remove Sync…", true) {
-                actions.push(Action::RemoveSync(pair.id.clone()));
-            }
-        });
-}
-
-fn menu_item(ui: &mut Ui, palette: &Palette, icon: Icon, label: &str, danger: bool) -> bool {
-    let color = if danger { palette.danger } else { palette.text };
-    let (rect, response) = ui.allocate_exact_size(
-        Vec2::new(ui.available_width(), MENU_ROW_HEIGHT),
-        Sense::click(),
-    );
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+    menu::popup(button, palette, |ui| {
+        if menu::item(ui, palette, Icon::Folder, "Open Local Folder", Tone::Normal) {
+            actions.push(Action::OpenLocalFolder(pair.id.clone()));
+        }
+        if menu::item(
+            ui,
+            palette,
+            Icon::History,
+            "Open Versions Folder",
+            Tone::Normal,
+        ) {
+            actions.push(Action::OpenVersionsFolder(pair.id.clone()));
+        }
+        ui.separator();
+        if menu::item(ui, palette, Icon::Trash, "Remove Sync…", Tone::Danger) {
+            actions.push(Action::RemoveSync(pair.id.clone()));
+        }
     });
-    if response.hovered() {
-        ui.painter()
-            .rect_filled(rect, f32::from(radius::CONTROL), palette.surface_hover);
-    }
-    let icon_rect = egui::Rect::from_center_size(
-        egui::pos2(
-            rect.left() + MENU_ICON_GAP + theme::size::ICON / 2.0,
-            rect.center().y,
-        ),
-        Vec2::splat(theme::size::ICON),
-    );
-    icon.image(color, theme::size::ICON).paint_at(ui, icon_rect);
-    let galley = ui
-        .painter()
-        .layout_no_wrap(label.to_owned(), theme::body(), color);
-    let pos = egui::pos2(
-        icon_rect.right() + MENU_ICON_GAP,
-        rect.center().y - galley.size().y / 2.0,
-    );
-    ui.painter().galley(pos, galley, color);
-    response.clicked()
 }
 
 /// What the card says beside the status, and the button that goes with it.

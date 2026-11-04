@@ -147,6 +147,72 @@ fn plus_button_in_the_sidebar_header_asks_to_add_a_sync() {
 }
 
 #[test]
+fn the_settings_button_in_the_sidebar_opens_settings() {
+    for vm in [view(two_syncs(), Some("drive")), view(Vec::new(), None)] {
+        let mut harness = harness(vm);
+        harness.run();
+
+        harness.get_by_label("Settings…").click();
+        harness.run();
+
+        assert_eq!(harness.state().actions, [Action::OpenSettings]);
+    }
+}
+
+fn menu_item(harness: &mut Harness<'_, Screen>, label: &str) {
+    harness.get_by_label("syncfast Menu").click();
+    harness.run_steps(4);
+    harness.get_by_label(label).click();
+    harness.run_steps(4);
+}
+
+#[test]
+fn the_window_menu_syncs_everything_and_quits() {
+    let mut harness = harness(view(two_syncs(), Some("drive")));
+    harness.run();
+
+    menu_item(&mut harness, "Sync All Now");
+    menu_item(&mut harness, "Hide Window");
+    menu_item(&mut harness, "Quit syncfast");
+
+    assert_eq!(
+        harness.state().actions,
+        [Action::SyncAll, Action::HideWindow, Action::Quit]
+    );
+}
+
+#[test]
+fn the_window_menu_pauses_while_any_sync_is_active_and_resumes_once_none_is() {
+    let mut active = harness(view(two_syncs(), Some("drive")));
+    let mut paused_rows = two_syncs();
+    for pair in &mut paused_rows {
+        pair.enabled = false;
+        pair.status = DisplayStatus::Paused;
+    }
+    let mut paused = harness(view(paused_rows, Some("drive")));
+    active.run();
+    paused.run();
+
+    menu_item(&mut active, "Pause All");
+    menu_item(&mut paused, "Resume All");
+
+    assert_eq!(active.state().actions, [Action::SetAllEnabled(false)]);
+    assert_eq!(paused.state().actions, [Action::SetAllEnabled(true)]);
+}
+
+#[test]
+fn the_window_menu_has_nothing_to_sync_or_pause_without_syncs() {
+    let mut harness = harness(view(Vec::new(), None));
+    harness.run();
+
+    menu_item(&mut harness, "Sync All Now");
+    menu_item(&mut harness, "Resume All");
+    menu_item(&mut harness, "Quit syncfast");
+
+    assert_eq!(harness.state().actions, [Action::Quit]);
+}
+
+#[test]
 fn window_title_is_the_selected_sync_or_syncs_without_selection() {
     let selected = view(two_syncs(), Some("notes"));
     let none = view(two_syncs(), None);
@@ -293,4 +359,21 @@ fn a_new_system_colour_scheme_repaints_the_open_window_without_any_input() {
     harness.run();
 
     assert!(!theme::palette(&harness.ctx).dark);
+}
+
+#[test]
+fn skipping_the_welcome_opens_the_empty_window_with_the_ways_to_start() {
+    let mut harness = open_window();
+    harness.run();
+    harness.get_by_label("Welcome to syncfast");
+
+    harness
+        .get_by_label(syncfast_gui::ui::welcome::SKIP)
+        .click();
+    harness.run_steps(4);
+
+    assert!(harness.query_by_label("Welcome to syncfast").is_none());
+    harness.get_by_label("No syncs yet");
+    harness.get_by_label("Settings…");
+    assert_eq!(harness.get_all_by_label("Add Sync…").count(), 2);
 }

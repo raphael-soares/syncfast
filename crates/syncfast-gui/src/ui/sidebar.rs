@@ -2,6 +2,7 @@
 
 use egui::{Frame, Margin, RichText};
 
+use super::menu;
 use super::relative::synced;
 use super::widgets::{SidebarRow, icon_button, sidebar_row};
 use super::{Action, ViewModel};
@@ -36,6 +37,10 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel) -> Vec<Action> {
                 if icon_button(ui, Icon::Plus, "Add Sync…").clicked() {
                     actions.push(Action::AddSync);
                 }
+                if icon_button(ui, Icon::Settings, "Settings…").clicked() {
+                    actions.push(Action::OpenSettings);
+                }
+                actions.extend(menu::app_menu(ui, vm.app_menu()));
             });
         });
         ui.add_space(space::S);

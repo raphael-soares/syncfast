@@ -6,10 +6,20 @@ use crate::icons::Icon;
 use crate::theme::{self, space};
 
 use super::Action;
-use super::widgets::primary_button;
+use super::menu;
+use super::widgets::{icon_button, primary_button, secondary_button};
 
 /// The window title while the first screen shows.
 pub const TITLE: &str = "Welcome";
+
+/// The button that leaves the guide for the empty main window.
+pub const SKIP: &str = "Set up without the guide";
+
+/// The window menu while there is no sync: its sync rows stay, disabled.
+const NO_SYNCS: menu::AppMenu = menu::AppMenu {
+    has_syncs: false,
+    pauses: false,
+};
 
 /// Where the user is in a step of the first sync.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +79,21 @@ impl WelcomeView {
 pub fn show(ui: &mut Ui, view: &WelcomeView) -> Vec<Action> {
     let palette = theme::palette(ui.ctx());
     let mut actions = Vec::new();
+    egui::Panel::top("welcome-bar")
+        .show_separator_line(false)
+        .frame(
+            egui::Frame::new()
+                .fill(palette.window)
+                .inner_margin(egui::Margin::symmetric(12, 10)),
+        )
+        .show(ui, |ui| {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if icon_button(ui, Icon::Settings, "Settings…").clicked() {
+                    actions.push(Action::OpenSettings);
+                }
+                actions.extend(menu::app_menu(ui, NO_SYNCS));
+            });
+        });
     egui::CentralPanel::default()
         .frame(egui::Frame::new().fill(palette.window))
         .show(ui, |ui| {
@@ -100,6 +125,10 @@ pub fn show(ui: &mut Ui, view: &WelcomeView) -> Vec<Action> {
                 ui.add_space(space::XL);
                 if primary_button(ui, "Get Started").clicked() {
                     actions.push(view.start());
+                }
+                ui.add_space(space::S);
+                if secondary_button(ui, SKIP).clicked() {
+                    actions.push(Action::SkipWelcome);
                 }
             });
         });
