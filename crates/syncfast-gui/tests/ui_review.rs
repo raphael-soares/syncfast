@@ -533,7 +533,7 @@ fn sheet_over_screen() -> Harness<'static, Case> {
 
 #[test]
 fn the_sheet_stays_above_its_scrim_when_drawn_before_the_screen() {
-    let mut harness = sheet_over_screen();
+    let harness = sheet_over_screen();
     let target = harness.get_by_label("Cancel").rect().center();
 
     let layer = harness
