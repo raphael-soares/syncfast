@@ -38,10 +38,26 @@ fn holds_no_files(dir: &Path) -> io::Result<bool> {
     Ok(true)
 }
 
-fn prune_blocking(root: &Path, keep_days: u32, now: &Zoned) -> io::Result<()> {
+fn prune_entry(entry: &std::fs::DirEntry, cutoff: DateTime) -> io::Result<()> {
+    let Some(stamp) = parse_stamp(&entry.file_name().to_string_lossy()) else {
+        return Ok(());
+    };
+    if !entry.file_type()?.is_dir() {
+        return Ok(());
+    }
+    let path: PathBuf = entry.path();
+    if stamp < cutoff || holds_no_files(&path)? {
+        std::fs::remove_dir_all(&path)?;
+    }
+    Ok(())
+}
+
+/// How many dated folders could not be examined or deleted; each is
+/// warned about and the rest are still pruned.
+fn prune_blocking(root: &Path, keep_days: u32, now: &Zoned) -> io::Result<u32> {
     let entries = match std::fs::read_dir(root) {
         Ok(entries) => entries,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(0),
         Err(err) => return Err(err),
     };
     let cutoff = now
@@ -50,29 +66,29 @@ fn prune_blocking(root: &Path, keep_days: u32, now: &Zoned) -> io::Result<()> {
             i64::from(keep_days) * SECS_PER_DAY,
         ))
         .map_err(io::Error::other)?;
+    let mut failures = 0;
     for entry in entries {
-        let entry = entry?;
-        let Some(stamp) = parse_stamp(&entry.file_name().to_string_lossy()) else {
-            continue;
-        };
-        if !entry.file_type()?.is_dir() {
-            continue;
-        }
-        let path: PathBuf = entry.path();
-        if stamp < cutoff || holds_no_files(&path)? {
-            std::fs::remove_dir_all(&path)?;
+        let outcome = entry.and_then(|entry| {
+            prune_entry(&entry, cutoff).map_err(|err| {
+                io::Error::new(err.kind(), format!("{}: {err}", entry.path().display()))
+            })
+        });
+        if let Err(err) = outcome {
+            log::warn!("cannot prune old versions: {err}");
+            failures += 1;
         }
     }
-    Ok(())
+    Ok(failures)
 }
 
 /// Deletes the dated folders of `versions/<pair_id>/` older than
 /// `keep_days`, and the ones with no file in them (rclone makes the folder
 /// of a round even when nothing was backed up). A missing folder is fine.
+/// Returns how many folders could not be pruned.
 ///
 /// # Errors
-/// A folder cannot be listed or deleted.
-pub async fn prune(paths: &Paths, pair_id: &str, keep_days: u32, now: &Zoned) -> io::Result<()> {
+/// The versions folder cannot be listed.
+pub async fn prune(paths: &Paths, pair_id: &str, keep_days: u32, now: &Zoned) -> io::Result<u32> {
     let root = paths.versions_dir(pair_id);
     let now = now.clone();
     tokio::task::spawn_blocking(move || prune_blocking(&root, keep_days, &now))
@@ -82,6 +98,8 @@ pub async fn prune(paths: &Paths, pair_id: &str, keep_days: u32, now: &Zoned) ->
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt as _;
+
     use jiff::civil::date;
     use jiff::tz::TimeZone;
 
@@ -173,6 +191,25 @@ mod tests {
         let result = prune(&paths, "p", 30, &now()).await;
 
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_folder_that_cannot_be_deleted_is_counted_and_the_others_still_go() {
+        let (_dir, paths) = temp_paths();
+        put(&paths, "20200101-000000/locked/a.txt");
+        put(&paths, "20200102-000000/a.txt");
+        let locked = paths.versions_dir("p").join("20200101-000000/locked");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+        if std::fs::remove_file(locked.join("a.txt")).is_ok() {
+            return; // permissions do not bind this user (root)
+        }
+
+        let failures = prune(&paths, "p", 30, &now()).await.unwrap();
+
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(failures, 1);
+        assert!(!exists(&paths, "20200102-000000"));
+        assert!(exists(&paths, "20200101-000000/locked/a.txt"));
     }
 
     #[tokio::test]

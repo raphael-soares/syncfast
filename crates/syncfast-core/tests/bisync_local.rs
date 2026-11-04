@@ -1331,6 +1331,41 @@ async fn a_successful_round_prunes_expired_versions_and_old_run_logs() {
 }
 
 #[tokio::test]
+async fn a_failed_round_still_prunes_expired_versions_and_old_run_logs() {
+    let Some(bed) = bed() else { return };
+    synced_base(&bed).await;
+    let versions = bed.paths.versions_dir(PAIR);
+    write(&versions, "20200101-000000/old.txt", "expired");
+    for n in 0..55 {
+        write(
+            &bed.paths.runs_dir(PAIR),
+            &format!("20200101-0000{n:02}.jsonl"),
+            "",
+        );
+    }
+    let failing = fake_rclone(&bed, r#"{"level":"error","msg":"boom"}"#, 1);
+
+    bed.run_with(&failing).await;
+
+    assert!(!versions.join("20200101-000000").exists());
+    assert_eq!(names(&bed.paths.runs_dir(PAIR)).len(), 50);
+}
+
+#[tokio::test]
+async fn a_versions_folder_that_cannot_be_pruned_does_not_fail_the_round() {
+    let Some(bed) = bed() else { return };
+    synced_base(&bed).await;
+    let versions = bed.paths.versions_dir(PAIR);
+    fs::remove_dir_all(&versions).ok();
+    write(versions.parent().unwrap(), PAIR, "not a folder");
+    let failing = fake_rclone(&bed, r#"{"level":"error","msg":"boom"}"#, 1);
+
+    let report = bed.run_with(&failing).await;
+
+    assert!(matches!(report, RunReport::Ran { .. }), "{report:?}");
+}
+
+#[tokio::test]
 async fn failed_preview_reports_the_last_error_and_deletes_its_log() {
     let Some(bed) = bed() else { return };
     write(&bed.local, "a.txt", "a");

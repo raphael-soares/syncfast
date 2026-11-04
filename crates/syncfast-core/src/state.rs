@@ -5,8 +5,10 @@
 //! lock file is held, and a pair is paused when the config says
 //! `enabled = false`.
 
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -18,6 +20,8 @@ use crate::paths::Paths;
 
 /// How many rounds keep their log in `runs/`.
 pub const RUNS_KEPT: usize = 50;
+/// How long a preview log is kept.
+pub const PREVIEWS_KEPT: Duration = Duration::from_hours(24);
 /// Key in [`State::notified`] for the "sync failing" notification.
 pub const NOTIFIED_FAILURES: &str = "failures";
 /// Failed rounds in a row before the status turns into [`DisplayStatus::Failing`].
@@ -296,39 +300,82 @@ pub(crate) fn try_lock(paths: &Paths, path: PathBuf) -> Result<Option<File>, Sta
     open().map_err(|source| StateError::Write { path, source })
 }
 
-/// Keeps the [`RUNS_KEPT`] newest logs in the pair's `runs/` folder (names
-/// are timestamps, so the highest names are the newest) and deletes the
-/// rest. A missing folder is fine.
+/// Keeps the [`RUNS_KEPT`] newest `.jsonl` logs in the pair's `runs/`
+/// folder (names are timestamps, so the highest names are the newest) and
+/// deletes the rest, then the preview logs older than [`PREVIEWS_KEPT`]. A
+/// log that cannot be deleted is a warning, not a stop. A missing folder is
+/// fine.
 ///
 /// # Errors
-/// The folder cannot be listed or a log cannot be deleted.
+/// The runs folder cannot be listed.
 pub async fn prune_runs(paths: &Paths, pair_id: &str) -> Result<(), StateError> {
     let dir = paths.runs_dir(pair_id);
-    let mut entries = match tokio::fs::read_dir(&dir).await {
-        Ok(entries) => entries,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(source) => return Err(StateError::Read { path: dir, source }),
-    };
-    let mut names = Vec::new();
-    while let Some(entry) = entries
-        .next_entry()
-        .await
-        .map_err(|source| StateError::Read {
-            path: dir.clone(),
-            source,
-        })?
-    {
-        names.push(entry.file_name());
-    }
+    let mut names: Vec<OsString> = file_names(&dir)
+        .await?
+        .into_iter()
+        .filter(|name| is_jsonl(name))
+        .collect();
     names.sort();
     let excess = names.len().saturating_sub(RUNS_KEPT);
     for name in names.into_iter().take(excess) {
-        let path = dir.join(name);
-        tokio::fs::remove_file(&path)
-            .await
-            .map_err(|source| StateError::Write { path, source })?;
+        remove_or_warn(&dir.join(name)).await;
     }
+    prune_previews(&paths.pair_state_dir(pair_id)).await;
     Ok(())
+}
+
+fn is_jsonl(name: &OsStr) -> bool {
+    Path::new(name).extension() == Some(OsStr::new("jsonl"))
+}
+
+async fn file_names(dir: &Path) -> Result<Vec<OsString>, StateError> {
+    let read = |source| StateError::Read {
+        path: dir.to_path_buf(),
+        source,
+    };
+    let mut entries = match tokio::fs::read_dir(dir).await {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => return Err(read(source)),
+    };
+    let mut names = Vec::new();
+    while let Some(entry) = entries.next_entry().await.map_err(read)? {
+        names.push(entry.file_name());
+    }
+    Ok(names)
+}
+
+async fn prune_previews(dir: &Path) {
+    let names = match file_names(dir).await {
+        Ok(names) => names,
+        Err(err) => {
+            log::warn!("{err}");
+            return;
+        }
+    };
+    for name in names {
+        let text = name.to_string_lossy();
+        if !text.starts_with("preview-") || !is_jsonl(&name) {
+            continue;
+        }
+        let path = dir.join(&name);
+        let age = tokio::fs::metadata(&path)
+            .await
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok());
+        if age.is_some_and(|age| age > PREVIEWS_KEPT) {
+            remove_or_warn(&path).await;
+        }
+    }
+}
+
+async fn remove_or_warn(path: &Path) {
+    if let Err(err) = tokio::fs::remove_file(path).await
+        && err.kind() != std::io::ErrorKind::NotFound
+    {
+        log::warn!("cannot delete {}: {err}", path.display());
+    }
 }
 
 /// Name of the theme colour token that paints a status.
@@ -794,8 +841,17 @@ mod tests {
         assert!(matches!(result, Err(StateError::Read { .. })), "{result:?}");
     }
 
+    fn age(path: &Path, by: Duration) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - by)
+            .unwrap();
+    }
+
     #[tokio::test]
-    async fn pruning_leaves_previews_and_state_alone() {
+    async fn pruning_leaves_fresh_previews_and_state_alone() {
         let (_dir, paths) = temp_paths();
         make_runs(&paths, 51);
         let pair_dir = paths.pair_state_dir("drive");
@@ -806,6 +862,54 @@ mod tests {
 
         assert!(pair_dir.join("preview-20260101-000000.jsonl").exists());
         assert!(pair_dir.join("state.json").exists());
+    }
+
+    #[tokio::test]
+    async fn pruning_deletes_previews_older_than_a_day_and_nothing_else_there() {
+        let (_dir, paths) = temp_paths();
+        make_runs(&paths, 1);
+        let pair_dir = paths.pair_state_dir("drive");
+        for name in ["preview-old.jsonl", "preview-new.jsonl", "state.json"] {
+            std::fs::write(pair_dir.join(name), "").unwrap();
+        }
+        age(&pair_dir.join("preview-old.jsonl"), PREVIEWS_KEPT * 2);
+        age(&pair_dir.join("state.json"), PREVIEWS_KEPT * 2);
+
+        prune_runs(&paths, "drive").await.unwrap();
+
+        assert!(!pair_dir.join("preview-old.jsonl").exists());
+        assert!(pair_dir.join("preview-new.jsonl").exists());
+        assert!(pair_dir.join("state.json").exists());
+    }
+
+    #[tokio::test]
+    async fn only_jsonl_logs_count_toward_the_fifty_kept() {
+        let (_dir, paths) = temp_paths();
+        make_runs(&paths, 50);
+        let runs = paths.runs_dir("drive");
+        for name in ["20250101-000000.tmp", "notes.txt"] {
+            std::fs::write(runs.join(name), "").unwrap();
+        }
+
+        prune_runs(&paths, "drive").await.unwrap();
+
+        assert_eq!(run_names(&paths).len(), 52);
+    }
+
+    #[tokio::test]
+    async fn a_log_that_cannot_be_deleted_does_not_stop_the_pruning() {
+        let (_dir, paths) = temp_paths();
+        make_runs(&paths, 52);
+        let runs = paths.runs_dir("drive");
+        let stuck = runs.join("20260101-000000.jsonl");
+        std::fs::remove_file(&stuck).unwrap();
+        std::fs::create_dir(&stuck).unwrap();
+
+        prune_runs(&paths, "drive").await.unwrap();
+
+        assert!(stuck.exists());
+        assert!(!runs.join("20260101-000001.jsonl").exists());
+        assert_eq!(run_names(&paths).len(), 51);
     }
 
     fn status(enabled: bool, state: &State, running: bool) -> DisplayStatus {

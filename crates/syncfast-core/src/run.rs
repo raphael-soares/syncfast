@@ -485,16 +485,25 @@ impl Round<'_> {
         state.save(env.paths, id).await?;
         send(env, notice);
 
+        self.prune().await;
         if outcome != Outcome::Transient {
             ConfirmMarker::remove(env.paths, id).await?;
         }
-        if outcome == Outcome::Ok {
-            versions::prune(env.paths, id, self.behavior.versions_keep_days, &env.now())
-                .await
-                .map_err(RunError::io("pruning old versions"))?;
-        }
-        prune_runs(env.paths, id).await?;
         Ok((mode, outcome))
+    }
+
+    /// Old versions and run logs go after every round, whatever its
+    /// outcome; a failure here never becomes the round's.
+    async fn prune(&self) {
+        let (env, id) = (self.env, self.pair.id.as_str());
+        match versions::prune(env.paths, id, self.behavior.versions_keep_days, &env.now()).await {
+            Ok(0) => {}
+            Ok(failed) => log::warn!("{id}: {failed} old version folders could not be pruned"),
+            Err(err) => log::warn!("{id}: cannot prune old versions: {err}"),
+        }
+        if let Err(err) = prune_runs(env.paths, id).await {
+            log::warn!("{id}: {err}");
+        }
     }
 
     async fn attempt(&self, mode: Mode, at: Zoned) -> Result<Attempt, RunError> {
