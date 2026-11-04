@@ -157,6 +157,35 @@ fn name_rule_accepts_letters_digits_underscore_dot_and_dash_after_the_first_char
 }
 
 #[test]
+fn the_client_id_link_asks_the_backend_to_open_it() {
+    let mut harness = harness(AccountMode::Add, |_| {});
+
+    harness.get_by_label("Making your own client ID").click();
+    harness.run();
+
+    assert_eq!(
+        harness.state().actions,
+        [Action::OpenUrl(
+            "https://rclone.org/drive/#making-your-own-client-id".into()
+        )]
+    );
+}
+
+#[test]
+fn the_sheet_is_centered_in_the_window() {
+    let harness = harness(AccountMode::Add, |_| {});
+
+    let title = harness.get_by_label("Add Google Drive Account").rect();
+    let button = harness.get_by_label("Connect").rect();
+    let top = title.min.y;
+    let bottom = button.max.y;
+
+    let above = top;
+    let below = 640.0 - bottom;
+    assert!((above - below).abs() < 40.0, "above {above}, below {below}");
+}
+
+#[test]
 fn connect_emits_the_request_with_trimmed_credentials() {
     let mut harness = harness(AccountMode::Add, |screen| {
         filled(screen);

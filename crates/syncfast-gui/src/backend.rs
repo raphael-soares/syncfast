@@ -45,7 +45,9 @@ const ROUND_START_WAIT: Duration = Duration::from_millis(600);
 const CLI_NAME: &str = "syncfast";
 const CLI_VAR: &str = "SYNCFAST_CLI";
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
-const FOLDER_OPENER: &str = "xdg-open";
+/// Opens folders and links. In the Flatpak sandbox the runtime's `xdg-open`
+/// goes through the OpenURI portal, which the toolkit's own opener cannot.
+const OPENER: &str = "xdg-open";
 
 /// What the UI asks of the backend.
 #[derive(Debug, Clone, PartialEq)]
@@ -97,6 +99,8 @@ pub enum Command {
     OpenLocalFolder(PathBuf),
     /// The folder that keeps the saved versions of a sync.
     OpenVersionsFolder(String),
+    /// A web link, handed to the desktop's opener.
+    OpenUrl(String),
     /// Read the rclone remotes again.
     LoadRemotes,
     /// The folders inside a remote path (`gdrive:Notes`).
@@ -383,6 +387,7 @@ async fn run(
                         let path = context.paths.versions_dir(&id);
                         spawn_open_folder(&context, path, "No versions are saved yet.");
                     }
+                    Command::OpenUrl(url) => spawn_open_url(&context, url),
                     Command::LoadRemotes => spawn_load_remotes(&context),
                     Command::ListDirs(path) => spawn_list_dirs(&context, path),
                     Command::MakeRemoteDir(path) => spawn_make_remote_dir(&context, path),
@@ -723,7 +728,7 @@ async fn set_enabled(paths: &Paths, id: &str, enabled: bool) -> Result<(), Strin
 fn spawn_open_folder(context: &Arc<Context>, path: PathBuf, missing: &'static str) {
     let context = Arc::clone(context);
     tokio::spawn(async move {
-        if let Err(text) = open_folder(FOLDER_OPENER.as_ref(), &path, missing).await {
+        if let Err(text) = open_folder(OPENER.as_ref(), &path, missing).await {
             fail(&context, text);
         }
     });
@@ -738,15 +743,28 @@ async fn open_folder(opener: &std::ffi::OsStr, path: &Path, missing: &str) -> Re
     {
         return Err(missing.to_owned());
     }
+    run_opener(opener, path.as_os_str()).await
+}
+
+fn spawn_open_url(context: &Arc<Context>, url: String) {
+    let context = Arc::clone(context);
+    tokio::spawn(async move {
+        if let Err(text) = run_opener(OPENER.as_ref(), url.as_ref()).await {
+            fail(&context, text);
+        }
+    });
+}
+
+async fn run_opener(opener: &std::ffi::OsStr, target: &std::ffi::OsStr) -> Result<(), String> {
     let status = tokio::process::Command::new(opener)
-        .arg(path)
+        .arg(target)
         .status()
         .await
         .map_err(|err| format!("Cannot run {}: {err}", opener.to_string_lossy()))?;
     if status.success() {
         Ok(())
     } else {
-        Err(format!("Cannot open {}.", path.display()))
+        Err(format!("Cannot open {}.", target.to_string_lossy()))
     }
 }
 
@@ -1060,6 +1078,18 @@ mod tests {
         assert_eq!(
             refused.unwrap_err(),
             format!("Cannot open {}.", dir.path().display())
+        );
+    }
+
+    #[tokio::test]
+    async fn opening_a_link_reports_the_target_when_the_opener_refuses() {
+        let opened = run_opener("true".as_ref(), "https://example.org".as_ref()).await;
+        let refused = run_opener("false".as_ref(), "https://example.org".as_ref()).await;
+
+        assert!(opened.is_ok());
+        assert_eq!(
+            refused.unwrap_err(),
+            "Cannot open https://example.org.".to_owned()
         );
     }
 }

@@ -178,6 +178,7 @@ pub fn show(ctx: &egui::Context, view: &AccountView<'_>, state: &mut AccountStat
         primary_enabled: can_connect(state, view),
         back: false,
     };
+    let mut actions = Vec::new();
     let chosen = sheet(ctx, "account", &title(&state.mode), &buttons, |ui| {
         if view.connecting {
             ui.label(
@@ -193,12 +194,14 @@ pub fn show(ctx: &egui::Context, view: &AccountView<'_>, state: &mut AccountStat
                 .font(theme::callout())
                 .color(palette.secondary),
         );
-        ui.hyperlink_to(
+        let help = ui.link(
             RichText::new("Making your own client ID")
                 .font(theme::callout())
                 .color(palette.accent),
-            CLIENT_ID_HELP_URL,
         );
+        if help.clicked() {
+            actions.push(Action::OpenUrl(CLIENT_ID_HELP_URL.to_owned()));
+        }
         ui.add_space(space::XS);
         match &state.mode {
             AccountMode::Add => {
@@ -224,14 +227,15 @@ pub fn show(ctx: &egui::Context, view: &AccountView<'_>, state: &mut AccountStat
     });
     match chosen {
         Some(SheetAction::Primary) => {
-            vec![Action::Account(AccountAction::Connect(ConnectRequest {
+            actions.push(Action::Account(AccountAction::Connect(ConnectRequest {
                 mode: state.mode.clone(),
                 name: state.name.clone(),
                 client_id: state.client_id.trim().to_owned(),
                 client_secret: Secret::new(state.client_secret.trim().to_owned()),
-            }))]
+            })));
         }
-        Some(SheetAction::Cancel) => vec![Action::Account(AccountAction::Cancel)],
-        Some(SheetAction::Back) | None => Vec::new(),
+        Some(SheetAction::Cancel) => actions.push(Action::Account(AccountAction::Cancel)),
+        Some(SheetAction::Back) | None => {}
     }
+    actions
 }
