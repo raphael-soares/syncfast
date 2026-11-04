@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/raphael-soares/syncfast/compare/v0.2.1...v0.3.0) (2026-11-04)
+
+
+### Features
+
+* **gui:** show Settings inside the main window ([#36](https://github.com/raphael-soares/syncfast/issues/36)) ([efae4ea](https://github.com/raphael-soares/syncfast/commit/efae4eaf83110035b43d5278a9849cb85caaed07))
+
 ## [0.2.1](https://github.com/raphael-soares/syncfast/compare/v0.2.0...v0.2.1) (2026-11-04)
 
 
