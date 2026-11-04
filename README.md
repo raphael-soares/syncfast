@@ -20,7 +20,7 @@ The command line is `flatpak run --command=syncfast io.github.raphael_soares.syn
 
 ## Releasing
 
-Commits on `main` follow Conventional Commits (`feat` bumps minor, `fix` patch, `!` or `BREAKING CHANGE:` bumps minor while the version is 0.x). release-please keeps one open PR titled `chore(main): release X.Y.Z` with the version bump and `CHANGELOG.md`. To release, merge that PR: it tags `vX.Y.Z`, creates the GitHub Release, then builds and signs the Flatpak, publishes it to Pages and attaches the bundle. Don't edit versions by hand.
+Commits on `main` follow Conventional Commits (`feat` bumps minor, `fix` patch, `!` or `BREAKING CHANGE:` bumps minor while the version is 0.x). On every push to `main`, release-please opens or updates the PR `chore(main): release X.Y.Z` (version bump and `CHANGELOG.md`) and the workflow merges it right away, tags `vX.Y.Z`, creates the GitHub Release, then builds and signs the Flatpak, publishes it to Pages and attaches the bundle. Commits that are not releasable (`test`, `build`, `chore`) open no PR and release nothing. Don't edit versions by hand.
 
 ## Development
 
