@@ -34,6 +34,8 @@ const PERMISSION_PATTERNS: [&str; 3] = [
     "appnotauthorizedtofile",
 ];
 const REMOTE_MISSING_PATTERNS: [&str; 1] = ["directory not found"];
+const LOCAL_EMPTY_PATTERNS: [&str; 2] =
+    ["empty current path1 listing", "empty current path2 listing"];
 
 /// A failure that retrying does not fix: the user has to act.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +49,9 @@ pub enum Fault {
     Quota,
     Permission,
     RemoteMissing,
+    /// rclone refuses to sync from a side that is now empty, usually a
+    /// drive that is not mounted.
+    LocalEmpty,
 }
 
 /// The fault an rclone error line names, if any. Case-insensitive.
@@ -64,6 +69,8 @@ pub fn fault_of(message: &str) -> Option<Fault> {
         Some(Fault::Permission)
     } else if has(&REMOTE_MISSING_PATTERNS) {
         Some(Fault::RemoteMissing)
+    } else if has(&LOCAL_EMPTY_PATTERNS) {
+        Some(Fault::LocalEmpty)
     } else {
         None
     }
@@ -242,7 +249,7 @@ fn has_lst_err(workdir: &Path) -> bool {
 /// Lines that can say why a run failed: errors, anything that was not JSON,
 /// and the closing `Failed to bisync` notice. Info and dry-run notices also
 /// quote file names, which must not be mistaken for error text.
-fn failure_msgs(lines: &[LogLine]) -> impl Iterator<Item = &str> {
+pub(crate) fn failure_msgs(lines: &[LogLine]) -> impl Iterator<Item = &str> {
     lines
         .iter()
         .filter(|line| line.level.is_failure() || line.msg.starts_with(FAILED_TO_BISYNC))
@@ -608,6 +615,14 @@ mod tests {
                 Some(Fault::RemoteMissing),
             ),
             (
+                "Empty current Path1 listing. Cannot sync to an empty directory: /x.lst-new",
+                Some(Fault::LocalEmpty),
+            ),
+            (
+                "Empty current Path2 listing. Cannot sync to an empty directory: /x.lst-new",
+                Some(Fault::LocalEmpty),
+            ),
+            (
                 "Failed to create file system: invalid_grant",
                 Some(Fault::Auth),
             ),
@@ -633,6 +648,10 @@ mod tests {
             ("storageQuotaExceeded", Fault::Quota),
             ("insufficientFilePermissions", Fault::Permission),
             ("directory not found", Fault::RemoteMissing),
+            (
+                "Empty current Path1 listing. Cannot sync to an empty directory: x",
+                Fault::LocalEmpty,
+            ),
         ] {
             let log = lines(&[
                 ("info", "- Path1  File is new  - a.txt"),

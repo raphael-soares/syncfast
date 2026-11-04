@@ -7,7 +7,7 @@ use std::time::Duration;
 use fastframe_instance::Slot;
 use fastframe_notifications::{App, Client, Event, Notification};
 
-use crate::bisync::{FAILED_TO_BISYNC, Fault, fault_of};
+use crate::bisync::{FAILED_TO_BISYNC, Fault, failure_msgs, fault_of};
 use crate::bisync_log::{Level, LogLine};
 use crate::config::{Pair, split_remote};
 use crate::run::NOTIFY_FAILURES_AFTER;
@@ -16,6 +16,7 @@ use crate::state::GateKind;
 /// Single-instance slot of the GUI: the `run` asks it to show notifications
 /// so a click can open the window. It never claims the slot.
 pub const SLOT: &str = "syncfast";
+const BISYNC_ABORTED: &str = "Bisync aborted";
 const DELIVERY_WAIT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,25 +110,42 @@ fn attention_body(detail: &str) -> &'static str {
         Some(Fault::Quota) => "Google Drive is full.",
         Some(Fault::Permission) => "No permission to a file or folder on Google Drive.",
         Some(Fault::RemoteMissing) => "The folder on Google Drive is missing.",
+        Some(Fault::LocalEmpty) => "The folder is empty. If it is on a drive, mount it.",
         Some(Fault::Auth) | None => "Syncing keeps failing. Open syncfast for details.",
     }
 }
 
-/// The message of the newest `error` or `critical` line. Without one, the
-/// newest `Failed to bisync` line, whatever its level.
+/// The message that says why a run failed, best first: the first failure
+/// line that names a [`Fault`]; else the newest `error` or `critical` line
+/// that is not rclone's generic `Bisync aborted` summary; else the newest
+/// error line of any kind; else the newest `Failed to bisync` line.
 #[must_use]
 pub fn last_error_message(lines: &[LogLine]) -> Option<&str> {
-    lines
-        .iter()
-        .rev()
-        .find(|line| matches!(line.level, Level::Error | Level::Critical))
+    let is_error = |line: &&LogLine| matches!(line.level, Level::Error | Level::Critical);
+    failure_msgs(lines)
+        .find(|msg| fault_of(msg).is_some())
+        .or_else(|| {
+            lines
+                .iter()
+                .rev()
+                .filter(is_error)
+                .find(|line| !line.msg.starts_with(BISYNC_ABORTED))
+                .map(|line| line.msg.as_str())
+        })
+        .or_else(|| {
+            lines
+                .iter()
+                .rev()
+                .find(|line| is_error(line))
+                .map(|line| line.msg.as_str())
+        })
         .or_else(|| {
             lines
                 .iter()
                 .rev()
                 .find(|line| line.msg.starts_with(FAILED_TO_BISYNC))
+                .map(|line| line.msg.as_str())
         })
-        .map(|line| line.msg.as_str())
 }
 
 /// Where notices go. Delivery is best effort: it never fails the round.
@@ -346,6 +364,10 @@ mod tests {
                 "The folder on Google Drive is missing.",
             ),
             (
+                "Empty current Path1 listing. Cannot sync to an empty directory: x",
+                "The folder is empty. If it is on a drive, mount it.",
+            ),
+            (
                 "Syncing has failed for over 6 hours: connection reset",
                 "Syncing keeps failing. Open syncfast for details.",
             ),
@@ -412,16 +434,45 @@ mod tests {
     }
 
     #[test]
-    fn an_error_line_wins_over_the_failed_to_bisync_notice() {
-        for (name, expected) in [
-            ("critical", "Bisync aborted. Must run --resync to recover."),
+    fn the_cause_wins_over_rclones_generic_bisync_aborted_summary() {
+        for (name, cause) in [
+            ("critical", "Bisync critical error: open "),
             (
                 "critical_retryable",
-                "Bisync aborted. Error is retryable without --resync due to --resilient mode.",
+                "Bisync critical error: cannot find prior Path1 or Path2 listings",
             ),
         ] {
-            assert_eq!(last_error_message(&fixture(name)), Some(expected), "{name}");
+            let log = fixture(name);
+
+            let message = last_error_message(&log).unwrap();
+
+            assert!(message.starts_with(cause), "{name}: {message}");
         }
+    }
+
+    #[test]
+    fn an_aborted_summary_is_still_better_than_nothing() {
+        let lines = parse_log("{\"level\":\"error\",\"msg\":\"Bisync aborted. Try again.\"}\n");
+
+        assert_eq!(
+            last_error_message(&lines),
+            Some("Bisync aborted. Try again.")
+        );
+    }
+
+    #[test]
+    fn a_line_that_names_a_fault_is_the_message_even_before_later_errors() {
+        let lines = parse_log(concat!(
+            "{\"level\":\"error\",\"msg\":\"Empty current Path1 listing. Cannot sync to an empty directory: /x.lst-new\"}\n",
+            "{\"level\":\"error\",\"msg\":\"Bisync critical error: empty current Path1 listing: /x.lst-new\"}\n",
+            "{\"level\":\"error\",\"msg\":\"Bisync aborted. Error is retryable without --resync due to --resilient mode.\"}\n",
+            "{\"level\":\"notice\",\"msg\":\"Failed to bisync: bisync aborted\"}\n",
+        ));
+
+        assert_eq!(
+            last_error_message(&lines),
+            Some("Empty current Path1 listing. Cannot sync to an empty directory: /x.lst-new")
+        );
     }
 
     #[derive(Clone, Default)]

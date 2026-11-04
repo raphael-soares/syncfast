@@ -569,7 +569,7 @@ async fn deleting_most_files_locally_stops_at_the_gate_until_a_forced_round_is_c
 }
 
 #[tokio::test]
-async fn an_emptied_local_folder_is_refused_by_rclone_and_the_remote_keeps_every_file() {
+async fn an_emptied_local_folder_needs_attention_at_once_and_the_remote_keeps_every_file() {
     let Some(bed) = bed() else { return };
     let files: Vec<String> = (0..60).map(|n| format!("file-{n:02}.txt")).collect();
     for name in &files {
@@ -582,16 +582,29 @@ async fn an_emptied_local_folder_is_refused_by_rclone_and_the_remote_keeps_every
 
     let report = bed.run().await;
 
-    assert_eq!(
-        report,
-        RunReport::Ran {
-            mode: Mode::Normal,
-            outcome: Outcome::Transient
-        }
+    let RunReport::Ran {
+        mode: Mode::Normal,
+        outcome: Outcome::NeedsAttention { fault, detail },
+    } = report
+    else {
+        panic!("{report:?}");
+    };
+    assert_eq!(fault, Fault::LocalEmpty);
+    assert!(
+        detail.starts_with("Empty current Path1 listing"),
+        "{detail}"
     );
     assert_eq!(names(&bed.remote), files);
     assert!(names(&bed.local).is_empty());
-    assert!(bed.state().await.gate.is_none());
+    assert_eq!(
+        bed.state().await.gate.map(|gate| gate.kind),
+        Some(GateKind::NeedsAttention)
+    );
+    assert_eq!(bed.notices.titles(), ["Docs: needs attention"]);
+    assert_eq!(
+        bed.notices.bodies(),
+        ["The folder is empty. If it is on a drive, mount it."]
+    );
 }
 
 #[tokio::test]

@@ -344,7 +344,7 @@ Cenários:
   3. Alguma linha casa com o padrão de autenticação (`invalid_grant`, `couldn't fetch token`, `oauth2: cannot fetch token`, `token expired`, sem diferenciar maiúsculas): `AuthError`. Se um erro de autenticação real aparecer com outro texto, acrescentar o texto a essa lista com teste.
   4. Código 1 e alguma linha com `too many deletes`: `TooManyDeletes`.
   5. Código 1 e alguma linha error+ com `Safety abort: all files were changed`: `AllFilesChanged`.
-  6. Alguma linha casa com um `Fault` que não é autenticação (`fault_of`: `Account`, `Quota`, `Permission`, `RemoteMissing`): `NeedsAttention { fault, detail }`, com `detail` a mensagem que casou. `TooManyDeletes` e `AllFilesChanged` têm prioridade.
+  6. Alguma linha casa com um `Fault` que não é autenticação (`fault_of`: `Account`, `Quota`, `Permission`, `RemoteMissing`, `LocalEmpty`): `NeedsAttention { fault, detail }`, com `detail` a mensagem que casou. `TooManyDeletes` e `AllFilesChanged` têm prioridade.
   7. Código 7 e alguma linha com `Must run --resync to recover`: `NeedsReview(CriticalError)`. Um código 7 que o log diz ser repetível sem `--resync` (`critical_retryable`) cai em `Transient`.
   8. Código 2: `ConfigError` (bug de flags do syncfast).
   9. Qualquer outro caso: `Transient`.
@@ -496,9 +496,9 @@ Notificações (`notify.rs`, no core):
 | `config_error` | `<name>: configuration error` | a mensagem |
 | `auth_error` | `<name>: account disconnected` | `Reconnect "<remote>" in Settings > Accounts.` |
 | `local_missing` | `<name>: folder not found` | `<local> is missing. Sync resumes when it is back.` |
-| `needs_attention` | `<name>: needs attention` | `Account`: `Google Drive refused the account. Open syncfast for the fix.`; `Quota`: `Google Drive is full.`; `Permission`: `No permission to a file or folder on Google Drive.`; `RemoteMissing`: `The folder on Google Drive is missing.`; falha longa: `Syncing keeps failing. Open syncfast for details.` |
+| `needs_attention` | `<name>: needs attention` | `Account`: `Google Drive refused the account. Open syncfast for the fix.`; `Quota`: `Google Drive is full.`; `Permission`: `No permission to a file or folder on Google Drive.`; `RemoteMissing`: `The folder on Google Drive is missing.`; `LocalEmpty`: `The folder is empty. If it is on a drive, mount it.`; falha longa: `Syncing keeps failing. Open syncfast for details.` |
 | conflitos | `<name>: <n> new conflicts` | `Both versions were kept. Open syncfast to resolve.` |
-| falhas | `<name>: sync failing` | `Failed 3 times in a row. <msg da última linha ERROR do log, ou da última `Failed to bisync` sem ela>` |
+| falhas | `<name>: sync failing` | `Failed 3 times in a row. <msg>` |
 
 ### 8. Units e `syncfast apply` (`units.rs`)
 
