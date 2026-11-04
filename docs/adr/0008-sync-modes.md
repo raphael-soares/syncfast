@@ -4,7 +4,7 @@
 Phase 1 had one way to sync, `rclone bisync`. Some folders only need to go one way: a camera folder that is uploaded, a Drive folder that is read on this computer, a backup-like copy that must match its source. Bisync cannot do that safely, and `rclone sync` does not refuse an empty source: it deletes the destination.
 
 ## Decision
-- `mode` is a setting like the others (`[defaults]` or per sync), default `bisync`. Local stays Path1 and the source or destination follows the mode:
+- `mode` is a setting set per sync only, default `bisync`. `[defaults]` rejects it (`mode is set per sync, not in [defaults]`), so a mirror is never inherited: it is always chosen on one sync, in its Options tab. Local stays Path1 and the source or destination follows the mode:
   - `upload`: `rclone copy` local to remote. Never deletes.
   - `download`: `rclone copy` remote to local. Never deletes; replaced local files go to versions.
   - `mirror_up`: `rclone sync` local to remote. The remote becomes identical to the local folder.
