@@ -12,8 +12,8 @@ O app se chama **syncfast**:
 Roadmap:
 
 - **Esta spec (fase 1):** o app completo, com padrões sãos e poucas opções.
-- **Fase 2:** expõe cada comportamento como opção configurável. A fase 1 já resolve tudo por uma struct `Behavior` para que a fase 2 não mexa no motor.
-- **Fase 3:** backup periódico.
+- **Fase 2:** expõe cada comportamento como opção configurável, com padrões globais e override por sync, e acrescenta modos de sync além do bisync. A fase 1 já resolve tudo por uma struct `Behavior` para que a fase 2 não mexa no motor. Spec: [spec-phase-2.md](spec-phase-2.md).
+- **Fase 3:** backup periódico com restic. Spec: [spec-phase-3.md](spec-phase-3.md).
 
 Estado final da fase 1:
 
