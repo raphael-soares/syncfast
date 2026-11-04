@@ -4,19 +4,23 @@ Keeps folders on this computer in sync with Google Drive, in both directions, fr
 
 ## Install
 
-Flatpak is the only way to install syncfast (ADR 0006). It bundles rclone and needs nothing else from the host except `flatpak` and the user's systemd. Every push to `main` publishes a signed Flatpak repository at https://raphael-soares.github.io/syncfast/.
+Flatpak is the only way to install syncfast (ADR 0006). It bundles rclone and needs nothing else from the host except `flatpak` and the user's systemd. Each release publishes a signed Flatpak repository at https://raphael-soares.github.io/syncfast/; `main` between releases does not reach it.
 
 ```sh
 flatpak install --user https://raphael-soares.github.io/syncfast/io.github.raphael_soares.syncfast.flatpakref
-flatpak update              # later, to get the latest build (or: just flatpak-update)
+flatpak update              # later, to get the latest release (or: just flatpak-update)
 flatpak run io.github.raphael_soares.syncfast
 ```
 
 The runtime comes from Flathub; add it first with `flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo` if the machine has no Flathub remote.
 
-To build from a checkout instead, `just flatpak` builds and installs for this user, and `just flatpak-bundle` also writes `syncfast.flatpak`. The Flatpak workflow uploads the same bundle as an artifact; install it offline with `flatpak install --user syncfast.flatpak`.
+To build from a checkout instead, `just flatpak` builds and installs for this user, and `just flatpak-bundle` also writes `syncfast.flatpak`. Each GitHub Release carries the same bundle as `syncfast-<version>-x86_64.flatpak`; install it offline with `flatpak install --user <file>`.
 
 The command line is `flatpak run --command=syncfast io.github.raphael_soares.syncfast <apply|run|watch|preview|status>`. Start it hidden at login with `flatpak run io.github.raphael_soares.syncfast --start-hidden`.
+
+## Releasing
+
+Commits on `main` follow Conventional Commits (`feat` bumps minor, `fix` patch, `!` or `BREAKING CHANGE:` bumps minor while the version is 0.x). release-please keeps one open PR titled `chore(main): release X.Y.Z` with the version bump and `CHANGELOG.md`. To release, merge that PR: it tags `vX.Y.Z`, creates the GitHub Release, then builds and signs the Flatpak, publishes it to Pages and attaches the bundle. Don't edit versions by hand.
 
 ## Development
 
