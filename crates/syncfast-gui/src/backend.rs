@@ -46,7 +46,7 @@ const CLI_NAME: &str = "syncfast";
 const CLI_VAR: &str = "SYNCFAST_CLI";
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 /// Opens folders and links. In the Flatpak sandbox the runtime's `xdg-open`
-/// goes through the OpenURI portal, which the toolkit's own opener cannot.
+/// goes through the `OpenURI` portal, which the toolkit's own opener cannot.
 const OPENER: &str = "xdg-open";
 
 /// What the UI asks of the backend.
