@@ -404,7 +404,14 @@ impl App {
         };
         tray.sync(&view);
         for event in tray.events() {
-            self.actions.extend(tray_action(&event, &view));
+            let Some(action) = tray_action(&event, &view) else {
+                continue;
+            };
+            if action == Action::OpenSettings {
+                // Settings draws in the main window, which may be covered.
+                self.actions.push(Action::ShowWindow);
+            }
+            self.actions.push(action);
         }
     }
 
@@ -457,8 +464,11 @@ impl App {
     pub fn frame_ui(&mut self, ui: &mut egui::Ui) {
         let vm = self.view_model();
         let ctx = ui.ctx().clone();
-        let welcome = self.welcome_visible();
-        let title = if welcome {
+        let settings = self.screens.settings_open;
+        let welcome = self.welcome_visible() && !settings;
+        let title = if settings {
+            vm.settings_pane.title().to_owned()
+        } else if welcome {
             welcome::TITLE.to_owned()
         } else {
             vm.title()
@@ -472,7 +482,11 @@ impl App {
             ui::shortcuts(&ctx, &vm),
             self.sheets.is_open(),
         ));
-        if welcome {
+        // Before the screen: an open sheet takes the first Esc.
+        let sheet_actions = self.sheets.show(&ctx, &vm.pairs, vm.filter_test.as_ref());
+        if settings {
+            actions.extend(ui::settings::content(ui, &vm));
+        } else if welcome {
             let view = WelcomeView {
                 has_remote: !vm.remotes.is_empty(),
             };
@@ -480,10 +494,7 @@ impl App {
         } else {
             actions.extend(ui::root(ui, &vm));
         }
-        actions.extend(self.sheets.show(&ctx, &vm.pairs, vm.filter_test.as_ref()));
-        if self.screens.settings_open {
-            actions.extend(ui::settings::window(&ctx, &vm, app_id()));
-        }
+        actions.extend(sheet_actions);
         actions.extend(ui::remove::show(&ctx, &vm));
         let (commands, wait) = self.sheets.tick(Instant::now());
         for command in commands {
@@ -530,6 +541,7 @@ impl App {
     fn apply(&mut self, action: Action, ctx: &egui::Context) {
         match action {
             Action::SelectPair(id) => {
+                self.screens.settings_open = false;
                 if self.gui.selected_pair.as_ref() != Some(&id) {
                     self.gui.selected_pair = Some(id);
                     self.mark_gui_dirty();
@@ -551,9 +563,6 @@ impl App {
             | Action::Review(_)
             | Action::AddSyncSheet(_)
             | Action::Account(_) => {
-                if brings_main_window(&action, self.screens.settings_open) {
-                    self.show_window(ctx);
-                }
                 self.apply_to_sheets(&action);
             }
             Action::OpenSettings
@@ -718,17 +727,6 @@ enum CloseRequest {
     Minimize,
 }
 
-/// Sheets draw in the main window, so a sheet opened from the Settings
-/// window must bring the main window forward: it may be minimized, behind
-/// another window, or hidden in the tray.
-fn brings_main_window(action: &Action, settings_open: bool) -> bool {
-    settings_open
-        && matches!(
-            action,
-            Action::AddAccount | Action::ReconnectAccount(_) | Action::ChangeClientId(_)
-        )
-}
-
 fn on_close_requested(intent: CloseIntent, tray_shown: bool) -> CloseRequest {
     match (intent, tray_shown) {
         (CloseIntent::Unplanned, true) => CloseRequest::Hide,
@@ -748,7 +746,9 @@ impl Resident for App {
 
     fn window_gone(&mut self) {
         self.window_hidden = true;
-        self.screens.settings_open = false;
+        if self.close != CloseIntent::Reopen {
+            self.screens.settings_open = false;
+        }
         self.wants_show = false;
         self.close = CloseIntent::Unplanned;
         self.save_gui();
@@ -795,29 +795,6 @@ mod tests {
 
     use super::*;
     use crate::snapshot::PairSnapshot;
-
-    #[test]
-    fn an_account_sheet_asked_from_settings_brings_the_main_window() {
-        let accounts = [
-            Action::AddAccount,
-            Action::ReconnectAccount("gdrive".into()),
-            Action::ChangeClientId("gdrive".into()),
-        ];
-
-        for action in &accounts {
-            assert!(brings_main_window(action, true), "{action:?}");
-            assert!(!brings_main_window(action, false), "{action:?}");
-        }
-    }
-
-    #[test]
-    fn actions_that_open_no_account_sheet_do_not_bring_the_main_window() {
-        assert!(!brings_main_window(
-            &Action::SetTheme(crate::theme::ThemeChoice::Dark),
-            true
-        ));
-        assert!(!brings_main_window(&Action::CloseSettings, true));
-    }
 
     fn app() -> (tempfile::TempDir, App) {
         let dir = tempfile::tempdir().unwrap();
@@ -1075,6 +1052,30 @@ mod tests {
         app.intend(CloseIntent::Hide);
 
         assert_eq!(app.closed(), Closed::Quit);
+    }
+
+    #[test]
+    fn settings_stay_open_across_a_reopen_and_close_with_the_window_otherwise() {
+        let (_dir, mut app) = app();
+        app.screens.settings_open = true;
+        app.intend(CloseIntent::Reopen);
+        app.window_gone();
+        assert!(app.screens.settings_open);
+
+        app.intend(CloseIntent::Hide);
+        app.window_gone();
+        assert!(!app.screens.settings_open);
+    }
+
+    #[test]
+    fn opening_settings_with_the_window_hidden_asks_for_the_window() {
+        let (_dir, mut app) = app();
+        app.window_hidden = true;
+
+        app.apply_to_settings(Action::OpenSettings, &egui::Context::default());
+
+        assert!(app.screens.settings_open);
+        assert!(app.wants_show);
     }
 
     #[test]

@@ -1,20 +1,21 @@
-//! The Settings window: a separate window with a sidebar of panes. Its title
-//! is the name of the pane it shows, and Esc closes it.
+//! The Settings screen: it replaces the main window's content with a sidebar
+//! of panes. A back button and Esc return to the syncs.
 
 mod accounts;
 mod appearance;
 
 use egui::{Frame, Margin, RichText};
 
-use super::widgets::{SidebarRow, sidebar_row};
+use super::widgets::{SidebarRow, icon_button, sidebar_row};
 use super::{Action, ViewModel};
 use crate::gui_state::SettingsPane;
 use crate::icons::Icon;
 use crate::theme::{self, ThemeChoice, space};
 
+/// The tooltip and accessible name of the button that leaves Settings.
+const BACK: &str = "Back";
+
 const SIDEBAR_WIDTH: f32 = 180.0;
-const DEFAULT_SIZE: [f32; 2] = [640.0, 420.0];
-const MIN_SIZE: [f32; 2] = [520.0, 320.0];
 
 /// What the Theme selector offers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -31,26 +32,6 @@ fn pane_icon(pane: SettingsPane) -> Icon {
         SettingsPane::Accounts => Icon::User,
         SettingsPane::Appearance => Icon::Palette,
     }
-}
-
-/// Opens (or keeps open) the Settings window. Call it every frame while the
-/// window should exist; it closes when the call stops.
-#[must_use]
-pub fn window(ctx: &egui::Context, vm: &ViewModel, app_id: &str) -> Vec<Action> {
-    let mut actions = Vec::new();
-    let builder = egui::ViewportBuilder::default()
-        .with_title(vm.settings_pane.title())
-        .with_app_id(app_id)
-        .with_inner_size(DEFAULT_SIZE)
-        .with_min_inner_size(MIN_SIZE);
-    let id = egui::ViewportId::from_hash_of("syncfast-settings");
-    ctx.show_viewport_immediate(id, builder, |ui, _class| {
-        actions.extend(content(ui, vm));
-        if ui.ctx().input(|input| input.viewport().close_requested()) {
-            actions.push(Action::CloseSettings);
-        }
-    });
-    actions
 }
 
 /// The panes and the one that is selected.
@@ -70,6 +51,10 @@ pub fn content(ui: &mut egui::Ui, vm: &ViewModel) -> Vec<Action> {
                 .inner_margin(Margin::same(12)),
         )
         .show(ui, |ui| {
+            if icon_button(ui, Icon::ChevronLeft, BACK).clicked() {
+                actions.push(Action::CloseSettings);
+            }
+            ui.add_space(space::S);
             for pane in SettingsPane::ALL {
                 let row = SidebarRow {
                     icon: pane_icon(pane),

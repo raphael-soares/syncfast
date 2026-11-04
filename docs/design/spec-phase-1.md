@@ -74,7 +74,7 @@ Estado final da fase 1:
   - toolbar no detalhe
   - sheets para tarefas modais (uma por vez, sempre com Cancel)
   - alert só para ação destrutiva irreversível e incomum
-  - janela de Settings separada
+  - Settings na própria janela principal, com botão Voltar
   - menu da bandeja sempre com os mesmos itens (desabilita em vez de esconder)
   - progresso determinado quando mensurável
   - erro mostrado perto do problema
@@ -661,7 +661,7 @@ A GUI chama `apply` como função do core: ao iniciar, depois de cada gravação
   - `progress_bar` (determinada e indeterminada), `inline_error` (texto `danger` com ícone `circle-alert`, logo abaixo do campo)
   - `empty_state` (ícone 40, título `title3`, texto `callout`, botão)
   - `text_field`, `text_area`, `switch` (40×22), `folder_tree`
-- Ícones: `fastframe_icons::icons!` com as variantes Lucide usadas (tabela do passo 6 mais `folder`, `folder-plus`, `folder-sync`, `settings`, `trash-2`, `external-link`, `chevron-right`, `x`, `plus`, `user`, `palette`, `filter`, `history`). Ícone fora do set compartilhado vira SVG próprio no diretório de assets.
+- Ícones: `fastframe_icons::icons!` com as variantes Lucide usadas (tabela do passo 6 mais `folder`, `folder-plus`, `folder-sync`, `settings`, `trash-2`, `external-link`, `chevron-left`, `chevron-right`, `x`, `plus`, `user`, `palette`, `filter`, `history`). Ícone fora do set compartilhado vira SVG próprio no diretório de assets.
 - Ícone da bandeja (HIG: símbolo):
   - Glifo monocromático Lucide `folder-sync`, rasterizado com `resvg` dentro do `DrawIcon`, com a cor de `IconColour` escolhida conforme o painel claro ou escuro (como o zapfast faz em `tray_colour`).
   - Estado:
@@ -799,7 +799,7 @@ Toda tela é função de um `ViewModel` imutável e devolve `Vec<Action>`. O `ap
 - O passo 3 fica feito quando a primeira rodada `Ok` acontece. Aí `welcome_done = true` e a tela não volta.
 - Com `welcome_done = true` e sem pares: `empty_state` `No syncs yet` com `Add Sync…`.
 
-**Janela Settings** (viewport separada via `ctx.show_viewport_immediate`, título igual ao painel ativo, lembra o último painel, `Esc` fecha):
+**Tela Settings** (substitui o conteúdo da janela principal, sem segunda janela; título da janela igual ao painel ativo, lembra o último painel; `icon_button` `chevron-left` (`Back`) no topo da sidebar e `Esc` voltam para a janela anterior; abrir Settings com a janela escondida na bandeja mostra a janela principal já em Settings; as sheets de conta abrem por cima dela):
 
 - Sidebar com `Accounts` e `Appearance`.
 - **Accounts:**
