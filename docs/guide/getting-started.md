@@ -1,0 +1,48 @@
+# Getting started
+
+## Install
+
+```sh
+flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+flatpak install --user https://raphael-soares.github.io/syncfast/io.github.raphael_soares.syncfast.flatpakref
+flatpak run io.github.raphael_soares.syncfast
+```
+
+Update with `flatpak update`. To start syncfast hidden in the tray at login, run `flatpak run io.github.raphael_soares.syncfast --start-hidden` from your session's autostart. Use the absolute path to `flatpak` if your session's `PATH` does not include it.
+
+The window closes to the tray: syncfast keeps running so syncs continue. Use **Quit syncfast** in the tray menu to stop it.
+
+## Connect Google Drive
+
+Press **Get Started** and **Add Google Drive Account…**. syncfast needs an OAuth client ID and secret of your own; [Google Drive](google-drive.md) shows how to create them. After you press **Connect**, finish signing in in your browser. The account is saved in rclone's config under the name you chose (`gdrive` by default).
+
+## Create a sync
+
+1. Press **+** next to **Syncs**, or continue from the welcome screen.
+2. Pick the **Account**, then the folder on Drive (or **Entire gdrive**). **New Folder…** creates one.
+3. Pick the **Folder on This Computer**, or create it.
+4. Name the sync and press **Create Sync**.
+
+Pick folders that are not inside each other: two syncs cannot overlap, and a synced folder cannot contain syncfast's versions folder.
+
+## Review the first sync
+
+A new sync is held until you review it. **Review changes** shows, from a dry run, what would be uploaded, downloaded, replaced or deleted on each side. Nothing is copied before you press **Sync**. When the review would delete files, the button reads **Delete and Sync**; read that list first.
+
+Afterwards the status reads **Up to date** and syncfast runs a round every 5 minutes and about 30 seconds after files change on this computer. **Sync Now** runs one immediately.
+
+## Day to day
+
+- **Activity** lists every round with its counts. Expand one for the file list.
+- **Conflicts** appears when a file changed on both sides. Choose **Keep Current**, **Keep Conflicted Copy** or **Keep Both**.
+- **Filters** keeps files out of the sync: presets for system junk and developer folders, and custom rules, one per line (`- *.bak` excludes, `+ ` includes). **Test Filters** says how many files a rule leaves out. Saving new filters holds the sync for a new review.
+- **Pause** stops a sync until you resume it. **Remove Sync…** leaves the files on both sides.
+- Files replaced on this computer by a download are kept for 30 days: **Open Versions Folder** in the **…** menu.
+
+## Command line
+
+```sh
+flatpak run --command=syncfast io.github.raphael_soares.syncfast status
+```
+
+`status`, `show`, `sync`, `review` and the other commands are described in the [agent guide](../agents.md); they work for people too and print JSON with `--json`.

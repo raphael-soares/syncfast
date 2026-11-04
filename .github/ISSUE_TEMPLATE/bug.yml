@@ -1,0 +1,37 @@
+name: Bug report
+description: Something does not sync, a review is wrong, or the app crashed.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read the [troubleshooting guide](https://github.com/raphael-soares/syncfast/blob/main/docs/guide/troubleshooting.md) first.
+        Never paste tokens, client secrets or the output of `rclone config dump`. Round logs contain file names: remove anything private.
+  - type: input
+    id: version
+    attributes:
+      label: syncfast version
+      description: Output of `flatpak info io.github.raphael_soares.syncfast`.
+      placeholder: "0.2.0"
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Distribution and desktop
+      placeholder: "Fedora 43, GNOME"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What did you do, and what happened instead?
+      placeholder: "1. Created a sync. 2. Pressed Sync. 3. The status says ..."
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: The round log (`~/.local/state/syncfast/pairs/<sync id>/runs/`) or `journalctl --user -u 'syncfast-*' -n 100`.
+      render: text

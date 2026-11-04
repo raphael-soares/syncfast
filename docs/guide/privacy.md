@@ -1,0 +1,25 @@
+# Privacy
+
+syncfast has no server, no account of its own and no telemetry. It sends nothing to its author.
+
+## What leaves your computer
+
+Only what rclone sends to Google Drive to sync the folders you chose: file contents, names and dates, over HTTPS, to your own Drive account. Signing in happens in your browser, between you and Google.
+
+## What stays on your computer
+
+- **Your OAuth client ID, secret and token** live in `~/.config/rclone/rclone.conf`, readable by your user. syncfast never prints or logs them, and its agent interface never returns them.
+- **Sync state, round logs and saved versions** live under `~/.local/state/syncfast/` and `~/.local/share/syncfast/`. Round logs contain file names.
+- **Settings** live in `~/.config/syncfast/config.toml`.
+
+## Permissions of the Flatpak
+
+The sandbox is granted: your home folder (the folders you sync and the configs above), the network, a window (Wayland and X11, GPU), desktop notifications, the tray, the NetworkManager state (to tell offline from an error), and `flatpak-spawn --host` to manage its systemd user units. The full reasoning is in [ADR 0006](../adr/0006-flatpak-packaging.md).
+
+## AI agents
+
+An agent you connect through MCP or the CLI runs as you and can read what you can read, so connect only agents you trust. Exploring reads names, sizes and dates, never file contents. An agent cannot sign in, change credentials or confirm a review that deletes files. See the [agent guide](../agents.md).
+
+## Removing everything
+
+Remove the sync in the app, then `flatpak uninstall --user --delete-data io.github.raphael_soares.syncfast`. Delete `~/.config/syncfast`, `~/.local/state/syncfast` and `~/.local/share/syncfast` if you want the state gone too, and revoke access in your [Google account](https://myaccount.google.com/permissions).

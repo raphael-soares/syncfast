@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Guide and troubleshooting
+    url: https://github.com/raphael-soares/syncfast/blob/main/docs/guide/troubleshooting.md
+    about: Common problems (review needed, signed out, nothing syncs) and where syncfast keeps its files.
+  - name: What syncfast is and is not
+    url: https://github.com/raphael-soares/syncfast/blob/main/PRODUCT.md
+    about: Check the product boundaries before requesting a feature.
