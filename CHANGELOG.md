@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.3](https://github.com/raphael-soares/syncfast/compare/v0.3.2...v0.3.3) (2026-11-04)
+
+
+### Bug fixes
+
+* **gui:** keep the sheet scrim under its panel ([#43](https://github.com/raphael-soares/syncfast/issues/43)) ([a899ae1](https://github.com/raphael-soares/syncfast/commit/a899ae17eb7b76dc83c7edeec9fe598b0fb6ab71))
+
 ## [0.3.2](https://github.com/raphael-soares/syncfast/compare/v0.3.1...v0.3.2) (2026-11-04)
 
 
