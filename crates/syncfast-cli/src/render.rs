@@ -79,6 +79,9 @@ fn sync_block(out: &mut String, sync: &PairView) {
     if let Some(error) = &sync.config_error {
         let _ = writeln!(out, "  config:   {error}");
     }
+    if let Some(notice) = sync.notice {
+        let _ = writeln!(out, "  notice:   {notice}");
+    }
     let _ = writeln!(out, "  presets:  {}", sync.presets.join(", "));
     for rule in &sync.filters {
         let _ = writeln!(out, "  rule:     {rule}");

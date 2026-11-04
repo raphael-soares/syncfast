@@ -36,6 +36,7 @@ fn pair(id: &str, gate: Option<GateKind>) -> PairRow {
         progress: None,
         gate_detail: String::new(),
         consecutive_failures: 0,
+        realtime_off: false,
         presets: Vec::new(),
         filters: Vec::new(),
     }

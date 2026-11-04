@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use futures_core::Stream as _;
 use inotify::{EventMask, EventStream, Inotify, WatchDescriptor, WatchMask, Watches};
+use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tokio::time::{Instant, sleep_until};
 
@@ -323,6 +324,45 @@ fn is_watch_limit(err: &io::Error) -> bool {
     err.kind() == io::ErrorKind::StorageFull
 }
 
+/// What the user reads next to a sync that [`limited_pairs`] names.
+pub const WATCH_LIMIT_NOTICE: &str = "Real-time sync is off: raise fs.inotify.max_user_watches.";
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct WatchLimit {
+    pairs: Vec<String>,
+}
+
+/// The ids of the syncs the running watcher could not watch fully. Empty
+/// when the file is absent or unreadable.
+#[must_use]
+pub fn limited_pairs(paths: &Paths) -> Vec<String> {
+    std::fs::read(paths.watch_limit_file())
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<WatchLimit>(&bytes).ok())
+        .map(|limit| limit.pairs)
+        .unwrap_or_default()
+}
+
+/// Records `ids` in `watch-limit.json`, or removes the file when there are
+/// none.
+fn record_limited_pairs(paths: &Paths, ids: Vec<String>) {
+    let file = paths.watch_limit_file();
+    if ids.is_empty() {
+        if let Err(err) = std::fs::remove_file(&file)
+            && err.kind() != io::ErrorKind::NotFound
+        {
+            log::warn!("cannot remove {}: {err}", file.display());
+        }
+        return;
+    }
+    let outcome = serde_json::to_vec(&WatchLimit { pairs: ids })
+        .map_err(io::Error::other)
+        .and_then(|json| fastframe_file::write(&file, json));
+    if let Err(err) = outcome {
+        log::warn!("cannot write {}: {err}", file.display());
+    }
+}
+
 /// The inotify watcher. [`Watcher::start`] puts the watches in place;
 /// [`Watcher::run`] then serves events until told to stop.
 pub struct Watcher {
@@ -391,7 +431,10 @@ impl Watcher {
         loop {
             let deadline = self.next_deadline();
             tokio::select! {
-                () = &mut shutdown => return Ok(()),
+                () = &mut shutdown => {
+                    record_limited_pairs(&self.env.paths, Vec::new());
+                    return Ok(());
+                }
                 event = poll_fn(|cx| std::pin::Pin::new(&mut self.stream).poll_next(cx)) => {
                     match event {
                         Some(Ok(event)) => self.handle(&event.wd, event.mask, event.name.as_deref()),
@@ -560,6 +603,19 @@ impl Watcher {
         for pair in 0..self.pairs.len() {
             self.watch_subtree(pair, PathBuf::new());
         }
+        self.publish_limit();
+    }
+
+    /// Writes which syncs ran into the inotify limit for `status` and the
+    /// GUI, or removes the file when there are none.
+    fn publish_limit(&self) {
+        let mut ids: Vec<String> = self
+            .limit_hit
+            .iter()
+            .map(|&pair| self.pairs[pair].id.clone())
+            .collect();
+        ids.sort();
+        record_limited_pairs(&self.env.paths, ids);
     }
 
     /// Watches `start` (relative to the sync's folder) and every directory
@@ -591,6 +647,7 @@ impl Watcher {
                         watched.id
                     );
                     self.limit_hit.insert(pair);
+                    self.publish_limit();
                     return;
                 }
                 Err(err) => {
@@ -803,6 +860,58 @@ mod tests {
 
         assert_eq!(schedule.deadline(), None);
         assert!(!schedule.due(t0 + secs(3600), || false));
+    }
+
+    fn temp_paths() -> (tempfile::TempDir, Paths) {
+        let root = tempfile::tempdir().unwrap();
+        let paths = Paths::new(
+            root.path().join("home"),
+            root.path().join("config"),
+            root.path().join("state"),
+            root.path().join("data"),
+            root.path().join("run"),
+        );
+        (root, paths)
+    }
+
+    #[test]
+    fn limited_pairs_are_written_for_status_and_read_back() {
+        let (_root, paths) = temp_paths();
+
+        record_limited_pairs(&paths, vec!["docs".to_owned(), "notes".to_owned()]);
+
+        assert_eq!(limited_pairs(&paths), ["docs", "notes"]);
+        let json = std::fs::read_to_string(paths.watch_limit_file()).unwrap();
+        assert_eq!(json, r#"{"pairs":["docs","notes"]}"#);
+    }
+
+    #[test]
+    fn watching_everything_again_removes_the_limit_file() {
+        let (_root, paths) = temp_paths();
+        record_limited_pairs(&paths, vec!["docs".to_owned()]);
+
+        record_limited_pairs(&paths, Vec::new());
+
+        assert!(!paths.watch_limit_file().exists());
+        assert!(limited_pairs(&paths).is_empty());
+    }
+
+    #[test]
+    fn clearing_the_limit_when_there_is_none_is_fine() {
+        let (_root, paths) = temp_paths();
+
+        record_limited_pairs(&paths, Vec::new());
+
+        assert!(limited_pairs(&paths).is_empty());
+    }
+
+    #[test]
+    fn an_unreadable_limit_file_names_no_pair() {
+        let (_root, paths) = temp_paths();
+        std::fs::create_dir_all(paths.state_dir()).unwrap();
+        std::fs::write(paths.watch_limit_file(), "not json").unwrap();
+
+        assert!(limited_pairs(&paths).is_empty());
     }
 
     #[test]

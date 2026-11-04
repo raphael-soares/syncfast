@@ -9,6 +9,7 @@ use syncfast_core::bisync_log::{Progress, last_stats, parse_log};
 use syncfast_core::config::{Config, Pair};
 use syncfast_core::paths::Paths;
 use syncfast_core::state::{DisplayStatus, Gate, GateKind, State, display_status, is_running};
+use syncfast_core::watch::limited_pairs;
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 
 /// How much of the end of a running round's log is read for its stats.
@@ -21,6 +22,8 @@ pub struct PairSnapshot {
     pub running: bool,
     pub status: DisplayStatus,
     pub progress: Option<Progress>,
+    /// The watcher ran out of inotify watches for this sync.
+    pub realtime_off: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -47,9 +50,11 @@ pub async fn load(paths: &Paths) -> Snapshot {
             };
         }
     };
+    let limited = limited_pairs(paths);
     let mut pairs = Vec::with_capacity(config.pairs().len());
     for pair in config.pairs() {
-        pairs.push(load_pair(paths, pair).await);
+        let realtime_off = limited.contains(&pair.id);
+        pairs.push(load_pair(paths, pair, realtime_off).await);
     }
     Snapshot {
         config_error: None,
@@ -57,7 +62,7 @@ pub async fn load(paths: &Paths) -> Snapshot {
     }
 }
 
-async fn load_pair(paths: &Paths, pair: &Pair) -> PairSnapshot {
+async fn load_pair(paths: &Paths, pair: &Pair, realtime_off: bool) -> PairSnapshot {
     let state = match State::load(paths, &pair.id).await {
         Ok(state) => state,
         Err(err) => {
@@ -77,6 +82,7 @@ async fn load_pair(paths: &Paths, pair: &Pair) -> PairSnapshot {
         state,
         running,
         progress,
+        realtime_off,
     }
 }
 
@@ -181,6 +187,22 @@ mod tests {
             Some("unsupported config version 2")
         );
         assert!(snapshot.pairs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_sync_named_in_the_watch_limit_file_has_real_time_sync_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        write_config(&paths, NOTES);
+        std::fs::create_dir_all(paths.state_dir()).unwrap();
+        std::fs::write(paths.watch_limit_file(), r#"{"pairs":["notes"]}"#).unwrap();
+
+        let limited = load(&paths).await;
+        std::fs::remove_file(paths.watch_limit_file()).unwrap();
+        let watched = load(&paths).await;
+
+        assert!(limited.pairs[0].realtime_off);
+        assert!(!watched.pairs[0].realtime_off);
     }
 
     #[tokio::test]

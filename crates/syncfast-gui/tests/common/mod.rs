@@ -29,6 +29,7 @@ pub fn pair(id: &str, name: &str) -> PairRow {
         progress: None,
         gate_detail: String::new(),
         consecutive_failures: 0,
+        realtime_off: false,
         presets: vec!["system_junk".into(), "dev_dirs".into()],
         filters: Vec::new(),
     }

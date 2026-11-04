@@ -25,6 +25,7 @@ fn row(id: &str, name: &str, status: DisplayStatus) -> PairRow {
         progress: None,
         gate_detail: String::new(),
         consecutive_failures: 0,
+        realtime_off: false,
         presets: Vec::new(),
         filters: Vec::new(),
     }

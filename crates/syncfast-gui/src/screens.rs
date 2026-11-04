@@ -235,6 +235,7 @@ mod tests {
                 running: false,
                 status: DisplayStatus::UpToDate,
                 progress: None,
+                realtime_off: false,
             }],
         }
     }

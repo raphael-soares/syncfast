@@ -29,6 +29,7 @@ fn pair(status: DisplayStatus) -> PairRow {
         progress: None,
         gate_detail: String::new(),
         consecutive_failures: 0,
+        realtime_off: false,
         presets: Vec::new(),
         filters: Vec::new(),
     }
@@ -115,6 +116,19 @@ fn sync_now_is_enabled_for_an_idle_sync_and_asks_for_a_round() {
     harness.run_steps(4);
 
     assert_eq!(harness.state().actions, [Action::SyncNow("drive".into())]);
+}
+
+#[test]
+fn a_sync_without_real_time_watching_says_how_to_turn_it_back_on() {
+    let off = harness(view(PairRow {
+        realtime_off: true,
+        ..pair(DisplayStatus::UpToDate)
+    }));
+    let on = harness(view(pair(DisplayStatus::UpToDate)));
+    let notice = "Real-time sync is off: raise fs.inotify.max_user_watches.";
+
+    assert!(off.query_by_label(notice).is_some());
+    assert!(on.query_by_label(notice).is_none());
 }
 
 #[test]

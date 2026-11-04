@@ -53,6 +53,8 @@ pub struct PairRow {
     /// What the gate says about itself; empty without a gate.
     pub gate_detail: String,
     pub consecutive_failures: u32,
+    /// The watcher could not watch this sync's folder in full.
+    pub realtime_off: bool,
     /// The preset names that are on.
     pub presets: Vec<String>,
     /// The custom filter lines.
@@ -92,6 +94,7 @@ impl From<&PairSnapshot> for PairRow {
                 .map(|gate| gate.detail.clone())
                 .unwrap_or_default(),
             consecutive_failures: snapshot.state.consecutive_failures,
+            realtime_off: snapshot.realtime_off,
             presets: snapshot.pair.presets.clone(),
             filters: snapshot.pair.filters.clone(),
         }

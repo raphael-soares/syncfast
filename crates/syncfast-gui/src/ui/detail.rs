@@ -3,6 +3,7 @@
 use egui::{Frame, Margin, RichText, Ui};
 use syncfast_core::bisync_log::Progress;
 use syncfast_core::state::{DisplayStatus, GateKind};
+use syncfast_core::watch::WATCH_LIMIT_NOTICE;
 
 use super::format::{progress_fraction, progress_line};
 use super::menu::{self, Tone};
@@ -250,6 +251,13 @@ fn status_card(
                             .color(palette.secondary),
                     )
                     .selectable(text.selectable),
+                );
+            }
+            if pair.realtime_off {
+                ui.label(
+                    RichText::new(WATCH_LIMIT_NOTICE)
+                        .font(theme::callout())
+                        .color(palette.warning),
                 );
             }
             if let Some((label, action)) = text.button
