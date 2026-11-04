@@ -41,7 +41,7 @@ impl From<WindowRecord> for Geometry {
     }
 }
 
-/// The panes of the Settings window.
+/// The panes of Settings.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SettingsPane {
@@ -53,7 +53,7 @@ pub enum SettingsPane {
 impl SettingsPane {
     pub const ALL: [Self; 2] = [Self::Accounts, Self::Appearance];
 
-    /// The pane's name, which is also the title of the Settings window.
+    /// The pane's name, which is also the title of the window while it is shown.
     #[must_use]
     pub fn title(self) -> &'static str {
         match self {
@@ -73,7 +73,7 @@ pub struct GuiState {
     pub sidebar_width: f32,
     pub theme: ThemeChoice,
     pub window: WindowRecord,
-    /// The pane the Settings window opens on.
+    /// The pane Settings opens on.
     pub settings_pane: SettingsPane,
 }
 

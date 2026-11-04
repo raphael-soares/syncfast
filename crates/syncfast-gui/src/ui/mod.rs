@@ -177,7 +177,7 @@ pub enum Action {
     AddSync,
     /// Leaves the welcome screen for the empty main window, for good.
     SkipWelcome,
-    /// Opens the Settings window.
+    /// Shows Settings in the main window.
     OpenSettings,
     /// Opens the Review sheet of a sync (from a notification).
     OpenReview(String),

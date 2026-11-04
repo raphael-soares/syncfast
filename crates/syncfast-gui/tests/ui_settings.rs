@@ -187,7 +187,18 @@ fn theme_files_that_could_not_be_read_are_listed() {
 }
 
 #[test]
-fn escape_closes_the_window() {
+fn the_back_button_closes_settings() {
+    let mut harness = harness(accounts(Vec::new()), screen());
+    harness.run();
+
+    harness.get_by_label("Back").click();
+    harness.run();
+
+    assert_eq!(harness.state().actions, [Action::CloseSettings]);
+}
+
+#[test]
+fn escape_closes_settings() {
     let mut harness = harness(accounts(Vec::new()), screen());
     harness.run();
 
