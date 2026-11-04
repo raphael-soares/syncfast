@@ -3,6 +3,7 @@ name: Release
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -28,8 +29,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          number=$(gh pr list --repo "$GITHUB_REPOSITORY" --base main --state open \
-            --label 'autorelease: pending' --json number --jq '.[0].number // empty')
+          number=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open \
+            --head release-please--branches--main--components--syncfast --json number --jq '.[0].number // empty')
           if [ -n "$number" ]; then
             gh pr merge "$number" --repo "$GITHUB_REPOSITORY" --squash
             echo "merged=true" >> "$GITHUB_OUTPUT"
