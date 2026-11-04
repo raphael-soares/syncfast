@@ -720,7 +720,7 @@ Toda tela é função de um `ViewModel` imutável e devolve `Vec<Action>`. O `ap
 
 - Título da janela: nome do par selecionado; sem seleção, `Syncs`.
 - **Sidebar:**
-  - Cabeçalho `Syncs` com `icon_button` `plus` (tooltip `Add Sync…`). Nada crítico no rodapé.
+  - Cabeçalho `Syncs` com três `icon_button` à direita: `plus` (tooltip `Add Sync…`), `settings` (tooltip `Settings…`) e `ellipsis` (tooltip `syncfast Menu`). O menu tem as mesmas linhas da bandeja que não dependem da janela: `Sync All Now`, `Pause All`/`Resume All` (desabilitados sem pares), separador, `Hide Window` e `Quit syncfast`. Nada crítico no rodapé.
   - Uma `sidebar_row` por par: ícone `folder`, nome, `status_badge` compacto (só ícone, com o texto como tooltip) e, embaixo, `subheadline` com `Synced <tempo relativo>` ou `Never synced`.
   - Seleção destacada sempre.
 - **Detalhe:**
@@ -794,6 +794,8 @@ Toda tela é função de um `ViewModel` imutável e devolve `Vec<Action>`. O `ap
   - Sem remote `drive` → sheet de conta.
   - Depois → sheet Add Sync.
   - Depois → Review.
+- `secondary_button` `Set up without the guide`: grava `welcome_done = true` e leva à janela principal vazia.
+- No topo à direita, `icon_button` `settings` (`Settings…`) e o mesmo menu `ellipsis` da sidebar, para Configurações e Quit sem passar pela bandeja.
 - O passo 3 fica feito quando a primeira rodada `Ok` acontece. Aí `welcome_done = true` e a tela não volta.
 - Com `welcome_done = true` e sem pares: `empty_state` `No syncs yet` com `Add Sync…`.
 

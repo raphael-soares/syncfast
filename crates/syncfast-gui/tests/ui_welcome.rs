@@ -104,3 +104,54 @@ fn get_started_with_an_account_goes_straight_to_add_sync() {
 
     assert_eq!(harness.state().actions, [Action::AddSync]);
 }
+
+#[test]
+fn the_settings_button_opens_settings_from_the_welcome() {
+    let mut harness = harness(fresh(false));
+
+    harness.get_by_label("Settings…").click();
+    harness.run();
+
+    assert_eq!(harness.state().actions, [Action::OpenSettings]);
+}
+
+#[test]
+fn the_guide_can_be_skipped_whether_or_not_there_is_an_account() {
+    for has_remote in [false, true] {
+        let mut harness = harness(fresh(has_remote));
+
+        harness.get_by_label(welcome::SKIP).click();
+        harness.run();
+
+        assert_eq!(
+            harness.state().actions,
+            [Action::SkipWelcome],
+            "has_remote: {has_remote}"
+        );
+    }
+}
+
+#[test]
+fn quit_is_reachable_from_the_welcome() {
+    let mut harness = harness(fresh(false));
+
+    harness.get_by_label("syncfast Menu").click();
+    harness.run_steps(4);
+    harness.get_by_label("Quit syncfast").click();
+    harness.run_steps(4);
+
+    assert_eq!(harness.state().actions, [Action::Quit]);
+}
+
+#[test]
+fn the_welcome_menu_keeps_its_sync_rows_but_they_do_nothing_without_syncs() {
+    let mut harness = harness(fresh(false));
+
+    harness.get_by_label("syncfast Menu").click();
+    harness.run_steps(4);
+    harness.get_by_label("Sync All Now").click();
+    harness.get_by_label("Resume All").click();
+    harness.run_steps(4);
+
+    assert!(harness.state().actions.is_empty());
+}

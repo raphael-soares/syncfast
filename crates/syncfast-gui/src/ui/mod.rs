@@ -9,6 +9,7 @@ pub mod conflicts;
 pub mod detail;
 pub mod filters;
 pub mod format;
+pub mod menu;
 pub mod relative;
 pub mod remove;
 pub mod review;
@@ -151,6 +152,21 @@ impl ViewModel {
         self.selected_pair()
             .map_or_else(|| TITLE.to_owned(), |pair| pair.name.clone())
     }
+
+    /// `Pause All` while any sync is active, `Resume All` once none is.
+    #[must_use]
+    pub fn pauses_all(&self) -> bool {
+        self.pairs.iter().any(|pair| pair.enabled)
+    }
+
+    /// What the window menu offers.
+    #[must_use]
+    pub fn app_menu(&self) -> menu::AppMenu {
+        menu::AppMenu {
+            has_syncs: !self.pairs.is_empty(),
+            pauses: self.pauses_all(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -159,6 +175,8 @@ pub enum Action {
     ResizeSidebar(f32),
     /// Opens the Add Sync sheet.
     AddSync,
+    /// Leaves the welcome screen for the empty main window, for good.
+    SkipWelcome,
     /// Opens the Settings window.
     OpenSettings,
     /// Opens the Review sheet of a sync (from a notification).

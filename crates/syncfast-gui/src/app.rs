@@ -347,7 +347,14 @@ impl App {
             .pairs
             .iter()
             .any(|pair| pair.state.last_outcome == Some(LastOutcome::Ok));
-        if confirmed && !self.gui.welcome_done {
+        if confirmed {
+            self.finish_welcome_now();
+        }
+    }
+
+    /// The user skipped the guide: same state as a confirmed first sync.
+    fn finish_welcome_now(&mut self) {
+        if !self.gui.welcome_done {
             self.gui.welcome_done = true;
             self.mark_gui_dirty();
         }
@@ -603,6 +610,7 @@ impl App {
                 self.error = None;
                 self.backend.send(Command::OpenVersionsFolder(id));
             }
+            Action::SkipWelcome => self.finish_welcome_now(),
             Action::ShowWindow => self.show_window(ctx),
             Action::HideWindow => self.hide_window(ctx),
             Action::Quit => {
@@ -948,6 +956,26 @@ mod tests {
 
         app.handle_event(Event::Snapshot(Snapshot::default()));
         assert!(app.gui.welcome_done, "it never comes back");
+    }
+
+    #[test]
+    fn skipping_the_guide_ends_the_welcome_for_good_and_is_saved() {
+        let (_dir, mut app) = app();
+        assert!(app.welcome_visible());
+
+        app.apply(Action::SkipWelcome, &egui::Context::default());
+
+        assert!(!app.welcome_visible());
+        assert!(app.gui.welcome_done);
+        assert!(
+            app.gui_dirty_since.is_some(),
+            "the choice is written to gui.json"
+        );
+        app.handle_event(Event::Snapshot(Snapshot::default()));
+        assert!(
+            !app.welcome_visible(),
+            "an empty list does not bring it back"
+        );
     }
 
     #[test]

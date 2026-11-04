@@ -66,7 +66,8 @@ impl SettingsPane {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GuiState {
-    /// The first sync was confirmed: the welcome screen never comes back.
+    /// The first sync was confirmed or the user skipped the guide: the
+    /// welcome screen never comes back.
     pub welcome_done: bool,
     pub selected_pair: Option<String>,
     pub sidebar_width: f32,
