@@ -254,6 +254,7 @@ pub fn watch_service(launcher: &Launcher) -> String {
          {env}\
          Restart=on-failure\n\
          RestartSec=10\n\
+         RestartPreventExitStatus=2\n\
          \n\
          [Install]\n\
          WantedBy=default.target\n",
@@ -450,6 +451,26 @@ impl Applier<'_, '_> {
         }
     }
 
+    /// Reloads systemd when a unit changed or an earlier reload failed, and
+    /// remembers a failure in `reload-pending`.
+    async fn reload_if_needed(&mut self) {
+        let marker = self.env.paths.reload_pending_file();
+        if !self.units_changed && !path_exists(&marker).await {
+            return;
+        }
+        let failures = self.report.failures.len();
+        self.systemctl(None, &["daemon-reload"]).await;
+        if self.report.failures.len() > failures {
+            if let Err(err) = write_marker(&marker).await {
+                log::warn!("cannot record the pending reload: {err}");
+            }
+        } else if let Err(err) = tokio::fs::remove_file(&marker).await
+            && err.kind() != io::ErrorKind::NotFound
+        {
+            log::warn!("cannot clear the pending reload: {err}");
+        }
+    }
+
     async fn reconcile(&mut self, delete_versions: &[String]) {
         let env = self.env;
         let config = match Config::load(env.paths).await {
@@ -534,9 +555,7 @@ impl Applier<'_, '_> {
         }
 
         self.write_units(&validation.pairs, &launcher).await;
-        if self.units_changed {
-            self.systemctl(None, &["daemon-reload"]).await;
-        }
+        self.reload_if_needed().await;
         for pair in &validation.pairs {
             let timer = timer_name(&pair.id);
             let verb = if pair.enabled { "enable" } else { "disable" };
@@ -684,6 +703,13 @@ fn md5_beside(filters: &Path) -> PathBuf {
     let mut name = filters.as_os_str().to_owned();
     name.push(".md5");
     PathBuf::from(name)
+}
+
+async fn write_marker(path: &Path) -> io::Result<()> {
+    if let Some(dir) = path.parent() {
+        tokio::fs::create_dir_all(dir).await?;
+    }
+    tokio::fs::write(path, b"").await
 }
 
 async fn path_exists(path: &Path) -> bool {
@@ -853,6 +879,7 @@ mod tests {
              Environment=\"SYNCFAST_RCLONE=/usr/bin/rclone\"\n\
              Restart=on-failure\n\
              RestartSec=10\n\
+             RestartPreventExitStatus=2\n\
              \n\
              [Install]\n\
              WantedBy=default.target\n"
