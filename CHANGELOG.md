@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/raphael-soares/syncfast/compare/v0.2.0...v0.2.1) (2026-11-04)
+
+
+### Documentation
+
+* restructure the repo with a landing README, guides, product notes and CI ([#31](https://github.com/raphael-soares/syncfast/issues/31)) ([c84b44c](https://github.com/raphael-soares/syncfast/commit/c84b44c0b6f5a5667562afc47567ecf00b58276f))
+
 ## [0.2.0](https://github.com/raphael-soares/syncfast/compare/v0.1.0...v0.2.0) (2026-11-04)
 
 
