@@ -289,7 +289,11 @@ fn pick_tree(folders: &HashMap<String, Agg>, limit: usize) -> (Vec<FolderStat>, 
 /// Where `target` points: `gdrive:Notes` is a remote path, anything else a
 /// folder on this computer (`~` is the home folder; a relative path is
 /// relative to `cwd`).
-fn classify(target: &str, home: &Path, cwd: &Path) -> Result<(String, Location), OpError> {
+pub(super) fn classify(
+    target: &str,
+    home: &Path,
+    cwd: &Path,
+) -> Result<(String, Location), OpError> {
     let target = target.trim();
     if target.is_empty() {
         return Err(OpError::Invalid(

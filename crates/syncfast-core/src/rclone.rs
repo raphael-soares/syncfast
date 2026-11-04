@@ -18,6 +18,9 @@ const BINARY_NAME: &str = "rclone";
 const BINARY_OVERRIDE_VAR: &str = "SYNCFAST_RCLONE";
 const CONFIG_VAR: &str = "RCLONE_CONFIG";
 const DRIVE_TYPE: &str = "drive";
+/// rclone's exit codes for a folder and for a file that is not there.
+const NOT_FOUND: i32 = 3;
+const FILE_NOT_FOUND: i32 = 4;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RcloneError {
@@ -203,6 +206,20 @@ impl Rclone {
         Ok(())
     }
 
+    /// Removes the folder only when it is empty; rclone refuses otherwise.
+    ///
+    /// # Errors
+    /// rclone cannot run or fails (for example the folder is not empty).
+    pub async fn rmdir(&self, path: &str) -> Result<(), RcloneError> {
+        self.output(
+            "rmdir",
+            ["rmdir", "--", path].map(OsString::from).to_vec(),
+            true,
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Names of `drive` remotes whose `client_id` is absent or empty, so they
     /// use rclone's shared one. Sorted.
     ///
@@ -342,6 +359,51 @@ impl Rclone {
             )
             .await?;
         serde_json::from_slice(&stdout).map_err(|_| RcloneError::BadOutput("lsjson"))
+    }
+
+    /// What `path` is (a file or a folder, with its size), or `None` when
+    /// nothing is there. Never the content.
+    ///
+    /// # Errors
+    /// rclone cannot run, or fails for a reason other than a missing path.
+    pub async fn stat(&self, path: &str) -> Result<Option<TreeEntry>, RcloneError> {
+        let output = self
+            .command(["lsjson", "--stat", "--no-mimetype", "--", path])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(RcloneError::Spawn)?;
+        if output.status.success() {
+            return serde_json::from_slice(&output.stdout)
+                .map(Some)
+                .map_err(|_| RcloneError::BadOutput("lsjson"));
+        }
+        if matches!(output.status.code(), Some(NOT_FOUND | FILE_NOT_FOUND)) {
+            return Ok(None);
+        }
+        Err(RcloneError::Failed {
+            command: "lsjson",
+            detail: last_line(&output.stderr).unwrap_or_else(|| exit_detail(output.status)),
+        })
+    }
+
+    /// `rclone <command> <flags> -- <source> <destination>`, where
+    /// `command` is `copy`, `copyto`, `move` or `moveto`.
+    ///
+    /// # Errors
+    /// rclone cannot run or fails.
+    pub async fn transfer(
+        &self,
+        command: &'static str,
+        flags: &[&str],
+        source: &str,
+        destination: &str,
+    ) -> Result<(), RcloneError> {
+        let mut args: Vec<OsString> = vec![command.into()];
+        args.extend(flags.iter().map(OsString::from));
+        args.extend(["--".into(), source.into(), destination.into()]);
+        self.output(command, args, true).await.map(drop)
     }
 }
 

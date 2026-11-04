@@ -566,6 +566,17 @@ pub fn remotes_overlap(a: &str, b: &str) -> bool {
     a.starts_with(&b) || b.starts_with(&a)
 }
 
+/// True when `inner` is `outer` or inside it, on the same account.
+#[must_use]
+pub fn remote_within(inner: &str, outer: &str) -> bool {
+    let (Some((account_inner, path_inner)), Some((account_outer, path_outer))) =
+        (split_remote(inner), split_remote(outer))
+    else {
+        return false;
+    };
+    account_inner == account_outer && segments(path_inner).starts_with(&segments(path_outer))
+}
+
 fn segments(path: &str) -> Vec<&str> {
     path.split('/').filter(|s| !s.is_empty()).collect()
 }
@@ -573,7 +584,7 @@ fn segments(path: &str) -> Vec<&str> {
 /// Canonicalizes the longest existing ancestor and re-appends the rest, so a
 /// folder that is not there yet (or sits behind a symlink) still compares
 /// correctly.
-fn resolve(path: &Path) -> PathBuf {
+pub(crate) fn resolve(path: &Path) -> PathBuf {
     let cleaned = lexical_clean(path);
     let mut missing: Vec<&OsStr> = Vec::new();
     let mut cursor = cleaned.as_path();
@@ -591,7 +602,7 @@ fn resolve(path: &Path) -> PathBuf {
     }
 }
 
-fn lexical_clean(path: &Path) -> PathBuf {
+pub(crate) fn lexical_clean(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
         match component {

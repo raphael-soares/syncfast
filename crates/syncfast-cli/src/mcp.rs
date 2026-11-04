@@ -13,7 +13,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use syncfast_core::ops::{
     DEFAULT_DEPTH, DEFAULT_MAX_FOLDERS, DEFAULT_WAIT_SECONDS, ExploreOptions, Keep, NewSync,
-    OpError, Ops,
+    OpError, Ops, TransferOptions,
 };
 
 const INSTRUCTIONS: &str = "\
@@ -35,6 +35,11 @@ review deletes files you cannot confirm it: ask the user to review it in syncfas
 5. Follow. status and show_sync say where each sync stands; sync_now runs a round; \
 list_conflicts and resolve_conflict settle files that changed on both sides; list_activity \
 and show_round_log explain what a round did.
+
+6. Organize. copy and move take a file or folder on this computer or `account:path` on either \
+side. The destination is the new name itself and must not exist. Call with dry_run first to show \
+the user the files and bytes. A transfer that outlasts the wait goes on by itself: read it with \
+show_transfer. A folder that a sync keeps cannot be moved: remove the sync first.
 
 Rules: a changed filter or an error holds the sync for a new review. A sync held because many \
 files would be deleted is for the user to confirm. A first sync of a large folder can take \
@@ -158,6 +163,35 @@ struct SyncNowArgs {
     /// Every enabled sync, instead of one. Give `id` or `all`, not both.
     all: Option<bool>,
     /// Seconds to wait for the round to end (default 60; 0 returns at once). The round goes on by itself.
+    wait_seconds: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct TransferArgs {
+    /// A file or folder on this computer (absolute, or `~/...`) or `account:path`.
+    source: String,
+    /// The new file or folder itself, not the folder it goes into. It must not exist: nothing is overwritten or merged.
+    destination: String,
+    /// Only report the files and bytes that would be transferred and change nothing.
+    dry_run: Option<bool>,
+    /// Seconds to wait for the transfer to end (default 60; 0 returns at once). It goes on by itself.
+    wait_seconds: Option<u64>,
+}
+
+impl TransferArgs {
+    fn options(&self) -> TransferOptions {
+        TransferOptions {
+            dry_run: self.dry_run.unwrap_or(false),
+            wait: wait(self.wait_seconds),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ShowTransferArgs {
+    /// The transfer id that `copy` or `move` returned.
+    id: String,
+    /// Seconds to wait for the transfer to end (default 60; 0 reports how it stands now).
     wait_seconds: Option<u64>,
 }
 
@@ -384,6 +418,46 @@ impl SyncfastMcp {
             ),
             Err(err) => reply::<()>(Err(err)),
         }
+    }
+
+    #[tool(
+        description = "Copy a file or folder to a new place, each side on this computer or `account:path`, in any direction. The destination is the new name and must not exist. Use dry_run to see the files and bytes first. Runs detached and waits up to wait_seconds: when it is still running the answer has finished=false and an id for show_transfer. Refused when the destination exists, when the source is an account root or is or contains the folder of a sync, and while a round of a sync that holds the source or destination runs.",
+        annotations(read_only_hint = false, destructive_hint = false)
+    )]
+    async fn copy(&self, Parameters(args): Parameters<TransferArgs>) -> CallToolResult {
+        reply(
+            self.ops
+                .copy(&args.source, &args.destination, args.options())
+                .await,
+        )
+    }
+
+    #[tool(
+        name = "move",
+        description = "Move a file or folder to a new place, like copy, and delete the source once it was transferred without error (a rename on the server inside one account). Only when the user asked for it; dry_run first. A failed move leaves what was not transferred at the source. Same refusals, arguments and answer as copy.",
+        annotations(read_only_hint = false, destructive_hint = true)
+    )]
+    async fn move_files(&self, Parameters(args): Parameters<TransferArgs>) -> CallToolResult {
+        reply(
+            self.ops
+                .r#move(&args.source, &args.destination, args.options())
+                .await,
+        )
+    }
+
+    #[tool(
+        description = "How a copy or move stands, by the id it returned: running, done or failed (with the error). Waits up to wait_seconds for it to end.",
+        annotations(read_only_hint = true)
+    )]
+    async fn show_transfer(
+        &self,
+        Parameters(args): Parameters<ShowTransferArgs>,
+    ) -> CallToolResult {
+        reply(
+            self.ops
+                .transfer_status(&args.id, wait(args.wait_seconds))
+                .await,
+        )
     }
 
     #[tool(

@@ -101,7 +101,7 @@ impl Drop for Client {
     }
 }
 
-const TOOLS: [&str; 20] = [
+const TOOLS: [&str; 23] = [
     "status",
     "show_sync",
     "add_sync",
@@ -114,6 +114,9 @@ const TOOLS: [&str; 20] = [
     "list_remote_folders",
     "create_remote_folder",
     "explore",
+    "copy",
+    "move",
+    "show_transfer",
     "sync_now",
     "show_review",
     "confirm_review",
@@ -133,7 +136,15 @@ fn initialize_names_the_server_and_carries_the_recommended_flow() {
 
     assert_eq!(result["serverInfo"]["name"], "syncfast");
     let instructions = result["instructions"].as_str().unwrap();
-    for step in ["Explore", "Propose", "Add", "Review", "confirm_review"] {
+    for step in [
+        "Explore",
+        "Propose",
+        "Add",
+        "Review",
+        "confirm_review",
+        "Organize",
+        "show_transfer",
+    ] {
         assert!(
             instructions.contains(step),
             "missing {step}: {instructions}"
@@ -287,4 +298,49 @@ fn an_unknown_sync_is_a_tool_error_not_a_protocol_error() {
 
     assert!(is_error);
     assert_eq!(text, "no sync has the id \"nope\"");
+}
+
+#[test]
+fn copy_and_move_answer_over_mcp_as_the_commands_do_and_show_transfer_reads_them() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local().join("docs/a.txt"), "hello");
+    let source = bed.local().join("docs");
+    let source = source.to_str().unwrap();
+    let mut client = Client::start(&bed);
+    client.initialize();
+    let copy_to = format!("{}/copied", bed.remote_arg());
+    let move_to = format!("{}/moved", bed.remote_arg());
+
+    let (planned_error, planned) = client.call(
+        "move",
+        &json!({"source": source, "destination": move_to, "dry_run": true}),
+    );
+    let (copy_error, copied) = client.call(
+        "copy",
+        &json!({"source": source, "destination": copy_to, "wait_seconds": 0}),
+    );
+    let id = serde_json::from_str::<Value>(&copied).unwrap()["transfer"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (show_error, shown) = client.call("show_transfer", &json!({"id": id}));
+    let (refused, message) =
+        client.call("copy", &json!({"source": source, "destination": copy_to}));
+
+    assert!(!planned_error, "{planned}");
+    let planned: Value = serde_json::from_str(&planned).unwrap();
+    assert_eq!(planned["transfer"]["status"], "dry_run");
+    assert_eq!(planned["transfer"]["bytes"], 5);
+    assert!(!copy_error, "{copied}");
+    assert!(!show_error, "{shown}");
+    let shown: Value = serde_json::from_str(&shown).unwrap();
+    assert_eq!(shown["transfer"]["status"], "done");
+    assert_eq!(shown["finished"], true);
+    assert_eq!(
+        std::fs::read_to_string(bed.remote().join("copied/a.txt")).unwrap(),
+        "hello"
+    );
+    assert!(bed.local().join("docs/a.txt").exists());
+    assert!(refused);
+    assert!(message.contains("already exists"), "{message}");
 }

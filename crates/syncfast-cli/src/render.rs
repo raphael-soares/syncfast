@@ -7,7 +7,7 @@ use syncfast_core::bisync_log::ChangeKind;
 use syncfast_core::ops::{
     AccountView, AddedSync, ConfirmedReview, ConflictView, Exploration, FilterTestView,
     FiltersSaved, FolderList, FolderMade, PairDetail, PairView, RemovedSync, Resolved, ReviewView,
-    RoundLog, RoundView, SyncRounds, ThemeInfo, ThemeSet, Toggled,
+    RoundLog, RoundView, SyncRounds, ThemeInfo, ThemeSet, Toggled, TransferReport,
 };
 
 fn day(at: Timestamp) -> String {
@@ -231,6 +231,35 @@ pub fn explore(found: &Exploration) -> String {
             found.folders_omitted
         );
     }
+    out
+}
+
+pub fn transfer(report: &TransferReport) -> String {
+    let found = &report.transfer;
+    let moving = found.operation == "move";
+    let verb = match (found.status, moving) {
+        ("dry_run", true) => "Would move",
+        ("dry_run", false) => "Would copy",
+        ("running", true) => "Moving",
+        ("running", false) => "Copying",
+        ("done", true) => "Moved",
+        ("done", false) => "Copied",
+        (_, true) => "Failed to move",
+        (_, false) => "Failed to copy",
+    };
+    let files = if found.files == 1 { "file" } else { "files" };
+    let mut out = format!(
+        "{verb} {} {} to {}: {} {files}, {}\n",
+        found.kind,
+        found.source,
+        found.destination,
+        found.files,
+        bytes(found.bytes),
+    );
+    if let Some(error) = &found.error {
+        let _ = writeln!(out, "{error}");
+    }
+    let _ = writeln!(out, "{}", found.note);
     out
 }
 

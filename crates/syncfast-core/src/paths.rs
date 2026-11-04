@@ -168,6 +168,24 @@ impl Paths {
         self.runtime_subdir().join(format!("{pair_id}.lock"))
     }
 
+    /// The job files of `copy` and `move`, one per transfer.
+    #[must_use]
+    pub fn transfers_dir(&self) -> PathBuf {
+        self.state_dir().join("transfers")
+    }
+
+    #[must_use]
+    pub fn transfer_file(&self, transfer_id: &str) -> PathBuf {
+        self.transfers_dir().join(format!("{transfer_id}.json"))
+    }
+
+    /// Held exclusively while the transfer's rclone runs.
+    #[must_use]
+    pub fn transfer_lock_file(&self, transfer_id: &str) -> PathBuf {
+        self.runtime_subdir()
+            .join(format!("transfer-{transfer_id}.lock"))
+    }
+
     /// Held by `syncfast apply` so two applies never interleave.
     #[must_use]
     pub fn apply_lock_file(&self) -> PathBuf {

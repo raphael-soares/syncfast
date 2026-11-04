@@ -11,10 +11,13 @@ use std::time::Duration;
 use jiff::Zoned;
 use syncfast_core::network::{BoxFuture, Network};
 use syncfast_core::notify::{Notice, Notifier};
-use syncfast_core::ops::{ExploreOptions, Keep, NewSync, OpError, Ops};
+use syncfast_core::ops::{
+    ExploreOptions, Keep, NewSync, OpError, Ops, TransferOptions, TransferStarter, run_transfer,
+};
 use syncfast_core::paths::Paths;
 use syncfast_core::rclone::Rclone;
 use syncfast_core::run::{RunEnv, run};
+use syncfast_core::state::try_lock_pair;
 use syncfast_core::units::{Systemctl, SystemdMode};
 use syncfast_core::watch::Trigger;
 
@@ -70,6 +73,29 @@ impl Trigger for InProcess {
     }
 }
 
+/// Runs a transfer as a task of this process, what the detached
+/// `transfer-run` does for the real starter.
+struct InProcessTransfers {
+    paths: Paths,
+    rclone: Rclone,
+}
+
+impl TransferStarter for InProcessTransfers {
+    fn start<'a>(&'a self, transfer_id: &'a str) -> BoxFuture<'a, Result<(), String>> {
+        let (paths, rclone, id) = (
+            self.paths.clone(),
+            self.rclone.clone(),
+            transfer_id.to_owned(),
+        );
+        Box::pin(async move {
+            tokio::spawn(async move {
+                let _ = run_transfer(&paths, &rclone, &id).await;
+            });
+            Ok(())
+        })
+    }
+}
+
 struct Bed {
     _dir: tempfile::TempDir,
     root: PathBuf,
@@ -97,6 +123,10 @@ fn bed_with(rclone_conf: &str) -> Option<Bed> {
     let rclone = Rclone::new(found.bin().to_owned()).with_config(conf);
     let ops = Ops {
         trigger: Arc::new(InProcess {
+            paths: paths.clone(),
+            rclone: rclone.clone(),
+        }),
+        transfers: Arc::new(InProcessTransfers {
             paths: paths.clone(),
             rclone: rclone.clone(),
         }),
@@ -640,4 +670,406 @@ async fn a_theme_is_saved_beside_what_the_window_remembers_and_unknown_ones_are_
     assert_eq!(info.current, "noctalia.json");
     assert_eq!(info.available, ["system", "light", "dark", "noctalia.json"]);
     assert_eq!(refused.exit_code(), 2);
+}
+
+impl Bed {
+    /// `testremote:<root>/remote/<name>`.
+    fn remote_at(&self, name: &str) -> String {
+        format!("testremote:{}", self.remote().join(name).display())
+    }
+
+    fn options() -> TransferOptions {
+        TransferOptions {
+            dry_run: false,
+            wait: WAIT,
+        }
+    }
+}
+
+fn read(path: &Path) -> String {
+    fs::read_to_string(path).unwrap()
+}
+
+#[tokio::test]
+async fn copying_a_local_folder_to_a_remote_one_leaves_the_source_and_creates_the_destination() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local().join("photos/a.txt"), "aaaa");
+    write(&bed.local().join("photos/deep/b.txt"), "bb");
+    fs::create_dir_all(bed.local().join("photos/empty")).unwrap();
+    let source = bed.local().join("photos");
+
+    let copied = bed
+        .ops
+        .copy(
+            source.to_str().unwrap(),
+            &bed.remote_at("backup"),
+            Bed::options(),
+        )
+        .await
+        .unwrap();
+
+    assert!(copied.finished);
+    assert_eq!(copied.transfer.status, "done");
+    assert_eq!(copied.transfer.operation, "copy");
+    assert_eq!(copied.transfer.kind, "folder");
+    assert_eq!((copied.transfer.files, copied.transfer.bytes), (2, 6));
+    assert!(!copied.transfer.server_side);
+    assert_eq!(read(&bed.remote().join("backup/a.txt")), "aaaa");
+    assert_eq!(read(&bed.remote().join("backup/deep/b.txt")), "bb");
+    assert!(bed.remote().join("backup/empty").is_dir());
+    assert_eq!(read(&source.join("a.txt")), "aaaa");
+}
+
+#[tokio::test]
+async fn a_remote_file_is_copied_to_this_computer_under_the_name_given() {
+    let Some(bed) = bed() else { return };
+    write(&bed.remote().join("notes/todo.txt"), "milk");
+    let destination = bed.local().join("renamed.txt");
+
+    let copied = bed
+        .ops
+        .copy(
+            &bed.remote_at("notes/todo.txt"),
+            destination.to_str().unwrap(),
+            Bed::options(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(copied.transfer.kind, "file");
+    assert_eq!((copied.transfer.files, copied.transfer.bytes), (1, 4));
+    assert_eq!(read(&destination), "milk");
+    assert!(bed.remote().join("notes/todo.txt").exists());
+}
+
+#[tokio::test]
+async fn a_tilde_names_the_home_folder_and_a_local_folder_moves_to_another() {
+    let Some(bed) = bed() else { return };
+    write(&bed.ops.paths.home.join("inbox/x.txt"), "x");
+
+    let moved = bed
+        .ops
+        .r#move("~/inbox", "~/archive/inbox", Bed::options())
+        .await
+        .unwrap();
+
+    assert!(moved.transfer.server_side);
+    assert_eq!(read(&bed.ops.paths.home.join("archive/inbox/x.txt")), "x");
+    assert!(!bed.ops.paths.home.join("inbox").exists());
+}
+
+#[tokio::test]
+async fn moving_between_two_folders_of_one_account_renames_on_the_server() {
+    let Some(bed) = bed() else { return };
+    write(&bed.remote().join("inbox/a.txt"), "a");
+    write(&bed.remote().join("inbox/sub/b.txt"), "b");
+    fs::create_dir_all(bed.remote().join("inbox/empty")).unwrap();
+
+    let moved = bed
+        .ops
+        .r#move(
+            &bed.remote_at("inbox"),
+            &bed.remote_at("archive/2026"),
+            Bed::options(),
+        )
+        .await
+        .unwrap();
+
+    assert!(moved.transfer.server_side);
+    assert_eq!(moved.transfer.operation, "move");
+    assert_eq!(moved.transfer.status, "done");
+    assert_eq!(read(&bed.remote().join("archive/2026/a.txt")), "a");
+    assert_eq!(read(&bed.remote().join("archive/2026/sub/b.txt")), "b");
+    assert!(bed.remote().join("archive/2026/empty").is_dir());
+    assert!(!bed.remote().join("inbox").exists());
+}
+
+#[tokio::test]
+async fn moving_between_two_accounts_deletes_the_source_only_after_the_transfer() {
+    let Some(bed) = bed_with("[one]\ntype = local\n[two]\ntype = local\n") else {
+        return;
+    };
+    write(&bed.remote().join("src/a.txt"), "a");
+    write(&bed.remote().join("src/sub/b.txt"), "b");
+    let from = format!("one:{}", bed.remote().join("src").display());
+    let to = format!("two:{}", bed.remote().join("dst").display());
+
+    let moved = bed.ops.r#move(&from, &to, Bed::options()).await.unwrap();
+
+    assert!(!moved.transfer.server_side);
+    assert_eq!(read(&bed.remote().join("dst/sub/b.txt")), "b");
+    assert!(!bed.remote().join("src/a.txt").exists());
+    assert!(!bed.remote().join("src").exists());
+}
+
+#[tokio::test]
+async fn an_existing_destination_is_refused_with_two_and_nothing_is_overwritten_or_merged() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local().join("docs/new.txt"), "new");
+    write(&bed.remote().join("docs/old.txt"), "old");
+    write(&bed.remote().join("file.txt"), "old file");
+    write(&bed.local().join("file.txt"), "new file");
+
+    let folder = bed
+        .ops
+        .copy(
+            bed.local().join("docs").to_str().unwrap(),
+            &bed.remote_at("docs"),
+            Bed::options(),
+        )
+        .await
+        .unwrap_err();
+    let file = bed
+        .ops
+        .r#move(
+            bed.local().join("file.txt").to_str().unwrap(),
+            &bed.remote_at("file.txt"),
+            Bed::options(),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(folder.exit_code(), 2);
+    assert!(folder.to_string().contains("already exists"), "{folder}");
+    assert_eq!(file.exit_code(), 2);
+    assert!(!bed.remote().join("docs/new.txt").exists());
+    assert_eq!(read(&bed.remote().join("file.txt")), "old file");
+    assert_eq!(read(&bed.local().join("file.txt")), "new file");
+    assert!(!bed.ops.paths.transfers_dir().exists());
+}
+
+#[tokio::test]
+async fn a_missing_source_an_unknown_account_and_a_destination_inside_the_source_are_refused() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local().join("docs/a.txt"), "a");
+    let docs = bed.local().join("docs");
+    let docs = docs.to_str().unwrap();
+
+    let missing = bed
+        .ops
+        .copy(
+            bed.local().join("nope").to_str().unwrap(),
+            &bed.remote_at("x"),
+            Bed::options(),
+        )
+        .await
+        .unwrap_err();
+    let account = bed
+        .ops
+        .copy(docs, "nowhere:x", Bed::options())
+        .await
+        .unwrap_err();
+    let inside = bed
+        .ops
+        .copy(docs, &format!("{docs}/copy"), Bed::options())
+        .await
+        .unwrap_err();
+
+    assert_eq!(missing.exit_code(), 2);
+    assert!(missing.to_string().contains("does not exist"), "{missing}");
+    assert_eq!(
+        account.to_string(),
+        "account \"nowhere\" is not set up in rclone"
+    );
+    assert_eq!(inside.exit_code(), 2);
+    assert!(!bed.local().join("docs/copy").exists());
+}
+
+#[tokio::test]
+async fn the_root_of_an_account_cannot_be_the_source() {
+    let Some(bed) = bed() else { return };
+
+    let err = bed
+        .ops
+        .copy("testremote:", "/tmp/never", Bed::options())
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.exit_code(), 2);
+    assert!(err.to_string().contains("root of an account"), "{err}");
+}
+
+#[tokio::test]
+async fn the_folder_of_a_sync_and_what_contains_it_cannot_be_moved_but_files_inside_can() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs().await;
+    let local = bed.local();
+    let parent_of_remote = format!("testremote:{}", bed.root.display());
+
+    let local_folder = bed
+        .ops
+        .r#move(local.to_str().unwrap(), "~/elsewhere", Bed::options())
+        .await
+        .unwrap_err();
+    let remote_folder = bed
+        .ops
+        .r#move(&bed.remote_at(""), &bed.remote_at("../x"), Bed::options())
+        .await
+        .unwrap_err();
+    let ancestor = bed
+        .ops
+        .copy(&parent_of_remote, "~/everything", Bed::options())
+        .await
+        .unwrap_err();
+    let inside = bed
+        .ops
+        .r#move(
+            local.join("a.txt").to_str().unwrap(),
+            &bed.remote_at("outside/a.txt"),
+            Bed::options(),
+        )
+        .await
+        .unwrap();
+
+    for refused in [&local_folder, &remote_folder, &ancestor] {
+        assert_eq!(refused.exit_code(), 2, "{refused}");
+        assert!(refused.to_string().contains("\"docs\""), "{refused}");
+    }
+    assert!(local.is_dir() && bed.remote().join("b.txt").exists());
+    assert_eq!(inside.transfer.status, "done");
+    assert!(!local.join("a.txt").exists());
+    assert_eq!(
+        read(&bed.remote().join("outside/a.txt")),
+        "content of a.txt"
+    );
+}
+
+#[tokio::test]
+async fn a_source_or_destination_inside_a_sync_that_is_running_is_refused_with_three() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs().await;
+    write(&bed.root.join("outside.txt"), "outside");
+    let round = try_lock_pair(&bed.ops.paths, "docs").unwrap();
+    assert!(round.is_some());
+
+    let from_inside = bed
+        .ops
+        .copy(
+            bed.local().join("a.txt").to_str().unwrap(),
+            "~/a.txt",
+            Bed::options(),
+        )
+        .await
+        .unwrap_err();
+    let into_remote_side = bed
+        .ops
+        .copy(
+            bed.root.join("outside.txt").to_str().unwrap(),
+            &bed.remote_at("new.txt"),
+            Bed::options(),
+        )
+        .await
+        .unwrap_err();
+    let into_local_side = bed
+        .ops
+        .r#move(
+            bed.root.join("outside.txt").to_str().unwrap(),
+            bed.local().join("new.txt").to_str().unwrap(),
+            Bed::options(),
+        )
+        .await
+        .unwrap_err();
+
+    for refused in [&from_inside, &into_remote_side, &into_local_side] {
+        assert!(matches!(refused, OpError::Busy), "{refused}");
+        assert_eq!(refused.exit_code(), 3);
+    }
+    assert!(bed.root.join("outside.txt").exists());
+    assert!(!bed.remote().join("new.txt").exists());
+    assert!(!bed.local().join("new.txt").exists());
+    assert!(!bed.ops.paths.transfers_dir().exists());
+}
+
+#[tokio::test]
+async fn a_move_that_fails_leaves_the_source_where_it_was_and_says_why() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local().join("keep/a.txt"), "a");
+    write(&bed.local().join("keep/sub/b.txt"), "b");
+    write(&bed.remote().join("blocker"), "a file, not a folder");
+    let source = bed.local().join("keep");
+
+    let moved = bed
+        .ops
+        .r#move(
+            source.to_str().unwrap(),
+            &bed.remote_at("blocker/keep"),
+            Bed::options(),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(moved.exit_code(), 1);
+    assert!(moved.to_string().contains("rclone"), "{moved}");
+    assert_eq!(read(&source.join("a.txt")), "a");
+    assert_eq!(read(&source.join("sub/b.txt")), "b");
+    assert_eq!(read(&bed.remote().join("blocker")), "a file, not a folder");
+}
+
+#[tokio::test]
+async fn a_dry_run_reports_files_and_bytes_and_changes_nothing_on_either_side() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local().join("docs/a.txt"), "aaa");
+    write(&bed.local().join("docs/sub/b.txt"), "bb");
+    let source = bed.local().join("docs");
+    let options = TransferOptions {
+        dry_run: true,
+        wait: WAIT,
+    };
+
+    let planned = bed
+        .ops
+        .r#move(source.to_str().unwrap(), &bed.remote_at("docs"), options)
+        .await
+        .unwrap();
+    let refused = bed
+        .ops
+        .copy(source.to_str().unwrap(), source.to_str().unwrap(), options)
+        .await
+        .unwrap_err();
+
+    assert!(planned.finished);
+    assert_eq!(planned.transfer.status, "dry_run");
+    assert_eq!(planned.transfer.id, None);
+    assert_eq!((planned.transfer.files, planned.transfer.bytes), (2, 5));
+    assert_eq!(refused.exit_code(), 2);
+    assert_eq!(read(&source.join("a.txt")), "aaa");
+    assert!(!bed.remote().join("docs").exists());
+    assert!(!bed.ops.paths.transfers_dir().exists());
+}
+
+#[tokio::test]
+async fn a_transfer_that_outlasts_the_wait_is_read_later_by_its_id() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local().join("big/a.txt"), "a");
+    let source = bed.local().join("big");
+    let options = TransferOptions {
+        dry_run: false,
+        wait: Duration::ZERO,
+    };
+
+    let started = bed
+        .ops
+        .copy(source.to_str().unwrap(), &bed.remote_at("big"), options)
+        .await
+        .unwrap();
+    let id = started.transfer.id.clone().unwrap();
+    let later = bed.ops.transfer_status(&id, WAIT).await.unwrap();
+    let unknown = bed
+        .ops
+        .transfer_status("19990101-000000-000", WAIT)
+        .await
+        .unwrap_err();
+    let traversal = bed
+        .ops
+        .transfer_status("../config", WAIT)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(started.transfer.status, "running" | "done"));
+    assert!(later.finished);
+    assert_eq!(later.transfer.status, "done");
+    assert_eq!(later.transfer.id.as_deref(), Some(id.as_str()));
+    assert_eq!(read(&bed.remote().join("big/a.txt")), "a");
+    assert_eq!(unknown.exit_code(), 2);
+    assert_eq!(traversal.exit_code(), 2);
 }

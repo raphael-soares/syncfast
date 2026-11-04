@@ -50,6 +50,12 @@ pub enum Command {
     Mcp,
     /// Print the guide for AI agents (markdown)
     AgentGuide,
+    /// Run a planned copy or move (what `copy` and `move` start on their own)
+    #[command(hide = true)]
+    TransferRun {
+        /// The transfer id
+        id: String,
+    },
     #[command(flatten)]
     Operation(Operation),
 }
@@ -103,6 +109,17 @@ pub enum Operation {
         /// The most folders to list
         #[arg(long, default_value_t = DEFAULT_MAX_FOLDERS)]
         max_folders: usize,
+    },
+    /// Copy a file or folder, on this computer or on a remote, to a new place
+    Copy(TransferArgs),
+    /// Move a file or folder, on this computer or on a remote, to a new place
+    Move(TransferArgs),
+    /// Read a copy or move that was still running when its command returned
+    Transfer {
+        /// The transfer id that `copy` or `move` returned
+        id: String,
+        #[command(flatten)]
+        wait: Wait,
     },
     /// Start a round of a sync now, or of all enabled syncs
     Sync {
@@ -164,10 +181,25 @@ pub struct Target {
 
 #[derive(Debug, clap::Args)]
 pub struct Wait {
-    /// Seconds to wait for the round to end; 0 returns at once. The round
-    /// goes on by itself after the wait.
+    /// Seconds to wait for the round or transfer to end; 0 returns at once.
+    /// It goes on by itself after the wait.
     #[arg(long, value_name = "SECONDS", default_value_t = DEFAULT_WAIT_SECONDS)]
     pub wait: u64,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct TransferArgs {
+    /// A file or folder on this computer (`~` is the home folder), or
+    /// `account:path`
+    pub source: String,
+    /// The new file or folder itself, not the folder it goes into. It must
+    /// not exist: nothing is overwritten or merged
+    pub destination: String,
+    /// Say what would be transferred (files, bytes) and change nothing
+    #[arg(long)]
+    pub dry_run: bool,
+    #[command(flatten)]
+    pub wait: Wait,
 }
 
 #[derive(Debug, clap::Args)]

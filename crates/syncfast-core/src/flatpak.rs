@@ -33,6 +33,31 @@ pub fn systemctl_command(on_host: bool, args: &[&str]) -> (&'static str, Vec<Str
     (program, full)
 }
 
+/// The program and arguments that start `syncfast <args>` as a transient
+/// systemd unit on the host, outside this sandbox, so it outlives the
+/// sandbox that asked for it.
+#[must_use]
+pub fn transient_command(app_id: &str, unit: &str, args: &[&str]) -> (&'static str, Vec<String>) {
+    let unit_flag = format!("--unit={unit}");
+    let mut full: Vec<String> = [
+        "--host",
+        "systemd-run",
+        "--user",
+        "--collect",
+        "--quiet",
+        unit_flag.as_str(),
+        "flatpak",
+        "run",
+        "--die-with-parent",
+        "--command=syncfast",
+        app_id,
+    ]
+    .map(str::to_owned)
+    .into();
+    full.extend(args.iter().map(|arg| (*arg).to_owned()));
+    ("flatpak-spawn", full)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -51,6 +76,22 @@ mod tests {
 
         assert_eq!(program, "flatpak-spawn");
         assert_eq!(args, ["--host", "systemctl", "--user", "daemon-reload"]);
+    }
+
+    #[test]
+    fn a_transient_unit_runs_the_app_on_the_host() {
+        let (program, args) = transient_command(
+            "io.example.App",
+            "syncfast-transfer-1",
+            &["transfer-run", "1"],
+        );
+
+        assert_eq!(program, "flatpak-spawn");
+        assert_eq!(
+            args.join(" "),
+            "--host systemd-run --user --collect --quiet --unit=syncfast-transfer-1 \
+             flatpak run --die-with-parent --command=syncfast io.example.App transfer-run 1"
+        );
     }
 
     #[test]
