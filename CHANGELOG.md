@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/raphael-soares/syncfast/compare/v0.3.0...v0.3.1) (2026-11-04)
+
+
+### Bug fixes
+
+* **gui:** center sheets and open links through xdg-open ([#38](https://github.com/raphael-soares/syncfast/issues/38)) ([c500892](https://github.com/raphael-soares/syncfast/commit/c500892b857746c9b61297865a0bd58d937ba143))
+
 ## [0.3.0](https://github.com/raphael-soares/syncfast/compare/v0.2.1...v0.3.0) (2026-11-04)
 
 
