@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/raphael-soares/syncfast/compare/v0.3.1...v0.3.2) (2026-11-04)
+
+
+### Bug fixes
+
+* **gui:** quote OpenURI in a doc comment for clippy ([#40](https://github.com/raphael-soares/syncfast/issues/40)) ([b2a3fee](https://github.com/raphael-soares/syncfast/commit/b2a3feea488d89a3cee73ae4b695249391f58e6b))
+
 ## [0.3.1](https://github.com/raphael-soares/syncfast/compare/v0.3.0...v0.3.1) (2026-11-04)
 
 
