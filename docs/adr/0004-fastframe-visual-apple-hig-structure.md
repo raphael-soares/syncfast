@@ -5,7 +5,7 @@ The user runs other apps from the same family (Spotifast, ZapFast) and wants thi
 
 ## Decision
 - Visuals come from the fastframe crates: the 16-token palette, Inter, Lucide icons, user themes in `$XDG_CONFIG_HOME/syncfast/themes/`, a Noctalia template, a violet accent.
-- Structure and behaviour follow the Apple HIG (macOS): split view with a sidebar, toolbar in the detail, sheets for modal tasks (one at a time, always with Cancel), alerts only for rare destructive actions, a separate Settings window, a tray menu with constant items (disable instead of hide), determinate progress when measurable, errors next to the problem, verb buttons in Title Case.
+- Structure and behaviour follow the Apple HIG (macOS): split view with a sidebar, toolbar in the detail, sheets for modal tasks (one at a time, always with Cancel), alerts only for rare destructive actions, Settings inside the main window with a Back button, a tray menu with constant items (disable instead of hide), determinate progress when measurable, errors next to the problem, verb buttons in Title Case.
 - The UI vocabulary says "sync" for a pair of folders; the code says `pair`.
 - English only, no i18n.
 - The approved mock is `docs/design/ui-mock.html`.
