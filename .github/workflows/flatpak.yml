@@ -1,12 +1,19 @@
 name: Flatpak
 
 on:
+  pull_request:
   push:
     branches: [main]
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      release_tag:
+        description: Release tag; publishes to Pages and attaches the bundle to that release
+        type: string
+        required: true
 
 concurrency:
-  group: flatpak-pages
+  group: flatpak-${{ inputs.release_tag && 'pages' || github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -18,7 +25,9 @@ env:
 
 jobs:
   build:
-    if: github.ref == 'refs/heads/main'
+    if: >-
+      ${{ inputs.release_tag != ''
+      || !startsWith(github.event.head_commit.message, 'chore(main): release') }}
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
@@ -27,6 +36,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
 
       - name: Restore the published history
+        if: inputs.release_tag != ''
         run: |
           ostree init --repo=repo --mode=archive-z2
           ostree remote add --repo=repo --no-gpg-verify published "$SITE_URL"
@@ -38,19 +48,25 @@ jobs:
           esac
 
       - name: Import the signing key
+        if: inputs.release_tag != ''
         env:
           FLATPAK_GPG_PRIVATE_KEY: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
         run: printf '%s' "$FLATPAK_GPG_PRIVATE_KEY" | gpg --batch --import
+
+      - name: Stamp the release date in the metainfo
+        if: inputs.release_tag != ''
+        run: sed -i -E "s/(<release version=\"[^\"]+\" date=\")[^\"]+/\1$(date -u +%F)/" packaging/flatpak/$APP_ID.metainfo.xml
 
       - uses: flatpak/flatpak-github-actions/flatpak-builder@v6.8
         with:
           bundle: syncfast.flatpak
           manifest-path: packaging/flatpak/io.github.raphael_soares.syncfast.yml
           cache-key: flatpak-builder-${{ hashFiles('packaging/flatpak/io.github.raphael_soares.syncfast.yml', 'packaging/flatpak/cargo-sources.json') }}
-          gpg-sign: ${{ secrets.FLATPAK_GPG_KEY_ID }}
+          gpg-sign: ${{ inputs.release_tag != '' && secrets.FLATPAK_GPG_KEY_ID || '' }}
           artifact-name: syncfast.flatpak
 
       - name: Publish the repository files
+        if: inputs.release_tag != ''
         env:
           GPG_KEY_ID: ${{ secrets.FLATPAK_GPG_KEY_ID }}
         run: |
@@ -59,11 +75,12 @@ jobs:
           cp packaging/flatpak/syncfast.flatpakrepo "packaging/flatpak/$APP_ID.flatpakref" repo/
 
       - uses: actions/upload-pages-artifact@v5.0.0
+        if: inputs.release_tag != ''
         with:
           path: repo
 
   deploy:
-    if: github.ref == 'refs/heads/main'
+    if: inputs.release_tag != ''
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -75,3 +92,22 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v5.0.1
+
+  release-asset:
+    if: inputs.release_tag != ''
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.release_tag }}
+    steps:
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: syncfast.flatpak
+
+      - name: Attach the bundle to the release
+        run: |
+          mv syncfast.flatpak "syncfast-${TAG#v}-x86_64.flatpak"
+          gh release upload "$TAG" "syncfast-${TAG#v}-x86_64.flatpak" --repo "$GITHUB_REPOSITORY" --clobber
