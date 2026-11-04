@@ -10,8 +10,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
-use jiff::Zoned;
-use syncfast_core::bisync::{Mode, Outcome, ReviewKind};
+use jiff::{SignedDuration, Timestamp, Zoned};
+use syncfast_core::bisync::{Fault, Mode, Outcome, ReviewKind};
 use syncfast_core::bisync_log::ChangeKind;
 use syncfast_core::network::{BoxFuture, Network};
 use syncfast_core::notify::{Notice, Notifier};
@@ -569,6 +569,45 @@ async fn deleting_most_files_locally_stops_at_the_gate_until_a_forced_round_is_c
 }
 
 #[tokio::test]
+async fn an_emptied_local_folder_needs_attention_at_once_and_the_remote_keeps_every_file() {
+    let Some(bed) = bed() else { return };
+    let files: Vec<String> = (0..60).map(|n| format!("file-{n:02}.txt")).collect();
+    for name in &files {
+        write(&bed.local, name, name);
+    }
+    bed.first_sync().await;
+    for name in &files {
+        fs::remove_file(bed.local.join(name)).unwrap();
+    }
+
+    let report = bed.run().await;
+
+    let RunReport::Ran {
+        mode: Mode::Normal,
+        outcome: Outcome::NeedsAttention { fault, detail },
+    } = report
+    else {
+        panic!("{report:?}");
+    };
+    assert_eq!(fault, Fault::LocalEmpty);
+    assert!(
+        detail.starts_with("Empty current Path1 listing"),
+        "{detail}"
+    );
+    assert_eq!(names(&bed.remote), files);
+    assert!(names(&bed.local).is_empty());
+    assert_eq!(
+        bed.state().await.gate.map(|gate| gate.kind),
+        Some(GateKind::NeedsAttention)
+    );
+    assert_eq!(bed.notices.titles(), ["Docs: needs attention"]);
+    assert_eq!(
+        bed.notices.bodies(),
+        ["The folder is empty. If it is on a drive, mount it."]
+    );
+}
+
+#[tokio::test]
 async fn editing_the_only_file_stops_at_the_gate_until_a_forced_round_is_confirmed() {
     let Some(bed) = bed() else { return };
     write(&bed.local, "only.txt", "base");
@@ -646,6 +685,48 @@ async fn changing_the_filters_sets_the_gate_and_syncs_nothing() {
         1,
         "the filters notice is not repeated"
     );
+}
+
+#[tokio::test]
+async fn a_folder_with_a_git_repo_is_left_out_of_the_first_sync_and_listed_in_the_review() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "school/proj/main.c", "int main;");
+    fs::create_dir_all(bed.local.join("school/proj/.git")).unwrap();
+    write(&bed.local, "school/notes.txt", "notes");
+
+    let reviewed = bed.preview(ReviewKind::Resync).await.unwrap();
+
+    assert_eq!(reviewed.excluded_repos, ["school/proj"]);
+    bed.first_sync().await;
+    assert_eq!(read(&bed.remote, "school/notes.txt"), "notes");
+    assert!(!bed.remote.join("school/proj").exists());
+}
+
+#[tokio::test]
+async fn a_git_init_in_a_synced_folder_holds_the_sync_for_review_and_deletes_nothing_on_the_remote()
+{
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "work/a.txt", "a");
+    bed.first_sync().await;
+    fs::create_dir_all(bed.local.join("work/.git")).unwrap();
+
+    let report = bed.run().await;
+
+    assert_eq!(
+        report,
+        RunReport::GateSet(GateKind::NeedsReviewFiltersChanged)
+    );
+    assert_eq!(read(&bed.remote, "work/a.txt"), "a");
+    bed.confirm(ReviewKind::Resync).await;
+    let confirmed = bed.run().await;
+    assert_eq!(
+        confirmed,
+        RunReport::Ran {
+            mode: Mode::Resync,
+            outcome: Outcome::Ok
+        }
+    );
+    assert_eq!(read(&bed.remote, "work/a.txt"), "a");
 }
 
 #[tokio::test]
@@ -926,6 +1007,211 @@ async fn auth_failure_sets_the_account_gate_and_names_the_account() {
 }
 
 #[tokio::test]
+async fn a_round_that_ends_any_way_but_failing_for_now_ends_the_failing_series() {
+    let Some(bed) = bed() else { return };
+    synced_base(&bed).await;
+    let failing = fake_rclone(&bed, r#"{"level":"error","msg":"boom"}"#, 1);
+    bed.run_with(&failing).await;
+    assert!(bed.state().await.failing_since.is_some());
+    let rejected = fake_rclone(
+        &bed,
+        r#"{"level":"error","msg":"couldn't fetch token: invalid_grant"}"#,
+        1,
+    );
+
+    bed.run_with(&rejected).await;
+
+    assert_eq!(bed.state().await.failing_since, None);
+}
+
+#[tokio::test]
+async fn a_fault_sets_the_attention_gate_once_and_the_next_good_round_clears_it() {
+    let Some(bed) = bed() else { return };
+    synced_base(&bed).await;
+    let full = fake_rclone(
+        &bed,
+        r#"{"level":"error","msg":"googleapi: Error 403: storageQuotaExceeded"}"#,
+        1,
+    );
+
+    let first = bed.run_with(&full).await;
+    let second = bed.run_with(&full).await;
+
+    for report in [first, second] {
+        assert_eq!(
+            report,
+            RunReport::Ran {
+                mode: Mode::Normal,
+                outcome: Outcome::NeedsAttention {
+                    fault: Fault::Quota,
+                    detail: "googleapi: Error 403: storageQuotaExceeded".to_owned()
+                }
+            }
+        );
+    }
+    let state = bed.state().await;
+    let gate = state.gate.unwrap();
+    assert_eq!(gate.kind, GateKind::NeedsAttention);
+    assert_eq!(gate.detail, "googleapi: Error 403: storageQuotaExceeded");
+    assert_eq!(gate.fault, Some(Fault::Quota));
+    assert_eq!(state.consecutive_failures, 2);
+    assert_eq!(state.last_outcome, Some(LastOutcome::Error));
+    assert!(state.failing_since.is_some());
+    assert_eq!(bed.notices.titles(), ["Docs: needs attention"]);
+    assert_eq!(bed.notices.bodies(), ["Google Drive is full."]);
+
+    write(&bed.local, "after.txt", "after");
+    let recovered = bed.run().await;
+
+    assert_eq!(
+        recovered,
+        RunReport::Ran {
+            mode: Mode::Normal,
+            outcome: Outcome::Ok
+        }
+    );
+    let state = bed.state().await;
+    assert!(state.gate.is_none());
+    assert!(state.failing_since.is_none());
+    assert!(state.notified.is_empty(), "{:?}", state.notified);
+    assert_eq!(read(&bed.remote, "after.txt"), "after");
+}
+
+#[tokio::test]
+async fn a_confirmed_first_sync_that_needs_attention_keeps_the_failure_and_resumes_once_fixed() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "base.txt", "base");
+    bed.confirm(ReviewKind::Resync).await;
+    let full = fake_rclone(
+        &bed,
+        r#"{"level":"error","msg":"googleapi: Error 403: storageQuotaExceeded"}"#,
+        1,
+    );
+
+    let first = bed.run_with(&full).await;
+    let second = bed.run_with(&full).await;
+
+    for report in [first, second] {
+        assert!(
+            matches!(
+                report,
+                RunReport::Ran {
+                    mode: Mode::Resync,
+                    outcome: Outcome::NeedsAttention {
+                        fault: Fault::Quota,
+                        ..
+                    }
+                }
+            ),
+            "{report:?}"
+        );
+    }
+    let state = bed.state().await;
+    assert_eq!(
+        state.gate.map(|gate| gate.kind),
+        Some(GateKind::NeedsAttention)
+    );
+    assert_eq!(state.applied_filters_hash, None);
+    assert!(
+        ConfirmMarker::load(&bed.paths, PAIR)
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    let recovered = bed.run().await;
+
+    assert_eq!(
+        recovered,
+        RunReport::Ran {
+            mode: Mode::Resync,
+            outcome: Outcome::Ok
+        }
+    );
+    assert!(bed.state().await.gate.is_none());
+    assert!(
+        ConfirmMarker::load(&bed.paths, PAIR)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(read(&bed.remote, "base.txt"), "base");
+}
+
+#[tokio::test]
+async fn transient_failures_for_over_six_hours_escalate_to_attention_once() {
+    let Some(bed) = bed() else { return };
+    synced_base(&bed).await;
+    let failing = fake_rclone(&bed, r#"{"level":"error","msg":"boom"}"#, 1);
+    bed.run_with(&failing).await;
+    let mut state = bed.state().await;
+    assert!(state.gate.is_none());
+    state.failing_since = Some(Timestamp::now() - SignedDuration::from_hours(7));
+    state.save(&bed.paths, PAIR).await.unwrap();
+
+    let report = bed.run_with(&failing).await;
+    bed.run_with(&failing).await;
+
+    assert!(matches!(
+        report,
+        RunReport::Ran {
+            outcome: Outcome::Transient,
+            ..
+        }
+    ));
+    let gate = bed.state().await.gate.unwrap();
+    assert_eq!(gate.kind, GateKind::NeedsAttention);
+    assert_eq!(gate.detail, "Syncing has failed for over 6 hours: boom");
+    assert_eq!(
+        bed.notices.titles(),
+        ["Docs: needs attention", "Docs: sync failing"]
+    );
+}
+
+#[tokio::test]
+async fn failures_of_less_than_six_hours_do_not_escalate() {
+    let Some(bed) = bed() else { return };
+    synced_base(&bed).await;
+    let failing = fake_rclone(&bed, r#"{"level":"error","msg":"boom"}"#, 1);
+    bed.run_with(&failing).await;
+    let mut state = bed.state().await;
+    state.failing_since = Some(Timestamp::now() - SignedDuration::from_hours(5));
+    state.save(&bed.paths, PAIR).await.unwrap();
+
+    bed.run_with(&failing).await;
+
+    assert!(bed.state().await.gate.is_none());
+    assert!(bed.notices.titles().is_empty());
+}
+
+#[tokio::test]
+async fn a_corrupt_state_file_is_set_aside_and_the_pair_goes_back_to_its_first_review() {
+    let Some(bed) = bed() else { return };
+    synced_base(&bed).await;
+    write(&bed.local, "new.txt", "new");
+    let state_file = bed.paths.state_file(PAIR);
+    fs::write(&state_file, "{ this is not json").unwrap();
+
+    let report = bed.run().await;
+
+    assert_eq!(report, RunReport::Skipped(SkipReason::Gated));
+    assert_eq!(
+        bed.state().await.gate.map(|gate| gate.kind),
+        Some(GateKind::NeedsReviewFirstRun)
+    );
+    let aside: Vec<String> = names(state_file.parent().unwrap())
+        .into_iter()
+        .filter(|name| name.starts_with("state.json.corrupt-"))
+        .collect();
+    assert_eq!(aside.len(), 1, "{aside:?}");
+    assert_eq!(
+        read(state_file.parent().unwrap(), &aside[0]),
+        "{ this is not json"
+    );
+    assert!(!bed.remote.join("new.txt").exists());
+}
+
+#[tokio::test]
 async fn success_after_failures_clears_the_failure_notification_key() {
     let Some(bed) = bed() else { return };
     synced_base(&bed).await;
@@ -1122,6 +1408,41 @@ async fn a_successful_round_prunes_expired_versions_and_old_run_logs() {
     assert_eq!(names(&bed.paths.runs_dir(PAIR)).len(), 50);
     let newest = bed.state().await.last_run.unwrap().log_file;
     assert!(newest.exists(), "the newest log is kept");
+}
+
+#[tokio::test]
+async fn a_failed_round_still_prunes_expired_versions_and_old_run_logs() {
+    let Some(bed) = bed() else { return };
+    synced_base(&bed).await;
+    let versions = bed.paths.versions_dir(PAIR);
+    write(&versions, "20200101-000000/old.txt", "expired");
+    for n in 0..55 {
+        write(
+            &bed.paths.runs_dir(PAIR),
+            &format!("20200101-0000{n:02}.jsonl"),
+            "",
+        );
+    }
+    let failing = fake_rclone(&bed, r#"{"level":"error","msg":"boom"}"#, 1);
+
+    bed.run_with(&failing).await;
+
+    assert!(!versions.join("20200101-000000").exists());
+    assert_eq!(names(&bed.paths.runs_dir(PAIR)).len(), 50);
+}
+
+#[tokio::test]
+async fn a_versions_folder_that_cannot_be_pruned_does_not_fail_the_round() {
+    let Some(bed) = bed() else { return };
+    synced_base(&bed).await;
+    let versions = bed.paths.versions_dir(PAIR);
+    fs::remove_dir_all(&versions).ok();
+    write(versions.parent().unwrap(), PAIR, "not a folder");
+    let failing = fake_rclone(&bed, r#"{"level":"error","msg":"boom"}"#, 1);
+
+    let report = bed.run_with(&failing).await;
+
+    assert!(matches!(report, RunReport::Ran { .. }), "{report:?}");
 }
 
 #[tokio::test]

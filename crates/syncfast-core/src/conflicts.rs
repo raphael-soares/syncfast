@@ -164,9 +164,41 @@ fn occupied(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok()
 }
 
+/// What `from` is, read once: a symlink is kept as a link (its target may
+/// be gone, or outside the folder), anything else as content.
+enum Original {
+    Link(PathBuf),
+    File(std::fs::File),
+}
+
+impl Original {
+    fn open(from: &Path) -> io::Result<Self> {
+        if std::fs::symlink_metadata(from)?.file_type().is_symlink() {
+            std::fs::read_link(from).map(Self::Link)
+        } else {
+            std::fs::File::open(from).map(Self::File)
+        }
+    }
+
+    /// Creates `candidate` as a copy; `AlreadyExists` when it is taken.
+    fn place(&mut self, candidate: &Path) -> io::Result<()> {
+        match self {
+            Self::Link(target) => std::os::unix::fs::symlink(target, candidate),
+            Self::File(source) => {
+                let mut target = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(candidate)?;
+                io::copy(source, &mut target)?;
+                target.set_permissions(source.metadata()?.permissions())
+            }
+        }
+    }
+}
+
 /// Copies `from` to `to`, creating the destination's folders, and never over
 /// an existing file: when `to` is taken the copy gets ` 2`, ` 3`... before
-/// the extension. Returns where it went.
+/// the extension. A symlink is copied as a symlink. Returns where it went.
 fn copy_without_overwriting(from: &Path, to: &Path) -> io::Result<PathBuf> {
     let (Some(dir), Some(name)) = (to.parent(), to.file_name().and_then(|name| name.to_str()))
     else {
@@ -174,7 +206,7 @@ fn copy_without_overwriting(from: &Path, to: &Path) -> io::Result<PathBuf> {
     };
     std::fs::create_dir_all(dir)?;
     let (stem, ext) = split_extension(name);
-    let mut source = std::fs::File::open(from)?;
+    let mut original = Original::open(from)?;
     let mut attempt = 1_u32;
     loop {
         let candidate = if attempt == 1 {
@@ -182,16 +214,8 @@ fn copy_without_overwriting(from: &Path, to: &Path) -> io::Result<PathBuf> {
         } else {
             dir.join(format!("{stem} {attempt}{ext}"))
         };
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&candidate)
-        {
-            Ok(mut target) => {
-                io::copy(&mut source, &mut target)?;
-                target.set_permissions(source.metadata()?.permissions())?;
-                return Ok(candidate);
-            }
+        match original.place(&candidate) {
+            Ok(()) => return Ok(candidate),
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => attempt += 1,
             Err(err) => return Err(err),
         }
@@ -422,6 +446,62 @@ mod tests {
         assert_eq!(read(dir.path(), "n/a.md"), "old");
         assert!(!dir.path().join("n/a.md.conflict1").exists());
         assert_eq!(read(versions.path(), "20260102-150405/n/a.md"), "current");
+    }
+
+    #[test]
+    fn keep_conflicted_keeps_a_symlinked_current_file_as_a_link_in_versions() {
+        let dir = tempfile::tempdir().unwrap();
+        let versions = tempfile::tempdir().unwrap();
+        put(dir.path(), "target.txt", "target content");
+        std::os::unix::fs::symlink("target.txt", dir.path().join("a.md")).unwrap();
+        put(dir.path(), "a.md.conflict1", "old");
+
+        resolve(
+            dir.path(),
+            Path::new("a.md.conflict1"),
+            Resolution::KeepConflicted,
+            versions.path(),
+            &at("2026-01-02T15:04:05[UTC]"),
+        )
+        .unwrap();
+
+        let kept = versions.path().join("20260102-150405/a.md");
+        assert!(
+            std::fs::symlink_metadata(&kept)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read_link(&kept).unwrap(), Path::new("target.txt"));
+        assert_eq!(read(dir.path(), "a.md"), "old");
+        assert!(
+            !std::fs::symlink_metadata(dir.path().join("a.md"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(read(dir.path(), "target.txt"), "target content");
+    }
+
+    #[test]
+    fn keep_conflicted_keeps_a_dangling_symlink_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let versions = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink("gone.txt", dir.path().join("a.md")).unwrap();
+        put(dir.path(), "a.md.conflict1", "old");
+
+        resolve(
+            dir.path(),
+            Path::new("a.md.conflict1"),
+            Resolution::KeepConflicted,
+            versions.path(),
+            &at("2026-01-02T15:04:05[UTC]"),
+        )
+        .unwrap();
+
+        let kept = versions.path().join("20260102-150405/a.md");
+        assert_eq!(std::fs::read_link(kept).unwrap(), Path::new("gone.txt"));
+        assert_eq!(read(dir.path(), "a.md"), "old");
     }
 
     #[test]

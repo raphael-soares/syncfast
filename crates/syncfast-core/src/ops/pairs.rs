@@ -5,7 +5,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use super::{OpError, Ops, PairView};
-use crate::config::{Pair, expand_tilde, unique_id};
+use crate::config::{Config, Pair, expand_tilde, unique_id};
 use crate::filters::PRESETS;
 use crate::rclone::RcloneError;
 
@@ -124,7 +124,7 @@ impl Ops {
                 .map(|preset| preset.name.to_owned())
                 .collect()
         });
-        config.add_pair(Pair {
+        let pair = Pair {
             id: id.clone(),
             name,
             local: local.clone(),
@@ -132,7 +132,8 @@ impl Ops {
             enabled: true,
             presets,
             filters: new.filters,
-        })?;
+        };
+        config.add_pair(pair.clone())?;
         let accounts = self.rclone.listremotes().await?;
         let validation = config.validate(&self.paths, &accounts);
         if let Some(error) = validation.errors.iter().find(|error| error.pair_id == id) {
@@ -141,7 +142,7 @@ impl Ops {
         prepare_local(&local, new.create_local).await?;
         self.prepare_remote(new.remote.trim(), new.create_remote)
             .await?;
-        config.save(&self.paths).await?;
+        Config::edit(&self.paths, |config| config.add_pair(pair)).await??;
         let warnings = self.reapply(&[]).await;
         Ok(AddedSync {
             sync: self.pair_view(&id).await?,
@@ -173,11 +174,9 @@ impl Ops {
     /// # Errors
     /// No such sync, or the config cannot be saved.
     pub async fn remove(&self, id: &str, delete_versions: bool) -> Result<RemovedSync, OpError> {
-        let mut config = self.load_config().await?;
-        if !config.remove_pair(id) {
+        if !Config::edit(&self.paths, |config| config.remove_pair(id)).await? {
             return Err(OpError::NotFound(id.to_owned()));
         }
-        config.save(&self.paths).await?;
         let versions = if delete_versions {
             vec![id.to_owned()]
         } else {
@@ -196,17 +195,23 @@ impl Ops {
     /// # Errors
     /// No such sync, or the config cannot be saved.
     pub async fn set_enabled(&self, id: Option<&str>, enabled: bool) -> Result<Toggled, OpError> {
-        let mut config = self.load_config().await?;
-        let ids: Vec<String> = match id {
-            Some(id) => vec![id.to_owned()],
-            None => config.pairs().iter().map(|pair| pair.id.clone()).collect(),
-        };
-        for id in &ids {
-            if !config.set_enabled(id, enabled) {
-                return Err(OpError::NotFound(id.clone()));
+        let ids = Config::edit(&self.paths, |config| {
+            let ids: Vec<String> = match id {
+                Some(id) => vec![id.to_owned()],
+                None => config.pairs().iter().map(|pair| pair.id.clone()).collect(),
+            };
+            if let Some(missing) = ids
+                .iter()
+                .find(|id| !config.pairs().iter().any(|pair| &pair.id == *id))
+            {
+                return Err(OpError::NotFound(missing.clone()));
             }
-        }
-        config.save(&self.paths).await?;
+            for id in &ids {
+                config.set_enabled(id, enabled);
+            }
+            Ok(ids)
+        })
+        .await??;
         let warnings = self.reapply(&[]).await;
         let mut syncs = Vec::with_capacity(ids.len());
         for id in &ids {

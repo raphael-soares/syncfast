@@ -7,13 +7,16 @@ use std::time::Duration;
 use fastframe_instance::Slot;
 use fastframe_notifications::{App, Client, Event, Notification};
 
+use crate::bisync::{FAILED_TO_BISYNC, Fault, failure_msgs, fault_of};
 use crate::bisync_log::{Level, LogLine};
 use crate::config::{Pair, split_remote};
+use crate::run::NOTIFY_FAILURES_AFTER;
 use crate::state::GateKind;
 
 /// Single-instance slot of the GUI: the `run` asks it to show notifications
 /// so a click can open the window. It never claims the slot.
 pub const SLOT: &str = "syncfast";
+const BISYNC_ABORTED: &str = "Bisync aborted";
 const DELIVERY_WAIT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,10 +28,12 @@ pub struct Notice {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Alert {
-    /// `detail` is the gate's detail: the message of a `config_error`.
+    /// `detail` and `fault` are the gate's: the message of a `config_error`,
+    /// or the failure a `needs_attention` names and the fault it is.
     Gate {
         kind: GateKind,
         detail: String,
+        fault: Option<Fault>,
     },
     NewConflicts(u32),
     /// The newest error line of the log.
@@ -39,7 +44,11 @@ pub enum Alert {
 pub fn notice(pair: &Pair, alert: &Alert) -> Notice {
     let name = &pair.name;
     let (title, body) = match alert {
-        Alert::Gate { kind, detail } => match kind {
+        Alert::Gate {
+            kind,
+            detail,
+            fault,
+        } => match kind {
             GateKind::NeedsReviewFirstRun => (
                 format!("{name}: review needed"),
                 "Review the first sync before it starts.".to_owned(),
@@ -76,6 +85,10 @@ pub fn notice(pair: &Pair, alert: &Alert) -> Notice {
                     pair.local.display()
                 ),
             ),
+            GateKind::NeedsAttention => (
+                format!("{name}: needs attention"),
+                attention_body(*fault, detail).to_owned(),
+            ),
         },
         Alert::NewConflicts(count) => (
             format!("{name}: {count} new conflicts"),
@@ -83,7 +96,7 @@ pub fn notice(pair: &Pair, alert: &Alert) -> Notice {
         ),
         Alert::Failing(message) => (
             format!("{name}: sync failing"),
-            format!("Failed 3 times in a row. {message}"),
+            format!("Failed {NOTIFY_FAILURES_AFTER} times in a row. {message}"),
         ),
     };
     Notice {
@@ -93,14 +106,52 @@ pub fn notice(pair: &Pair, alert: &Alert) -> Notice {
     }
 }
 
-/// The message of the newest `error` or `critical` line, if there is one.
+/// What a `needs_attention` gate tells the user. Gates saved before they
+/// stored their `fault` read it back from `detail`, the failure message
+/// that named it; neither means a sync that kept failing for too long.
+#[must_use]
+pub fn attention_body(fault: Option<Fault>, detail: &str) -> &'static str {
+    match fault.or_else(|| fault_of(detail)) {
+        Some(Fault::Account) => "Google Drive refused the account. Open syncfast for the fix.",
+        Some(Fault::Quota) => "Google Drive is full.",
+        Some(Fault::Permission) => "No permission to a file or folder on Google Drive.",
+        Some(Fault::RemoteMissing) => "The folder on Google Drive is missing.",
+        Some(Fault::LocalEmpty) => "The folder is empty. If it is on a drive, mount it.",
+        Some(Fault::Auth) | None => "Syncing keeps failing. Open syncfast for details.",
+    }
+}
+
+/// The message that says why a run failed, best first: the first failure
+/// line that names a [`Fault`]; else the newest `error` or `critical` line
+/// that is not rclone's generic `Bisync aborted` summary; else the newest
+/// error line of any kind; else the newest `Failed to bisync` line.
 #[must_use]
 pub fn last_error_message(lines: &[LogLine]) -> Option<&str> {
-    lines
-        .iter()
-        .rev()
-        .find(|line| matches!(line.level, Level::Error | Level::Critical))
-        .map(|line| line.msg.as_str())
+    let is_error = |line: &&LogLine| matches!(line.level, Level::Error | Level::Critical);
+    failure_msgs(lines)
+        .find(|msg| fault_of(msg).is_some())
+        .or_else(|| {
+            lines
+                .iter()
+                .rev()
+                .filter(is_error)
+                .find(|line| !line.msg.starts_with(BISYNC_ABORTED))
+                .map(|line| line.msg.as_str())
+        })
+        .or_else(|| {
+            lines
+                .iter()
+                .rev()
+                .find(|line| is_error(line))
+                .map(|line| line.msg.as_str())
+        })
+        .or_else(|| {
+            lines
+                .iter()
+                .rev()
+                .find(|line| line.msg.starts_with(FAILED_TO_BISYNC))
+                .map(|line| line.msg.as_str())
+        })
 }
 
 /// Where notices go. Delivery is best effort: it never fails the round.
@@ -197,6 +248,7 @@ mod tests {
     use fastframe_instance::Claim;
 
     use super::*;
+    use crate::bisync_log::fixtures::fixture;
     use crate::bisync_log::parse_log;
 
     fn pair() -> Pair {
@@ -215,6 +267,7 @@ mod tests {
         Alert::Gate {
             kind,
             detail: detail.to_owned(),
+            fault: None,
         }
     }
 
@@ -302,6 +355,52 @@ mod tests {
     }
 
     #[test]
+    fn needs_attention_names_what_the_fault_needs_from_the_user() {
+        let cases = [
+            (
+                "Error 403: Google Drive API has not been used in project 1 before or it is disabled",
+                "Google Drive refused the account. Open syncfast for the fix.",
+            ),
+            ("storageQuotaExceeded", "Google Drive is full."),
+            (
+                "insufficientFilePermissions",
+                "No permission to a file or folder on Google Drive.",
+            ),
+            (
+                "directory not found",
+                "The folder on Google Drive is missing.",
+            ),
+            (
+                "Empty current Path1 listing. Cannot sync to an empty directory: x",
+                "The folder is empty. If it is on a drive, mount it.",
+            ),
+            (
+                "Syncing has failed for over 6 hours: connection reset",
+                "Syncing keeps failing. Open syncfast for details.",
+            ),
+        ];
+
+        for (detail, body) in cases {
+            assert_eq!(
+                text(&gate(GateKind::NeedsAttention, detail)),
+                ("Documents: needs attention".to_owned(), body.to_owned()),
+                "{detail}"
+            );
+        }
+    }
+
+    #[test]
+    fn needs_attention_reads_the_stored_fault_before_the_detail() {
+        let alert = Alert::Gate {
+            kind: GateKind::NeedsAttention,
+            detail: "the message no longer names it".to_owned(),
+            fault: Some(Fault::Quota),
+        };
+
+        assert_eq!(text(&alert).1, "Google Drive is full.");
+    }
+
+    #[test]
     fn conflicts_and_failures_use_the_literal_texts() {
         assert_eq!(
             text(&Alert::NewConflicts(2)),
@@ -330,6 +429,68 @@ mod tests {
 
         assert_eq!(last_error_message(&lines), Some("second"));
         assert_eq!(last_error_message(&lines[2..]), None);
+    }
+
+    #[test]
+    fn without_error_lines_the_failed_to_bisync_notice_is_the_message() {
+        for name in ["critical", "critical_retryable", "all_files_changed"] {
+            let log = fixture(name);
+            let closing = log
+                .iter()
+                .rev()
+                .find(|line| line.msg.starts_with("Failed to bisync"))
+                .unwrap()
+                .msg
+                .clone();
+            let quiet: Vec<LogLine> = log
+                .into_iter()
+                .filter(|line| !matches!(line.level, Level::Error | Level::Critical))
+                .collect();
+
+            assert_eq!(last_error_message(&quiet), Some(closing.as_str()), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_cause_wins_over_rclones_generic_bisync_aborted_summary() {
+        for (name, cause) in [
+            ("critical", "Bisync critical error: open "),
+            (
+                "critical_retryable",
+                "Bisync critical error: cannot find prior Path1 or Path2 listings",
+            ),
+        ] {
+            let log = fixture(name);
+
+            let message = last_error_message(&log).unwrap();
+
+            assert!(message.starts_with(cause), "{name}: {message}");
+        }
+    }
+
+    #[test]
+    fn an_aborted_summary_is_still_better_than_nothing() {
+        let lines = parse_log("{\"level\":\"error\",\"msg\":\"Bisync aborted. Try again.\"}\n");
+
+        assert_eq!(
+            last_error_message(&lines),
+            Some("Bisync aborted. Try again.")
+        );
+    }
+
+    #[test]
+    fn a_line_that_names_a_fault_is_the_message_even_before_later_errors() {
+        let lines = parse_log(concat!(
+            "{\"level\":\"error\",\"msg\":\"Empty current Path1 listing. Cannot sync to an empty directory: /x.lst-new\"}\n",
+            "{\"level\":\"error\",\"msg\":\"Bisync critical error: empty current Path1 listing: /x.lst-new\"}\n",
+            "{\"level\":\"error\",\"msg\":\"Bisync aborted. Error is retryable without --resync due to --resilient mode.\"}\n",
+            "{\"level\":\"notice\",\"msg\":\"Failed to bisync: bisync aborted\"}\n",
+        ));
+
+        assert_eq!(
+            last_error_message(&lines),
+            Some("Empty current Path1 listing. Cannot sync to an empty directory: /x.lst-new")
+        );
     }
 
     #[derive(Clone, Default)]

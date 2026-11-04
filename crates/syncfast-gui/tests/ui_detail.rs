@@ -6,6 +6,7 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
+use syncfast_core::bisync::Fault;
 use syncfast_core::bisync_log::{Progress, RunSummary};
 use syncfast_core::runs::RunEntry;
 use syncfast_core::state::{DisplayStatus, GateKind};
@@ -28,7 +29,9 @@ fn pair(status: DisplayStatus) -> PairRow {
         last_success: Some("2026-11-03T11:55:00Z".parse().unwrap()),
         progress: None,
         gate_detail: String::new(),
+        gate_fault: None,
         consecutive_failures: 0,
+        realtime_off: false,
         presets: Vec::new(),
         filters: Vec::new(),
     }
@@ -115,6 +118,19 @@ fn sync_now_is_enabled_for_an_idle_sync_and_asks_for_a_round() {
     harness.run_steps(4);
 
     assert_eq!(harness.state().actions, [Action::SyncNow("drive".into())]);
+}
+
+#[test]
+fn a_sync_without_real_time_watching_says_how_to_turn_it_back_on() {
+    let off = harness(view(PairRow {
+        realtime_off: true,
+        ..pair(DisplayStatus::UpToDate)
+    }));
+    let on = harness(view(pair(DisplayStatus::UpToDate)));
+    let notice = "Real-time sync is off: raise fs.inotify.max_user_watches.";
+
+    assert!(off.query_by_label(notice).is_some());
+    assert!(on.query_by_label(notice).is_none());
 }
 
 #[test]
@@ -229,6 +245,37 @@ fn the_card_of_a_disconnected_account_offers_to_reconnect_in_settings() {
     harness.run_steps(4);
 
     assert_eq!(harness.state().actions, [Action::OpenAccounts]);
+}
+
+#[test]
+fn the_card_of_a_sync_that_needs_attention_explains_it_shows_the_message_and_offers_to_try_again() {
+    let row = PairRow {
+        gate_detail: "googleapi: Error 403: storageQuotaExceeded".into(),
+        gate_fault: Some(Fault::Quota),
+        ..gated(DisplayStatus::Error, GateKind::NeedsAttention)
+    };
+    let mut harness = harness(view(row));
+
+    harness.get_by_label("Needs attention");
+    harness.get_by_label("Google Drive is full.");
+    harness.get_by_label("googleapi: Error 403: storageQuotaExceeded");
+    assert!(!disabled(&harness, "Sync Now"));
+    harness.get_by_label("Try Again").click();
+    harness.run_steps(4);
+
+    assert_eq!(harness.state().actions, [Action::SyncNow("drive".into())]);
+}
+
+#[test]
+fn the_card_of_an_older_gate_without_a_stored_fault_reads_it_from_the_message() {
+    let row = PairRow {
+        gate_detail: "googleapi: Error 403: storageQuotaExceeded".into(),
+        gate_fault: None,
+        ..gated(DisplayStatus::Error, GateKind::NeedsAttention)
+    };
+    let harness = harness(view(row));
+
+    harness.get_by_label("Google Drive is full.");
 }
 
 #[test]

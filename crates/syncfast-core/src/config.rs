@@ -46,6 +46,22 @@ pub enum ConfigSaveError {
         #[source]
         source: std::io::Error,
     },
+    #[error("cannot lock {}: {source}", path.display())]
+    Lock {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("config.toml is a link to a missing file: {}", target.display())]
+    DanglingLink { target: PathBuf },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigUpdateError {
+    #[error(transparent)]
+    Load(#[from] GlobalConfigError),
+    #[error(transparent)]
+    Save(#[from] ConfigSaveError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -309,20 +325,71 @@ impl Config {
         )
     }
 
+    /// Points every sync on the account `from` at `to`, keeping the folder
+    /// and the comments. Returns the ids of the syncs it changed, in config
+    /// order.
+    pub fn rename_account(&mut self, from: &str, to: &str) -> Vec<String> {
+        let moved: Vec<(String, String)> = self
+            .pairs
+            .iter()
+            .filter_map(|pair| {
+                let (account, folder) = split_remote(&pair.remote)?;
+                (account == from).then(|| (pair.id.clone(), format!("{to}:{folder}")))
+            })
+            .collect();
+        for (id, remote) in &moved {
+            self.edit_pair(
+                id,
+                |pair| pair.remote.clone_from(remote),
+                |table| replace_value(table, "remote", Value::from(remote.as_str())),
+            );
+        }
+        moved.into_iter().map(|(id, _)| id).collect()
+    }
+
     /// The file contents with comments and ordering intact.
     #[must_use]
     pub fn to_toml(&self) -> String {
         self.document.to_string()
     }
 
+    /// Applies `change` under an exclusive lock and saves, so concurrent edits
+    /// never overwrite each other; nothing is saved if it changes nothing.
+    ///
+    /// # Errors
+    /// The lock, the load or the save fails.
+    pub async fn edit<T>(
+        paths: &Paths,
+        change: impl FnOnce(&mut Self) -> T,
+    ) -> Result<T, ConfigUpdateError> {
+        let _lock = lock_config(paths).await?;
+        let mut config = Self::load(paths).await?;
+        let before = config.to_toml();
+        let outcome = change(&mut config);
+        if config.to_toml() != before {
+            config.save(paths).await?;
+        }
+        Ok(outcome)
+    }
+
     /// Writes `config.toml` atomically. A symlinked file (GNU stow) is
     /// followed, so the link survives and its target is updated.
     ///
     /// # Errors
-    /// The file cannot be written.
+    /// The file cannot be written, or is a link to a file that does not
+    /// exist (writing would replace the link).
     pub async fn save(&self, paths: &Paths) -> Result<(), ConfigSaveError> {
         let file = paths.config_file();
-        let target = tokio::fs::canonicalize(&file).await.unwrap_or(file);
+        let target = if let Ok(target) = tokio::fs::canonicalize(&file).await {
+            target
+        } else if let Ok(meta) = tokio::fs::symlink_metadata(&file).await
+            && meta.is_symlink()
+        {
+            let target = tokio::fs::read_link(&file).await.unwrap_or(file);
+            return Err(ConfigSaveError::DanglingLink { target });
+        } else {
+            file
+        };
         let contents = self.to_toml();
         let written = target.clone();
         let outcome =
@@ -357,6 +424,28 @@ impl Config {
         }
         found
     }
+}
+
+/// Blocks until this process holds `config.lock` exclusively; the lock is
+/// released when the returned file is dropped. It lives in the state folder
+/// because the config folder may be a link into a dotfiles repo.
+async fn lock_config(paths: &Paths) -> Result<std::fs::File, ConfigSaveError> {
+    let dir = paths.state_dir();
+    let path = dir.join("config.lock");
+    let locked = path.clone();
+    tokio::task::spawn_blocking(move || -> std::io::Result<std::fs::File> {
+        std::fs::create_dir_all(&dir)?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&locked)?;
+        file.lock()?;
+        Ok(file)
+    })
+    .await
+    .unwrap_or_else(|join| Err(std::io::Error::other(join)))
+    .map_err(|source| ConfigSaveError::Lock { path, source })
 }
 
 fn table_id(table: &Table) -> Option<&str> {
@@ -683,7 +772,7 @@ mod tests {
         assert_eq!(pair.local, Path::new("/data/Drive"));
         assert_eq!(pair.remote, "gdrive:");
         assert!(pair.enabled);
-        assert_eq!(pair.presets, ["system_junk", "dev_dirs"]);
+        assert_eq!(pair.presets, ["system_junk", "dev_dirs", "git_repos"]);
         assert!(pair.filters.is_empty());
     }
 
@@ -1135,6 +1224,26 @@ mod tests {
     }
 
     #[test]
+    fn rename_account_moves_only_its_syncs_and_keeps_comments() {
+        let text = "version = 1\n\n# the notes\n[[pair]]\nid = \"notes\"\nname = \"Notes\"\nlocal = \"/data/Notes\"\nremote = \"gdrive:Notes\" # on drive\n\n[[pair]]\nid = \"all\"\nname = \"All\"\nlocal = \"/data/All\"\nremote = \"gdrive:\"\n\n[[pair]]\nid = \"elsewhere\"\nname = \"Elsewhere\"\nlocal = \"/data/Elsewhere\"\nremote = \"other:x\"\n";
+        let mut config = Config::parse(text, Path::new(HOME)).unwrap();
+
+        let moved = config.rename_account("gdrive", "personal");
+
+        assert_eq!(moved, ["notes", "all"]);
+        assert_eq!(
+            config.to_toml(),
+            "version = 1\n\n# the notes\n[[pair]]\nid = \"notes\"\nname = \"Notes\"\nlocal = \"/data/Notes\"\nremote = \"personal:Notes\" # on drive\n\n[[pair]]\nid = \"all\"\nname = \"All\"\nlocal = \"/data/All\"\nremote = \"personal:\"\n\n[[pair]]\nid = \"elsewhere\"\nname = \"Elsewhere\"\nlocal = \"/data/Elsewhere\"\nremote = \"other:x\"\n"
+        );
+        let remotes: Vec<_> = config
+            .pairs()
+            .iter()
+            .map(|pair| pair.remote.as_str())
+            .collect();
+        assert_eq!(remotes, ["personal:Notes", "personal:", "other:x"]);
+    }
+
+    #[test]
     fn edits_are_visible_through_pairs() {
         let mut config = config(&[pair_block("drive", "Drive", "/data/Drive", "gdrive:")]);
 
@@ -1287,6 +1396,107 @@ mod tests {
         let stowed = std::fs::read_to_string(&target).unwrap();
         assert!(stowed.starts_with("# stowed\nversion = 1\n"));
         assert!(stowed.contains("id = \"a\""));
+    }
+
+    fn sample_pair(id: &str) -> Pair {
+        Pair {
+            id: id.into(),
+            name: id.to_uppercase(),
+            local: PathBuf::from(format!("/{id}")),
+            remote: "gdrive:".into(),
+            enabled: true,
+            presets: vec![],
+            filters: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_edits_of_different_pairs_both_persist() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths_in(root.path());
+        let mut config = Config::empty();
+        config.add_pair(sample_pair("a")).unwrap();
+        config.add_pair(sample_pair("b")).unwrap();
+        config.save(&paths).await.unwrap();
+
+        let (first, second) = tokio::join!(
+            Config::edit(&paths, |config| config.set_enabled("a", false)),
+            Config::edit(&paths, |config| config.set_enabled("b", false)),
+        );
+
+        assert!(first.unwrap() && second.unwrap());
+        let loaded = Config::load(&paths).await.unwrap();
+        assert!(loaded.pairs().iter().all(|pair| !pair.enabled));
+    }
+
+    #[tokio::test]
+    async fn an_edit_keeps_its_lock_out_of_the_config_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths_in(root.path());
+        let mut config = Config::empty();
+        config.add_pair(sample_pair("a")).unwrap();
+        config.save(&paths).await.unwrap();
+
+        Config::edit(&paths, |config| config.set_enabled("a", false))
+            .await
+            .unwrap();
+
+        assert!(paths.state_dir().join("config.lock").exists());
+        assert!(!paths.config_dir().join("config.lock").exists());
+    }
+
+    #[tokio::test]
+    async fn an_edit_that_changes_nothing_does_not_write_the_file() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths_in(root.path());
+
+        let found = Config::edit(&paths, |config| config.remove_pair("missing"))
+            .await
+            .unwrap();
+
+        assert!(!found);
+        assert!(!paths.config_file().exists());
+    }
+
+    #[tokio::test]
+    async fn an_edit_of_a_broken_config_reports_the_load_error_and_keeps_the_file() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths_in(root.path());
+        std::fs::create_dir_all(paths.config_dir()).unwrap();
+        std::fs::write(paths.config_file(), "version = 9\n").unwrap();
+
+        let err = Config::edit(&paths, |config| config.set_enabled("a", false))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            ConfigUpdateError::Load(GlobalConfigError::UnsupportedVersion(9))
+        ));
+        assert_eq!(
+            std::fs::read_to_string(paths.config_file()).unwrap(),
+            "version = 9\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn save_refuses_a_link_to_a_missing_file_and_keeps_the_link() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths_in(root.path());
+        std::fs::create_dir_all(paths.config_dir()).unwrap();
+        let missing = root.path().join("dotfiles/config.toml");
+        std::os::unix::fs::symlink(&missing, paths.config_file()).unwrap();
+
+        let err = Config::empty().save(&paths).await.unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "config.toml is a link to a missing file: {}",
+                missing.display()
+            )
+        );
+        assert_eq!(std::fs::read_link(paths.config_file()).unwrap(), missing);
     }
 
     #[test]

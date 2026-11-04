@@ -76,7 +76,7 @@ impl Ops {
     /// No such sync, or the folder cannot be listed.
     pub async fn conflicts(&self, id: &str) -> Result<Vec<ConflictView>, OpError> {
         let pair = self.find_pair(id).await?;
-        let matcher = DirMatcher::new(&filters::render(&pair));
+        let matcher = DirMatcher::new(&filters::render_live(&pair).await.text);
         let local = pair.local;
         let scanned = tokio::task::spawn_blocking(move || {
             conflicts::list_conflicts(&local, &matcher).map_err(|err| (local, err))

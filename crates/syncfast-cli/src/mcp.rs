@@ -92,7 +92,7 @@ struct AddSyncArgs {
     remote: String,
     /// Sync id (a-z, 0-9, `-`, up to 32 characters); made from the name when absent.
     id: Option<String>,
-    /// Presets to turn on: `system_junk` and `dev_dirs`. All of them when absent; `[]` turns them off.
+    /// Presets to turn on: `system_junk`, `dev_dirs` and `git_repos`. All of them when absent; `[]` turns them off.
     presets: Option<Vec<String>>,
     /// Custom filter rules, each `- pattern` (exclude) or `+ pattern` (include).
     filters: Option<Vec<String>>,
@@ -122,7 +122,7 @@ struct OneOrAllArgs {
 struct SetFiltersArgs {
     /// The sync id.
     id: String,
-    /// The presets to turn on (`system_junk`, `dev_dirs`); replaces the current ones. Unchanged when absent.
+    /// The presets to turn on (`system_junk`, `dev_dirs`, `git_repos`); replaces the current ones. Unchanged when absent.
     presets: Option<Vec<String>>,
     /// Custom rules, each `- pattern` or `+ pattern`; replaces the current ones. Unchanged when absent.
     rules: Option<Vec<String>>,

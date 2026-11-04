@@ -5,23 +5,27 @@
 //! lock file is held, and a pair is paused when the config says
 //! `enabled = false`.
 
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use crate::bisync::ReviewKind;
+use crate::bisync::{Fault, ReviewKind};
 use crate::bisync_log::RunSummary;
 use crate::config::Pair;
 use crate::paths::Paths;
 
 /// How many rounds keep their log in `runs/`.
 pub const RUNS_KEPT: usize = 50;
+pub const PREVIEWS_KEPT: Duration = Duration::from_hours(24);
 /// Key in [`State::notified`] for the "sync failing" notification.
 pub const NOTIFIED_FAILURES: &str = "failures";
 /// Failed rounds in a row before the status turns into [`DisplayStatus::Failing`].
 const FAILING_AFTER: u32 = 3;
+const LOCK_POLL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, thiserror::Error)]
 pub enum StateError {
@@ -56,6 +60,9 @@ pub enum GateKind {
     ConfigError,
     AuthError,
     LocalMissing,
+    /// A failure the user can act on (see [`crate::bisync::Fault`]). The
+    /// only gate that does not stop rounds: the next one may succeed.
+    NeedsAttention,
 }
 
 impl GateKind {
@@ -70,6 +77,7 @@ impl GateKind {
             Self::ConfigError => "config_error",
             Self::AuthError => "auth_error",
             Self::LocalMissing => "local_missing",
+            Self::NeedsAttention => "needs_attention",
         }
     }
 
@@ -96,12 +104,16 @@ impl GateKind {
     }
 }
 
-/// Why normal rounds are blocked. Every gate blocks them.
+/// Why a sync needs the user. Every gate but [`GateKind::NeedsAttention`]
+/// blocks normal rounds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Gate {
     pub kind: GateKind,
     pub since: Timestamp,
     pub detail: String,
+    /// The fault a `needs_attention` gate names; absent from older files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fault: Option<Fault>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -129,6 +141,9 @@ pub struct State {
     /// `gate` nor `last_outcome`.
     pub offline: bool,
     pub consecutive_failures: u32,
+    /// When the current series of failed rounds began; cleared by a
+    /// success.
+    pub failing_since: Option<Timestamp>,
     pub last_success: Option<Timestamp>,
     pub last_attempt: Option<Timestamp>,
     pub applied_filters_hash: Option<String>,
@@ -146,6 +161,7 @@ impl State {
                 kind: GateKind::NeedsReviewFirstRun,
                 since: now,
                 detail: String::new(),
+                fault: None,
             }),
             ..Self::default()
         }
@@ -165,6 +181,24 @@ impl State {
                 Ok(Self::first_run(Timestamp::now()))
             }
             Err(source) => Err(StateError::Read { path, source }),
+        }
+    }
+
+    /// As [`State::load`], but a file that cannot be read becomes a
+    /// `config_error` gate carrying the error, so one broken file shows on
+    /// its own sync instead of failing every listing.
+    pub async fn load_or_config_error(paths: &Paths, pair_id: &str) -> Self {
+        match Self::load(paths, pair_id).await {
+            Ok(state) => state,
+            Err(err) => Self {
+                gate: Some(Gate {
+                    kind: GateKind::ConfigError,
+                    since: Timestamp::UNIX_EPOCH,
+                    detail: err.to_string(),
+                    fault: None,
+                }),
+                ..Self::default()
+            },
         }
     }
 
@@ -270,6 +304,28 @@ pub fn try_lock_pair(paths: &Paths, pair_id: &str) -> Result<Option<File>, State
     try_lock(paths, paths.lock_file(pair_id))
 }
 
+/// [`try_lock_pair`], polled until the lock is free or `timeout` passes
+/// (`None`).
+///
+/// # Errors
+/// The lock file cannot be created or locked.
+pub async fn lock_pair(
+    paths: &Paths,
+    pair_id: &str,
+    timeout: Duration,
+) -> Result<Option<File>, StateError> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if let Some(lock) = try_lock_pair(paths, pair_id)? {
+            return Ok(Some(lock));
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(None);
+        }
+        tokio::time::sleep(LOCK_POLL).await;
+    }
+}
+
 /// [`try_lock_pair`] for any lock file in the runtime folder.
 pub(crate) fn try_lock(paths: &Paths, path: PathBuf) -> Result<Option<File>, StateError> {
     let open = || -> std::io::Result<Option<File>> {
@@ -288,39 +344,82 @@ pub(crate) fn try_lock(paths: &Paths, path: PathBuf) -> Result<Option<File>, Sta
     open().map_err(|source| StateError::Write { path, source })
 }
 
-/// Keeps the [`RUNS_KEPT`] newest logs in the pair's `runs/` folder (names
-/// are timestamps, so the highest names are the newest) and deletes the
-/// rest. A missing folder is fine.
+/// Keeps the [`RUNS_KEPT`] newest `.jsonl` logs in the pair's `runs/`
+/// folder (names are timestamps, so the highest names are the newest) and
+/// deletes the rest, then the preview logs older than [`PREVIEWS_KEPT`]. A
+/// log that cannot be deleted is a warning, not a stop. A missing folder is
+/// fine.
 ///
 /// # Errors
-/// The folder cannot be listed or a log cannot be deleted.
+/// The runs folder cannot be listed.
 pub async fn prune_runs(paths: &Paths, pair_id: &str) -> Result<(), StateError> {
     let dir = paths.runs_dir(pair_id);
-    let mut entries = match tokio::fs::read_dir(&dir).await {
-        Ok(entries) => entries,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(source) => return Err(StateError::Read { path: dir, source }),
-    };
-    let mut names = Vec::new();
-    while let Some(entry) = entries
-        .next_entry()
-        .await
-        .map_err(|source| StateError::Read {
-            path: dir.clone(),
-            source,
-        })?
-    {
-        names.push(entry.file_name());
-    }
+    let mut names: Vec<OsString> = file_names(&dir)
+        .await?
+        .into_iter()
+        .filter(|name| is_jsonl(name))
+        .collect();
     names.sort();
     let excess = names.len().saturating_sub(RUNS_KEPT);
     for name in names.into_iter().take(excess) {
-        let path = dir.join(name);
-        tokio::fs::remove_file(&path)
-            .await
-            .map_err(|source| StateError::Write { path, source })?;
+        remove_or_warn(&dir.join(name)).await;
     }
+    prune_previews(&paths.pair_state_dir(pair_id)).await;
     Ok(())
+}
+
+fn is_jsonl(name: &OsStr) -> bool {
+    Path::new(name).extension() == Some(OsStr::new("jsonl"))
+}
+
+async fn file_names(dir: &Path) -> Result<Vec<OsString>, StateError> {
+    let read = |source| StateError::Read {
+        path: dir.to_path_buf(),
+        source,
+    };
+    let mut entries = match tokio::fs::read_dir(dir).await {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => return Err(read(source)),
+    };
+    let mut names = Vec::new();
+    while let Some(entry) = entries.next_entry().await.map_err(read)? {
+        names.push(entry.file_name());
+    }
+    Ok(names)
+}
+
+async fn prune_previews(dir: &Path) {
+    let names = match file_names(dir).await {
+        Ok(names) => names,
+        Err(err) => {
+            log::warn!("{err}");
+            return;
+        }
+    };
+    for name in names {
+        let text = name.to_string_lossy();
+        if !text.starts_with("preview-") || !is_jsonl(&name) {
+            continue;
+        }
+        let path = dir.join(&name);
+        let age = tokio::fs::metadata(&path)
+            .await
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok());
+        if age.is_some_and(|age| age > PREVIEWS_KEPT) {
+            remove_or_warn(&path).await;
+        }
+    }
+}
+
+async fn remove_or_warn(path: &Path) {
+    if let Err(err) = tokio::fs::remove_file(path).await
+        && err.kind() != std::io::ErrorKind::NotFound
+    {
+        log::warn!("cannot delete {}: {err}", path.display());
+    }
 }
 
 /// Name of the theme colour token that paints a status.
@@ -415,7 +514,12 @@ pub fn display_status(pair: &Pair, state: &State, running: bool) -> DisplayStatu
         DisplayStatus::Syncing
     } else if matches!(
         gate,
-        Some(GateKind::ConfigError | GateKind::AuthError | GateKind::LocalMissing)
+        Some(
+            GateKind::ConfigError
+                | GateKind::AuthError
+                | GateKind::LocalMissing
+                | GateKind::NeedsAttention
+        )
     ) {
         DisplayStatus::Error
     } else if gate.is_some() {
@@ -462,6 +566,7 @@ mod tests {
             kind,
             since: at("2026-01-01T12:00:00Z"),
             detail: String::new(),
+            fault: None,
         }
     }
 
@@ -484,10 +589,12 @@ mod tests {
                 kind: GateKind::TooManyDeletes,
                 since: at("2026-01-01T12:00:00Z"),
                 detail: "3 of 4".into(),
+                fault: Some(Fault::Quota),
             }),
             last_outcome: Some(LastOutcome::Error),
             offline: true,
             consecutive_failures: 2,
+            failing_since: Some(at("2026-01-01T09:00:00Z")),
             last_success: Some(at("2026-01-01T10:00:00Z")),
             last_attempt: Some(at("2026-01-01T11:00:00Z")),
             applied_filters_hash: Some("abc".into()),
@@ -571,6 +678,7 @@ mod tests {
                 "last_outcome": "ok",
                 "offline": false,
                 "consecutive_failures": 0,
+                "failing_since": null,
                 "last_success": null,
                 "last_attempt": null,
                 "applied_filters_hash": null,
@@ -579,6 +687,27 @@ mod tests {
                 "notified": []
             })
         );
+    }
+
+    #[tokio::test]
+    async fn a_gate_saved_without_a_fault_loads_with_none_and_a_named_fault_round_trips() {
+        let (_dir, paths) = temp_paths();
+        let file = paths.state_file("drive");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(
+            &file,
+            r#"{"gate":{"kind":"needs_attention","since":"2026-01-01T12:00:00Z","detail":"x"}}"#,
+        )
+        .unwrap();
+
+        let old = State::load(&paths, "drive").await.unwrap();
+        let mut named = old.clone();
+        named.gate.as_mut().unwrap().fault = Some(Fault::Permission);
+        named.save(&paths, "drive").await.unwrap();
+        let reloaded = State::load(&paths, "drive").await.unwrap();
+
+        assert_eq!(old.gate.unwrap().fault, None);
+        assert_eq!(reloaded.gate.unwrap().fault, Some(Fault::Permission));
     }
 
     #[tokio::test]
@@ -702,6 +831,23 @@ mod tests {
         assert!(after.is_some());
     }
 
+    #[tokio::test]
+    async fn waiting_for_the_pair_lock_gives_up_after_the_timeout_and_gets_it_once_free() {
+        let (_dir, paths) = temp_paths();
+        let held = try_lock_pair(&paths, "drive").unwrap().unwrap();
+
+        let timed_out = lock_pair(&paths, "drive", Duration::from_millis(150))
+            .await
+            .unwrap();
+        drop(held);
+        let free = lock_pair(&paths, "drive", Duration::from_millis(150))
+            .await
+            .unwrap();
+
+        assert!(timed_out.is_none());
+        assert!(free.is_some());
+    }
+
     #[test]
     fn checking_does_not_keep_the_lock() {
         let (_dir, paths) = temp_paths();
@@ -779,8 +925,17 @@ mod tests {
         assert!(matches!(result, Err(StateError::Read { .. })), "{result:?}");
     }
 
+    fn age(path: &Path, by: Duration) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - by)
+            .unwrap();
+    }
+
     #[tokio::test]
-    async fn pruning_leaves_previews_and_state_alone() {
+    async fn pruning_leaves_fresh_previews_and_state_alone() {
         let (_dir, paths) = temp_paths();
         make_runs(&paths, 51);
         let pair_dir = paths.pair_state_dir("drive");
@@ -791,6 +946,54 @@ mod tests {
 
         assert!(pair_dir.join("preview-20260101-000000.jsonl").exists());
         assert!(pair_dir.join("state.json").exists());
+    }
+
+    #[tokio::test]
+    async fn pruning_deletes_previews_older_than_a_day_and_nothing_else_there() {
+        let (_dir, paths) = temp_paths();
+        make_runs(&paths, 1);
+        let pair_dir = paths.pair_state_dir("drive");
+        for name in ["preview-old.jsonl", "preview-new.jsonl", "state.json"] {
+            std::fs::write(pair_dir.join(name), "").unwrap();
+        }
+        age(&pair_dir.join("preview-old.jsonl"), PREVIEWS_KEPT * 2);
+        age(&pair_dir.join("state.json"), PREVIEWS_KEPT * 2);
+
+        prune_runs(&paths, "drive").await.unwrap();
+
+        assert!(!pair_dir.join("preview-old.jsonl").exists());
+        assert!(pair_dir.join("preview-new.jsonl").exists());
+        assert!(pair_dir.join("state.json").exists());
+    }
+
+    #[tokio::test]
+    async fn only_jsonl_logs_count_toward_the_fifty_kept() {
+        let (_dir, paths) = temp_paths();
+        make_runs(&paths, 50);
+        let runs = paths.runs_dir("drive");
+        for name in ["20250101-000000.tmp", "notes.txt"] {
+            std::fs::write(runs.join(name), "").unwrap();
+        }
+
+        prune_runs(&paths, "drive").await.unwrap();
+
+        assert_eq!(run_names(&paths).len(), 52);
+    }
+
+    #[tokio::test]
+    async fn a_log_that_cannot_be_deleted_does_not_stop_the_pruning() {
+        let (_dir, paths) = temp_paths();
+        make_runs(&paths, 52);
+        let runs = paths.runs_dir("drive");
+        let stuck = runs.join("20260101-000000.jsonl");
+        std::fs::remove_file(&stuck).unwrap();
+        std::fs::create_dir(&stuck).unwrap();
+
+        prune_runs(&paths, "drive").await.unwrap();
+
+        assert!(stuck.exists());
+        assert!(!runs.join("20260101-000001.jsonl").exists());
+        assert_eq!(run_names(&paths).len(), 51);
     }
 
     fn status(enabled: bool, state: &State, running: bool) -> DisplayStatus {
@@ -805,11 +1008,12 @@ mod tests {
     }
 
     #[test]
-    fn a_config_auth_or_missing_folder_gate_is_an_error() {
+    fn a_config_auth_missing_folder_or_attention_gate_is_an_error() {
         for kind in [
             GateKind::ConfigError,
             GateKind::AuthError,
             GateKind::LocalMissing,
+            GateKind::NeedsAttention,
         ] {
             let state = State {
                 gate: Some(gate(kind)),
@@ -997,6 +1201,7 @@ mod tests {
             (GateKind::ConfigError, "config_error"),
             (GateKind::AuthError, "auth_error"),
             (GateKind::LocalMissing, "local_missing"),
+            (GateKind::NeedsAttention, "needs_attention"),
         ];
 
         for (kind, name) in kinds {

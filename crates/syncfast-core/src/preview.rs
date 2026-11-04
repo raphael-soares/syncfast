@@ -20,6 +20,8 @@ pub struct Preview {
     /// Hash of the filters the preview ran with; the confirmation marker
     /// carries it so a later filter change voids the confirmation.
     pub filters_hash: String,
+    /// Folders the `git_repos` preset left out of the dry run.
+    pub excluded_repos: Vec<String>,
     pub summary: RunSummary,
 }
 
@@ -30,6 +32,7 @@ impl Preview {
         PreviewReport {
             filters_hash: &self.filters_hash,
             changes: &self.summary.changes,
+            excluded_repos: &self.excluded_repos,
             counts: ChangeCounts::of(&self.summary.changes),
         }
     }
@@ -71,6 +74,7 @@ impl ChangeCounts {
 pub struct PreviewReport<'a> {
     pub filters_hash: &'a str,
     pub changes: &'a [Change],
+    pub excluded_repos: &'a [String],
     pub counts: ChangeCounts,
 }
 
@@ -160,6 +164,7 @@ pub async fn preview(
     }
     Ok(Preview {
         filters_hash: filters_file.hash,
+        excluded_repos: filters_file.git_repos,
         summary: summarize(&lines),
     })
 }
@@ -237,6 +242,7 @@ mod tests {
     fn report_serializes_hash_changes_and_counts() {
         let preview = Preview {
             filters_hash: "abc".to_owned(),
+            excluded_repos: vec!["a/repo".to_owned()],
             summary: RunSummary {
                 changes: vec![change(ChangeKind::Download, "x.txt")],
                 ..RunSummary::default()
@@ -250,6 +256,7 @@ mod tests {
             serde_json::json!({
                 "filters_hash": "abc",
                 "changes": [{"kind": "download", "path": "x.txt"}],
+                "excluded_repos": ["a/repo"],
                 "counts": {
                     "upload": 0,
                     "download": 1,

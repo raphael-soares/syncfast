@@ -24,7 +24,9 @@ fn row(id: &str, name: &str, status: DisplayStatus) -> PairRow {
         last_success: Some("2026-11-03T11:55:00Z".parse().unwrap()),
         progress: None,
         gate_detail: String::new(),
+        gate_fault: None,
         consecutive_failures: 0,
+        realtime_off: false,
         presets: Vec::new(),
         filters: Vec::new(),
     }

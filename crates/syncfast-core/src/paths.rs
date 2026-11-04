@@ -198,6 +198,20 @@ impl Paths {
         self.config_home.join("systemd").join("user")
     }
 
+    /// The syncs the watcher left to the timer because inotify ran out of
+    /// watches; absent when it watches everything.
+    #[must_use]
+    pub fn watch_limit_file(&self) -> PathBuf {
+        self.state_dir().join("watch-limit.json")
+    }
+
+    /// Exists while a `daemon-reload` failed and must be retried by the next
+    /// `apply`, even when no unit file changes then.
+    #[must_use]
+    pub fn reload_pending_file(&self) -> PathBuf {
+        self.state_dir().join("reload-pending")
+    }
+
     /// Where `apply` writes the units when systemd is off (dev mode, tests).
     #[must_use]
     pub fn units_preview_dir(&self) -> PathBuf {

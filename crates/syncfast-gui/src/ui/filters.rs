@@ -110,6 +110,7 @@ fn preset_title(name: &str) -> &str {
     match name {
         "system_junk" => "System junk files",
         "dev_dirs" => "Developer folders",
+        "git_repos" => "Git repositories",
         other => other,
     }
 }
@@ -200,6 +201,14 @@ pub fn form(
         if switch(ui, &mut on, preset_title(preset.name)).changed() {
             draft.set(preset.name, on);
         }
+        if preset.rules.is_empty() {
+            ui.label(
+                RichText::new("Leaves out every folder with a .git inside, found on each sync")
+                    .font(theme::callout())
+                    .color(palette.secondary),
+            );
+            continue;
+        }
         egui::CollapsingHeader::new(
             RichText::new("Show rules")
                 .font(theme::callout())
@@ -268,6 +277,20 @@ fn outcome(ui: &mut Ui, state: &FilterTestState) {
                         .font(theme::callout())
                         .color(palette.secondary),
                 );
+            }
+            if !summary.git_repos.is_empty() {
+                ui.label(
+                    RichText::new("Git repositories left out")
+                        .font(theme::callout())
+                        .color(palette.text),
+                );
+                for repo in &summary.git_repos {
+                    ui.label(
+                        RichText::new(format!("{repo}/"))
+                            .font(theme::callout())
+                            .color(palette.secondary),
+                    );
+                }
             }
         }
     }

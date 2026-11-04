@@ -230,6 +230,30 @@ async fn changed_interval_rewrites_only_the_unit_that_changed_and_reloads() {
 }
 
 #[tokio::test]
+async fn a_failed_reload_is_retried_by_the_next_apply_even_when_no_unit_changed() {
+    let bed = Bed::new();
+    bed.write_config(&[("docs", true)]);
+    let broken = FakeSystemctl {
+        failing: Some("daemon-reload"),
+        ..FakeSystemctl::default()
+    };
+    let report = apply_with(&bed, SystemdMode::User, &broken, &[]).await;
+    assert!(!report.is_empty());
+    assert!(bed.paths.reload_pending_file().exists());
+    let systemctl = FakeSystemctl::default();
+
+    let retry = apply_with(&bed, SystemdMode::User, &systemctl, &[]).await;
+
+    assert!(retry.is_empty(), "{retry}");
+    assert_eq!(systemctl.take()[0], "daemon-reload");
+    assert!(!bed.paths.reload_pending_file().exists());
+
+    apply_with(&bed, SystemdMode::User, &systemctl, &[]).await;
+
+    assert!(!systemctl.take().contains(&"daemon-reload".to_owned()));
+}
+
+#[tokio::test]
 async fn removed_pair_is_stopped_then_its_units_and_traces_are_deleted_and_versions_kept() {
     let bed = Bed::new();
     bed.write_config(&[("docs", true), ("notes", true)]);

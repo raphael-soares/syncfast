@@ -79,6 +79,9 @@ fn sync_block(out: &mut String, sync: &PairView) {
     if let Some(error) = &sync.config_error {
         let _ = writeln!(out, "  config:   {error}");
     }
+    if let Some(notice) = sync.notice {
+        let _ = writeln!(out, "  notice:   {notice}");
+    }
     let _ = writeln!(out, "  presets:  {}", sync.presets.join(", "));
     for rule in &sync.filters {
         let _ = writeln!(out, "  rule:     {rule}");
@@ -148,6 +151,12 @@ pub fn filter_test(test: &FilterTestView) -> String {
             "  {} \u{b7} {} files",
             folder.folder, folder.excluded_files
         );
+    }
+    if !test.git_repos.is_empty() {
+        out.push_str("Git repositories left out:\n");
+        for repo in &test.git_repos {
+            let _ = writeln!(out, "  {repo}/");
+        }
     }
     out
 }
@@ -309,6 +318,16 @@ pub fn review(review: &ReviewView) -> String {
     }
     if review.changes_omitted > 0 {
         let _ = writeln!(out, "  ... {} more changes", review.changes_omitted);
+    }
+    if !review.excluded_repos.is_empty() {
+        let _ = writeln!(
+            out,
+            "  left out as git repositories: {}",
+            review.excluded_repos.len()
+        );
+        for repo in &review.excluded_repos {
+            let _ = writeln!(out, "  - {repo}/");
+        }
     }
     let _ = writeln!(out, "filters hash: {}", review.filters_hash);
     let _ = writeln!(out, "{}", review.note);

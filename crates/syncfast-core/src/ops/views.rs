@@ -10,7 +10,9 @@ use super::{OpError, Ops};
 use crate::bisync::ReviewKind;
 use crate::config::Pair;
 use crate::filters;
+use crate::notify::attention_body;
 use crate::state::{Gate, GateKind, LastOutcome, State, display_status, is_running};
+use crate::watch::{WATCH_LIMIT_NOTICE, limited_pairs};
 
 /// A sync and where it stands. `status` is the same name `syncfast status`
 /// prints and the GUI shows.
@@ -38,6 +40,9 @@ pub struct PairView {
     pub consecutive_failures: u32,
     pub conflicts_pending: u32,
     pub offline: bool,
+    /// Something to fix that does not block rounds: the watcher ran out of
+    /// inotify watches, so changes wait for the timer.
+    pub notice: Option<&'static str>,
     /// Why the config rejects this sync, when it does.
     pub config_error: Option<String>,
 }
@@ -114,6 +119,10 @@ fn explanation(gate: &Gate) -> String {
         GateKind::LocalMissing => {
             "The local folder is missing: syncing resumes when it is back.".to_owned()
         }
+        GateKind::NeedsAttention => format!(
+            "Needs attention: {}",
+            attention_body(gate.fault, &gate.detail)
+        ),
     }
 }
 
@@ -134,6 +143,7 @@ impl PairView {
         state: &State,
         running: bool,
         config_error: Option<String>,
+        realtime_off: bool,
     ) -> Self {
         let status = display_status(pair, state, running);
         Self {
@@ -155,6 +165,7 @@ impl PairView {
             consecutive_failures: state.consecutive_failures,
             conflicts_pending: state.conflicts_pending,
             offline: state.offline,
+            notice: realtime_off.then_some(WATCH_LIMIT_NOTICE),
             config_error,
         }
     }
@@ -180,17 +191,7 @@ impl LastRunView {
 /// A state file that cannot be read shows as a configuration error rather
 /// than as a healthy sync, as in the GUI.
 pub(crate) async fn load_state(ops: &Ops, id: &str) -> State {
-    match State::load(&ops.paths, id).await {
-        Ok(state) => state,
-        Err(err) => State {
-            gate: Some(Gate {
-                kind: GateKind::ConfigError,
-                since: Timestamp::UNIX_EPOCH,
-                detail: err.to_string(),
-            }),
-            ..State::default()
-        },
-    }
+    State::load_or_config_error(&ops.paths, id).await
 }
 
 impl Ops {
@@ -202,6 +203,7 @@ impl Ops {
         let config = self.load_config().await?;
         let accounts = self.rclone.listremotes().await?;
         let validation = config.validate(&self.paths, &accounts);
+        let limited = limited_pairs(&self.paths);
         let mut views = Vec::with_capacity(config.pairs().len());
         for pair in config.pairs() {
             let problem = validation
@@ -209,15 +211,21 @@ impl Ops {
                 .iter()
                 .find(|error| error.pair_id == pair.id)
                 .map(|error| error.message.clone());
-            views.push(self.view_of(pair, problem).await);
+            let realtime_off = limited.contains(&pair.id);
+            views.push(self.view_of(pair, problem, realtime_off).await);
         }
         Ok(views)
     }
 
-    pub(crate) async fn view_of(&self, pair: &Pair, config_error: Option<String>) -> PairView {
+    async fn view_of(
+        &self,
+        pair: &Pair,
+        config_error: Option<String>,
+        realtime_off: bool,
+    ) -> PairView {
         let state = load_state(self, &pair.id).await;
         let running = is_running(&self.paths, &pair.id);
-        PairView::of(pair, &state, running, config_error)
+        PairView::of(pair, &state, running, config_error, realtime_off)
     }
 
     /// One sync, as `status` shows it, read again from disk.
@@ -236,7 +244,7 @@ impl Ops {
         let state = load_state(self, id).await;
         Ok(PairDetail {
             sync,
-            filters_hash: filters::hash(&filters::render(&pair)),
+            filters_hash: filters::hash(&filters::render_live(&pair).await.text),
             versions_dir: self.paths.versions_dir(id),
             last_run: LastRunView::of(&state),
         })

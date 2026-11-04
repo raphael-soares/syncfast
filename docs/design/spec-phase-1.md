@@ -340,13 +340,14 @@ Cenários:
   - Teste unitário com snapshot do vetor por modo.
 - `classify(exit_code, log_lines, workdir) -> Outcome`. A ordem dos testes é esta:
   1. Código 0: `Ok`.
-  2. Existe `*.lst-err` em `<workdir>`: `NeedsReview(CriticalError)`.
+  2. Existe `*.lst-err` em `<workdir>`, ou `<workdir>` não pode ser lido por outro motivo que não ausência: `NeedsReview(CriticalError)`.
   3. Alguma linha casa com o padrão de autenticação (`invalid_grant`, `couldn't fetch token`, `oauth2: cannot fetch token`, `token expired`, sem diferenciar maiúsculas): `AuthError`. Se um erro de autenticação real aparecer com outro texto, acrescentar o texto a essa lista com teste.
   4. Código 1 e alguma linha com `too many deletes`: `TooManyDeletes`.
   5. Código 1 e alguma linha error+ com `Safety abort: all files were changed`: `AllFilesChanged`.
-  6. Código 7 e alguma linha com `Must run --resync to recover`: `NeedsReview(CriticalError)`.
-  7. Código 2: `ConfigError` (bug de flags do syncfast).
-  8. Qualquer outro caso: `Transient`.
+  6. Alguma linha casa com um `Fault` que não é autenticação (`fault_of`: `Account`, `Quota`, `Permission`, `RemoteMissing`, `LocalEmpty`): `NeedsAttention { fault, detail }`, com `detail` a mensagem que casou. `TooManyDeletes` e `AllFilesChanged` têm prioridade.
+  7. Código 7 e alguma linha com `Must run --resync to recover`: `NeedsReview(CriticalError)`. Um código 7 que o log diz ser repetível sem `--resync` (`critical_retryable`) cai em `Transient`.
+  8. Código 2: `ConfigError` (bug de flags do syncfast).
+  9. Qualquer outro caso: `Transient`.
   - Um teste por ramo, usando os fixtures do passo 2.
 - `summarize(log_lines) -> RunSummary`:
   - Contadores `uploaded`, `downloaded`, `deleted_local`, `deleted_remote`, `conflicts_new` (todos `Option<u32>`) e `changes: Vec<Change { kind, path }>`.
@@ -373,6 +374,7 @@ Cenários:
     "last_outcome": null,
     "offline": false,
     "consecutive_failures": 0,
+    "failing_since": null,
     "last_success": null,
     "last_attempt": null,
     "applied_filters_hash": null,
@@ -382,7 +384,7 @@ Cenários:
   }
   ```
 
-  - `gate`: `null` ou um objeto `{ "kind": ..., "since": "<rfc3339>", "detail": "<texto>" }`. O `kind` ∈ `needs_review_first_run`, `needs_review_filters_changed`, `needs_review_critical_error`, `too_many_deletes`, `all_files_changed`, `config_error`, `auth_error`, `local_missing`. Todo gate bloqueia rodadas normais.
+  - `gate`: `null` ou um objeto `{ "kind": ..., "since": "<rfc3339>", "detail": "<texto>" }`, mais `"fault"` (`auth`, `account`, `quota`, `permission`, `remote_missing` ou `local_empty`) no `needs_attention` que um erro de rclone causou; arquivos antigos não o têm. O `kind` ∈ `needs_review_first_run`, `needs_review_filters_changed`, `needs_review_critical_error`, `too_many_deletes`, `all_files_changed`, `config_error`, `auth_error`, `local_missing`, `needs_attention`. Todo gate bloqueia rodadas normais, exceto `needs_attention`: a próxima rodada roda no ritmo do timer e um `Ok` o limpa.
   - `last_outcome` ∈ `null`, `ok`, `error`.
   - `offline`: true quando a última tentativa foi pulada por falta de rede. Não muda `gate` nem `last_outcome`.
   - `last_run`: `{ "started", "finished", "exit_code", "summary": RunSummary, "log_file" }`.
@@ -396,7 +398,7 @@ Cenários:
   | Ordem | Condição | Status | Cor |
   |---|---|---|---|
   | 1 | `running` | `Syncing` | `accent` |
-  | 2 | gate `config_error`, `auth_error`, `local_missing` | `Error` | `danger` |
+  | 2 | gate `config_error`, `auth_error`, `local_missing`, `needs_attention` | `Error` | `danger` |
   | 3 | gate `needs_review_*`, `too_many_deletes`, `all_files_changed` | `NeedsReview` | `warning` |
   | 4 | `conflicts_pending > 0` | `Conflicts` | `warning` |
   | 5 | `!enabled` | `Paused` | `dim` |
@@ -455,7 +457,7 @@ Fluxo do `run`:
 1. Carregar config. Erro global ou `id` inexistente: imprimir no stderr e sair 2. Par inválido: gravar gate `config_error` com a mensagem, notificar se for transição, sair 0.
 2. `File::try_lock` exclusivo em `$XDG_RUNTIME_DIR/syncfast/<id>.lock` (cria o diretório). Ocupado: sair 0.
 3. Rede: ler `State` (u32) de `org.freedesktop.NetworkManager` em `/org/freedesktop/NetworkManager` no barramento de sistema. `online = State >= 70`. Sem NetworkManager no barramento, `online = true`. A rede fica atrás do trait `Network` para teste.
-4. Renderizar e gravar o filters-file. Calcular `current_filters_hash`.
+4. Renderizar e gravar o filters-file. Calcular `current_filters_hash`. Ler o `state.json`: se não for JSON válido, renomeá-lo para `state.json.corrupt-<AAAAMMDD-HHMMSS>`, avisar no log e seguir como primeira execução (a revisão obrigatória protege os dados).
 5. `decide(...)`:
    - `Skip(Offline)` grava `offline = true`.
    - `Skip(Paused)` e `Skip(Gated)` não gravam nada.
@@ -472,8 +474,9 @@ Fluxo do `run`:
      - `conflicts_pending` = número de arquivos `*.conflict<N>` na árvore local, varrida com o `DirMatcher`.
      - Se `summary.conflicts_new > 0`, notificar conflitos.
    - `TooManyDeletes`, `AllFilesChanged`, `NeedsReview(CriticalError)`, `AuthError`, `ConfigError`: gravar o gate correspondente e notificar se for transição.
-   - `Transient`: `last_outcome = error`, `consecutive_failures += 1`. Ao chegar em 3 sem `"failures"` em `notified`, notificar e acrescentar `"failures"`.
-8. Depois de `Ok`, podar versões: em `versions/<id>/`, apagar os subdiretórios diretos cujo nome casa `^\d{8}-\d{6}$` e cuja data é mais antiga que `versions_keep_days`. Tudo o mais em `versions/<id>/` fica intocado. Remover diretórios datados que ficarem vazios. Podar `runs/`.
+   - `NeedsAttention`: gate `needs_attention` com o `detail` e o `fault`, conta como falha (`last_outcome = error`, `consecutive_failures += 1`) e notifica se for transição. O marker é mantido, como no `Transient`: uma primeira rodada confirmada que falha assim volta a rodar no próximo tick em vez de voltar à primeira revisão.
+   - `Transient`: `last_outcome = error`, `consecutive_failures += 1`. Ao chegar em 3 sem `"failures"` em `notified`, notificar e acrescentar `"failures"`. A primeira falha de uma série grava `failing_since`; qualquer resultado que não seja `Transient` nem `NeedsAttention`, e um tick `Offline`, o limpa. Sem gate e com `failing_since` há mais de 6 horas, gravar o gate `needs_attention` com `Syncing has failed for over 6 hours: <última mensagem>` e notificar se for transição.
+8. Depois de toda rodada, qualquer que seja o resultado, podar versões: em `versions/<id>/`, apagar os subdiretórios diretos cujo nome casa `^\d{8}-\d{6}$` e cuja data é mais antiga que `versions_keep_days`. Tudo o mais em `versions/<id>/` fica intocado. Remover diretórios datados que ficarem vazios. Podar `runs/`. Uma falha ao podar é só um aviso no log, nunca o resultado da rodada.
 9. Sair 0. Erro interno do próprio syncfast (I/O de estado, por exemplo): log e sair 1.
 
 Notificações (`notify.rs`, no core):
@@ -493,8 +496,9 @@ Notificações (`notify.rs`, no core):
 | `config_error` | `<name>: configuration error` | a mensagem |
 | `auth_error` | `<name>: account disconnected` | `Reconnect "<remote>" in Settings > Accounts.` |
 | `local_missing` | `<name>: folder not found` | `<local> is missing. Sync resumes when it is back.` |
+| `needs_attention` | `<name>: needs attention` | `Account`: `Google Drive refused the account. Open syncfast for the fix.`; `Quota`: `Google Drive is full.`; `Permission`: `No permission to a file or folder on Google Drive.`; `RemoteMissing`: `The folder on Google Drive is missing.`; `LocalEmpty`: `The folder is empty. If it is on a drive, mount it.`; falha longa: `Syncing keeps failing. Open syncfast for details.` |
 | conflitos | `<name>: <n> new conflicts` | `Both versions were kept. Open syncfast to resolve.` |
-| falhas | `<name>: sync failing` | `Failed 3 times in a row. <msg da última linha ERROR do log>` |
+| falhas | `<name>: sync failing` | `Failed 3 times in a row. <msg>` |
 
 ### 8. Units e `syncfast apply` (`units.rs`)
 

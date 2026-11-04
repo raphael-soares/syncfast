@@ -2,7 +2,9 @@
 
 use egui::{Frame, Margin, RichText, Ui};
 use syncfast_core::bisync_log::Progress;
+use syncfast_core::notify::attention_body;
 use syncfast_core::state::{DisplayStatus, GateKind};
+use syncfast_core::watch::WATCH_LIMIT_NOTICE;
 
 use super::format::{progress_fraction, progress_line};
 use super::menu::{self, Tone};
@@ -165,12 +167,15 @@ fn more_menu(
 /// What the card says beside the status, and the button that goes with it.
 struct CardText {
     phrase: String,
+    /// Raw text of the failure, selectable so the user can copy it.
+    detail: Option<String>,
     button: Option<(&'static str, Action)>,
 }
 
 fn card_text(pair: &PairRow, now: jiff::Timestamp) -> CardText {
     let plain = |phrase: String| CardText {
         phrase,
+        detail: None,
         button: None,
     };
     if let Some(gate) = pair.gate {
@@ -181,6 +186,7 @@ fn card_text(pair: &PairRow, now: jiff::Timestamp) -> CardText {
             | GateKind::TooManyDeletes
             | GateKind::AllFilesChanged => CardText {
                 phrase: "Review what will change before syncing resumes.".to_owned(),
+                detail: None,
                 button: Some(("Review…", Action::OpenReview(pair.id.clone()))),
             },
             GateKind::AuthError => CardText {
@@ -188,7 +194,13 @@ fn card_text(pair: &PairRow, now: jiff::Timestamp) -> CardText {
                     "Reconnect \"{}\" in Settings > Accounts.",
                     pair.remote.split(':').next().unwrap_or(&pair.remote)
                 ),
+                detail: None,
                 button: Some(("Reconnect Account…", Action::OpenAccounts)),
+            },
+            GateKind::NeedsAttention => CardText {
+                phrase: attention_body(pair.gate_fault, &pair.gate_detail).to_owned(),
+                detail: Some(pair.gate_detail.clone()).filter(|detail| !detail.is_empty()),
+                button: Some(("Try Again", Action::SyncNow(pair.id.clone()))),
             },
             GateKind::LocalMissing => plain(format!("{} is missing.", pair.local.display())),
             GateKind::ConfigError => plain(if pair.gate_detail.is_empty() {
@@ -233,10 +245,30 @@ fn status_card(
             }
             let text = card_text(pair, now);
             if !text.phrase.is_empty() {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(text.phrase)
+                            .font(theme::callout())
+                            .color(palette.secondary),
+                    )
+                    .selectable(false),
+                );
+            }
+            if let Some(detail) = text.detail {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(detail)
+                            .font(theme::subheadline())
+                            .color(palette.secondary),
+                    )
+                    .selectable(true),
+                );
+            }
+            if pair.realtime_off {
                 ui.label(
-                    RichText::new(text.phrase)
+                    RichText::new(WATCH_LIMIT_NOTICE)
                         .font(theme::callout())
-                        .color(palette.secondary),
+                        .color(palette.warning),
                 );
             }
             if let Some((label, action)) = text.button

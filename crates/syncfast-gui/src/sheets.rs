@@ -114,6 +114,9 @@ impl Sheets {
             Action::ChangeClientId(name) => {
                 self.edit_account(AccountMode::ChangeClientId { name: name.clone() }, around)
             }
+            Action::RenameAccount(name) => {
+                self.edit_account(AccountMode::Rename { from: name.clone() }, around)
+            }
             Action::AddSyncSheet(action) => self.add_sync_action(action),
             Action::Review(action) => self.review_action(*action),
             Action::Account(action) => self.account_action(action),
@@ -192,13 +195,14 @@ impl Sheets {
 
     fn open_account(&mut self, mode: AccountMode, around: &Surroundings<'_>) -> Vec<Command> {
         let from_wizard = matches!(self.current, Current::AddSync(_));
+        let renaming = matches!(mode, AccountMode::Rename { .. });
         let mut commands = self.leave();
         commands.push(Command::LoadRemotes);
         self.current = Current::Account(Box::new(AccountSession {
             state: AccountState::new(mode),
             connecting: false,
             error: None,
-            then_add_sync: from_wizard || around.welcome,
+            then_add_sync: !renaming && (from_wizard || around.welcome),
             back_to_add_sync: from_wizard,
         }));
         commands

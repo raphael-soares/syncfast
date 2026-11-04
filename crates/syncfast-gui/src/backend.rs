@@ -3,7 +3,9 @@
 //! UI talks to it with [`Command`] and hears back with [`Event`].
 
 use std::ffi::OsString;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -14,6 +16,7 @@ use syncfast_core::config::Config;
 use syncfast_core::conflicts::{Conflict, Resolution};
 use syncfast_core::filters::ExclusionSummary;
 use syncfast_core::flatpak;
+use syncfast_core::network::{Network as _, NetworkManager};
 use syncfast_core::paths::Paths;
 use syncfast_core::preview::Preview;
 use syncfast_core::rclone::Rclone;
@@ -23,7 +26,7 @@ use syncfast_core::watch::{Trigger, trigger_for};
 use tokio::sync::{
     Notify, mpsc::UnboundedReceiver, mpsc::UnboundedSender, mpsc::unbounded_channel, oneshot,
 };
-use tokio::task::AbortHandle;
+use tokio::task::{AbortHandle, JoinSet};
 
 use crate::gui_state::{self, GuiState};
 use crate::instance::Inbox;
@@ -32,9 +35,9 @@ use crate::pair_tools;
 use crate::sheet_io::{self, PreviewFailure};
 use crate::snapshot::{self, Snapshot};
 use crate::theme::{ThemeChoice, Themes};
-use crate::ui::RemoteRow;
-use crate::ui::account_sheet::{ConnectRequest, Secret};
+use crate::ui::account_sheet::{AccountMode, ConnectRequest, Secret};
 use crate::ui::add_sync::{LocalFacts, NewSync};
+use crate::ui::{AccountStatus, RemoteRow};
 use syncfast_core::runs::{self, RunEntry};
 
 const POLL_ACTIVE: Duration = Duration::from_secs(1);
@@ -44,6 +47,7 @@ const POLL_HIDDEN: Duration = Duration::from_secs(10);
 const ROUND_START_WAIT: Duration = Duration::from_millis(600);
 const CLI_NAME: &str = "syncfast";
 const CLI_VAR: &str = "SYNCFAST_CLI";
+const WORKER_STOPPED: &str = "syncfast's background worker stopped. Restart syncfast.";
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 /// Opens folders and links. In the Flatpak sandbox the runtime's `xdg-open`
 /// goes through the `OpenURI` portal, which the toolkit's own opener cannot.
@@ -131,6 +135,11 @@ pub enum Command {
     ConnectAccount(ConnectRequest),
     /// Kill the sign-in in progress.
     CancelConnect,
+    /// Check the sign-in of every account, one `AccountStatus` event each.
+    CheckAccounts,
+    /// Take an account out of rclone's config. Its syncs stay in the config
+    /// and stop with the account missing.
+    RemoveAccount(String),
 }
 
 /// What the backend tells the UI.
@@ -177,6 +186,11 @@ pub enum Event {
     /// The sign-in ended: the account's name, or rclone's last error line.
     /// A cancelled sign-in sends nothing.
     Connected(Result<String, String>),
+    /// What the check of an account found so far.
+    AccountStatus {
+        name: String,
+        status: AccountStatus,
+    },
     /// The conflicts found in the folder of a sync.
     Conflicts {
         id: String,
@@ -212,6 +226,8 @@ pub struct Backend {
     commands: UnboundedSender<Command>,
     events: mpsc::Receiver<Event>,
     thread: Option<std::thread::JoinHandle<()>>,
+    /// A command found the thread gone; [`Backend::events`] reports it once.
+    stopped: AtomicBool,
 }
 
 impl Backend {
@@ -248,19 +264,26 @@ impl Backend {
             commands,
             events,
             thread: Some(thread),
+            stopped: AtomicBool::new(false),
         })
     }
 
     pub fn send(&self, command: Command) {
         if self.commands.send(command).is_err() {
             log::warn!("the backend is not running");
+            self.stopped.store(true, Ordering::Relaxed);
         }
     }
 
-    /// What arrived since the last call, oldest first.
+    /// What arrived since the last call, oldest first. A command sent to a
+    /// thread that is gone ends the list with [`Event::Failed`].
     #[must_use]
     pub fn events(&self) -> Vec<Event> {
-        self.events.try_iter().collect()
+        let mut events: Vec<Event> = self.events.try_iter().collect();
+        if self.stopped.swap(false, Ordering::Relaxed) {
+            events.push(Event::Failed(WORKER_STOPPED.to_owned()));
+        }
+        events
     }
 
     /// Finishes what was already sent (a last save of the window's state
@@ -402,6 +425,8 @@ async fn run(
                     }
                     Command::LoadCredentials(name) => spawn_load_credentials(&context, name),
                     Command::ConnectAccount(request) => spawn_connect(&context, request),
+                    Command::CheckAccounts => spawn_check_accounts(&context),
+                    Command::RemoveAccount(name) => spawn_remove_account(&context, name),
                     Command::CancelConnect => cancel_connect(&context),
                     Command::ScanConflicts(id) => spawn_scan_conflicts(&context, id),
                     Command::ResolveConflict {
@@ -430,6 +455,28 @@ async fn run(
     }
 }
 
+/// Spawns a command handler and, when it panics, tells the user instead of
+/// leaving the window waiting for an event that will never come. Aborting
+/// the returned handle aborts the handler too.
+fn guarded(
+    emitter: Emitter,
+    what: &'static str,
+    task: impl Future<Output = ()> + Send + 'static,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut set = JoinSet::new();
+        set.spawn(task);
+        if let Some(Err(err)) = set.join_next().await
+            && err.is_panic()
+        {
+            log::error!("{what} panicked: {err}");
+            emitter.send(Event::Failed(format!(
+                "Something went wrong in syncfast: {what}. Try again."
+            )));
+        }
+    })
+}
+
 fn follow_appearance(context: &Arc<Context>) {
     let emitter = context.emitter.clone();
     tokio::spawn(async move {
@@ -442,18 +489,22 @@ fn follow_appearance(context: &Arc<Context>) {
 
 fn spawn_reload_themes(context: &Arc<Context>) {
     let context = Arc::clone(context);
-    tokio::spawn(async move {
-        let dir = themes_dir(&context.paths);
-        match tokio::task::spawn_blocking(move || Themes::load(&dir)).await {
-            Ok(themes) => context.emitter.send(Event::Themes(themes)),
-            Err(err) => log::warn!("cannot read the theme files: {err}"),
-        }
-        let file = gui_state::file(&context.paths);
-        match tokio::task::spawn_blocking(move || GuiState::load(&file).theme).await {
-            Ok(choice) => context.emitter.send(Event::Theme(choice)),
-            Err(err) => log::warn!("cannot read the chosen theme: {err}"),
-        }
-    });
+    guarded(
+        context.emitter.clone(),
+        "reloading the themes",
+        async move {
+            let dir = themes_dir(&context.paths);
+            match tokio::task::spawn_blocking(move || Themes::load(&dir)).await {
+                Ok(themes) => context.emitter.send(Event::Themes(themes)),
+                Err(err) => log::warn!("cannot read the theme files: {err}"),
+            }
+            let file = gui_state::file(&context.paths);
+            match tokio::task::spawn_blocking(move || GuiState::load(&file).theme).await {
+                Ok(choice) => context.emitter.send(Event::Theme(choice)),
+                Err(err) => log::warn!("cannot read the chosen theme: {err}"),
+            }
+        },
+    );
 }
 
 /// Where the user's palette files live.
@@ -486,7 +537,7 @@ fn fail(context: &Context, text: String) {
 
 fn spawn_apply(context: &Arc<Context>) {
     let context = Arc::clone(context);
-    tokio::spawn(async move {
+    guarded(context.emitter.clone(), "applying the config", async move {
         if let Err(text) = apply_config(&context.paths).await {
             fail(&context, text);
         }
@@ -520,7 +571,11 @@ async fn apply_deleting_versions(paths: &Paths, delete_versions: &[String]) -> R
 
 fn spawn_scan_conflicts(context: &Arc<Context>, id: String) {
     let context = Arc::clone(context);
-    tokio::spawn(async move { scan_conflicts(&context, id).await });
+    guarded(
+        context.emitter.clone(),
+        "looking for conflicts",
+        async move { scan_conflicts(&context, id).await },
+    );
 }
 
 async fn scan_conflicts(context: &Context, id: String) {
@@ -537,15 +592,19 @@ fn spawn_resolve_conflict(
     resolution: Resolution,
 ) {
     let context = Arc::clone(context);
-    tokio::spawn(async move {
-        match pair_tools::resolve_conflict(&context.paths, &id, path, resolution).await {
-            Ok(()) => {
-                scan_conflicts(&context, id.clone()).await;
-                spawn_sync(&context, vec![id]);
+    guarded(
+        context.emitter.clone(),
+        "resolving a conflict",
+        async move {
+            match pair_tools::resolve_conflict(&context.paths, &id, path, resolution).await {
+                Ok(()) => {
+                    scan_conflicts(&context, id.clone()).await;
+                    spawn_sync(&context, vec![id]);
+                }
+                Err(text) => fail(&context, text),
             }
-            Err(text) => fail(&context, text),
-        }
-    });
+        },
+    );
 }
 
 fn spawn_test_filters(
@@ -556,7 +615,7 @@ fn spawn_test_filters(
     rules: Vec<String>,
 ) {
     let context = Arc::clone(context);
-    tokio::spawn(async move {
+    guarded(context.emitter.clone(), "testing the filters", async move {
         let outcome = pair_tools::test_filters(&context.paths, &local, &presets, &rules).await;
         context.emitter.send(Event::FilterTest {
             id,
@@ -574,7 +633,7 @@ fn spawn_save_filters(
     rules: Vec<String>,
 ) {
     let context = Arc::clone(context);
-    tokio::spawn(async move {
+    guarded(context.emitter.clone(), "saving the filters", async move {
         match save_filters(&context.paths, &id, &presets, &rules).await {
             Ok(was_clear) => {
                 context.emitter.send(Event::FiltersSaved(id.clone()));
@@ -604,7 +663,7 @@ async fn save_filters(
 
 fn spawn_remove_sync(context: &Arc<Context>, id: String, delete_versions: bool) {
     let context = Arc::clone(context);
-    tokio::spawn(async move {
+    guarded(context.emitter.clone(), "removing the sync", async move {
         if let Err(text) = remove_sync(&context.paths, &id, delete_versions).await {
             fail(&context, text);
         }
@@ -624,7 +683,7 @@ async fn remove_sync(paths: &Paths, id: &str, delete_versions: bool) -> Result<(
 
 fn spawn_sync(context: &Arc<Context>, ids: Vec<String>) {
     let context = Arc::clone(context);
-    tokio::spawn(async move {
+    guarded(context.emitter.clone(), "starting a sync", async move {
         match start_rounds(&ids).await {
             Ok(()) => tokio::time::sleep(ROUND_START_WAIT).await,
             Err(text) => fail(&context, text),
@@ -656,7 +715,7 @@ async fn start_rounds(ids: &[String]) -> Result<(), String> {
 
 fn spawn_sync_all(context: &Arc<Context>) {
     let context = Arc::clone(context);
-    tokio::spawn(async move {
+    guarded(context.emitter.clone(), "starting every sync", async move {
         let ids = match Config::load(&context.paths).await {
             Ok(config) => config
                 .pairs()
@@ -675,12 +734,16 @@ fn spawn_sync_all(context: &Arc<Context>) {
 
 fn spawn_set_all_enabled(context: &Arc<Context>, enabled: bool) {
     let context = Arc::clone(context);
-    tokio::spawn(async move {
-        if let Err(text) = set_all_enabled(&context.paths, enabled).await {
-            fail(&context, text);
-        }
-        context.refresh.notify_one();
-    });
+    guarded(
+        context.emitter.clone(),
+        "pausing or resuming the syncs",
+        async move {
+            if let Err(text) = set_all_enabled(&context.paths, enabled).await {
+                fail(&context, text);
+            }
+            context.refresh.notify_one();
+        },
+    );
 }
 
 async fn set_all_enabled(paths: &Paths, enabled: bool) -> Result<(), String> {
@@ -689,45 +752,56 @@ async fn set_all_enabled(paths: &Paths, enabled: bool) -> Result<(), String> {
 }
 
 async fn write_enabled(paths: &Paths, enabled: bool) -> Result<(), String> {
-    let mut config = Config::load(paths).await.map_err(|err| err.to_string())?;
-    let ids: Vec<String> = config.pairs().iter().map(|pair| pair.id.clone()).collect();
-    for id in &ids {
-        config.set_enabled(id, enabled);
-    }
-    config.save(paths).await.map_err(|err| err.to_string())
+    Config::edit(paths, |config| {
+        let ids: Vec<String> = config.pairs().iter().map(|pair| pair.id.clone()).collect();
+        for id in &ids {
+            config.set_enabled(id, enabled);
+        }
+    })
+    .await
+    .map_err(|err| err.to_string())
 }
 
 fn spawn_load_runs(context: &Arc<Context>, id: String) {
     let context = Arc::clone(context);
-    tokio::spawn(async move {
-        let running = is_running(&context.paths, &id);
-        let runs = runs::load(&context.paths, &id, running).await;
-        context.emitter.send(Event::Runs { pair: id, runs });
-    });
+    guarded(
+        context.emitter.clone(),
+        "loading the run history",
+        async move {
+            let running = is_running(&context.paths, &id);
+            let runs = runs::load(&context.paths, &id, running).await;
+            context.emitter.send(Event::Runs { pair: id, runs });
+        },
+    );
 }
 
 fn spawn_set_enabled(context: &Arc<Context>, id: String, enabled: bool) {
     let context = Arc::clone(context);
-    tokio::spawn(async move {
-        if let Err(text) = set_enabled(&context.paths, &id, enabled).await {
-            fail(&context, text);
-        }
-        context.refresh.notify_one();
-    });
+    guarded(
+        context.emitter.clone(),
+        "pausing or resuming the sync",
+        async move {
+            if let Err(text) = set_enabled(&context.paths, &id, enabled).await {
+                fail(&context, text);
+            }
+            context.refresh.notify_one();
+        },
+    );
 }
 
 async fn set_enabled(paths: &Paths, id: &str, enabled: bool) -> Result<(), String> {
-    let mut config = Config::load(paths).await.map_err(|err| err.to_string())?;
-    if !config.set_enabled(id, enabled) {
+    let found = Config::edit(paths, |config| config.set_enabled(id, enabled))
+        .await
+        .map_err(|err| err.to_string())?;
+    if !found {
         return Err(format!("There is no sync named \"{id}\"."));
     }
-    config.save(paths).await.map_err(|err| err.to_string())?;
     apply_config(paths).await
 }
 
 fn spawn_open_folder(context: &Arc<Context>, path: PathBuf, missing: &'static str) {
     let context = Arc::clone(context);
-    tokio::spawn(async move {
+    guarded(context.emitter.clone(), "opening a folder", async move {
         if let Err(text) = open_folder(OPENER.as_ref(), &path, missing).await {
             fail(&context, text);
         }
@@ -748,7 +822,7 @@ async fn open_folder(opener: &std::ffi::OsStr, path: &Path, missing: &str) -> Re
 
 fn spawn_open_url(context: &Arc<Context>, url: String) {
     let context = Arc::clone(context);
-    tokio::spawn(async move {
+    guarded(context.emitter.clone(), "opening a link", async move {
         if let Err(text) = run_opener(OPENER.as_ref(), url.as_ref()).await {
             fail(&context, text);
         }
@@ -785,12 +859,16 @@ async fn publish_remotes(context: &Context) {
 
 fn spawn_load_remotes(context: &Arc<Context>) {
     let context = Arc::clone(context);
-    tokio::spawn(async move { publish_remotes(&context).await });
+    guarded(
+        context.emitter.clone(),
+        "listing the accounts",
+        async move { publish_remotes(&context).await },
+    );
 }
 
 fn spawn_list_dirs(context: &Arc<Context>, path: String) {
     let context = Arc::clone(context);
-    tokio::spawn(async move {
+    guarded(context.emitter.clone(), "listing the folders", async move {
         let result = match rclone() {
             Ok(rclone) => sheet_io::list_dirs(&rclone, &path).await,
             Err(text) => Err(text),
@@ -801,18 +879,22 @@ fn spawn_list_dirs(context: &Arc<Context>, path: String) {
 
 fn spawn_make_remote_dir(context: &Arc<Context>, path: String) {
     let context = Arc::clone(context);
-    tokio::spawn(async move {
-        let result = match rclone() {
-            Ok(rclone) => sheet_io::make_remote_dir(&rclone, &path).await,
-            Err(text) => Err(text),
-        };
-        context.emitter.send(Event::RemoteDirMade { path, result });
-    });
+    guarded(
+        context.emitter.clone(),
+        "creating the remote folder",
+        async move {
+            let result = match rclone() {
+                Ok(rclone) => sheet_io::make_remote_dir(&rclone, &path).await,
+                Err(text) => Err(text),
+            };
+            context.emitter.send(Event::RemoteDirMade { path, result });
+        },
+    );
 }
 
 fn spawn_check_local(context: &Arc<Context>, typed: String) {
     let context = Arc::clone(context);
-    tokio::spawn(async move {
+    guarded(context.emitter.clone(), "checking the folder", async move {
         let facts = sheet_io::check_local(&context.paths.home, &typed).await;
         context.emitter.send(Event::LocalChecked(facts));
     });
@@ -820,7 +902,7 @@ fn spawn_check_local(context: &Arc<Context>, typed: String) {
 
 fn spawn_create_local(context: &Arc<Context>, typed: String) {
     let context = Arc::clone(context);
-    tokio::spawn(async move {
+    guarded(context.emitter.clone(), "creating the folder", async move {
         let result = sheet_io::create_local(&context.paths.home, &typed).await;
         context.emitter.send(Event::LocalCreated(result));
     });
@@ -828,7 +910,7 @@ fn spawn_create_local(context: &Arc<Context>, typed: String) {
 
 fn spawn_pick_folder(context: &Arc<Context>) {
     let context = Arc::clone(context);
-    tokio::spawn(async move {
+    guarded(context.emitter.clone(), "choosing a folder", async move {
         let picked = rfd::AsyncFileDialog::new()
             .set_title("Choose Folder")
             .pick_folder()
@@ -840,7 +922,7 @@ fn spawn_pick_folder(context: &Arc<Context>) {
 
 fn spawn_create_sync(context: &Arc<Context>, new: NewSync) {
     let context = Arc::clone(context);
-    tokio::spawn(async move {
+    guarded(context.emitter.clone(), "creating the sync", async move {
         let id = new.id.clone();
         let created = match rclone() {
             Ok(rclone) => sheet_io::create_sync(&context.paths, &rclone, new).await,
@@ -869,15 +951,21 @@ fn abort_preview(context: &Context) {
 fn spawn_preview(context: &Arc<Context>, pair_id: String, kind: ReviewKind) {
     abort_preview(context);
     let task_context = Arc::clone(context);
-    let job = tokio::spawn(async move {
-        let result = match rclone() {
-            Ok(rclone) => sheet_io::run_preview(&task_context.paths, &rclone, &pair_id, kind).await,
-            Err(text) => Err(PreviewFailure::Failed(text)),
-        };
-        task_context
-            .emitter
-            .send(Event::Preview { pair_id, result });
-    });
+    let job = guarded(
+        context.emitter.clone(),
+        "previewing the changes",
+        async move {
+            let result = match rclone() {
+                Ok(rclone) => {
+                    sheet_io::run_preview(&task_context.paths, &rclone, &pair_id, kind).await
+                }
+                Err(text) => Err(PreviewFailure::Failed(text)),
+            };
+            task_context
+                .emitter
+                .send(Event::Preview { pair_id, result });
+        },
+    );
     context.tasks().preview = Some(job.abort_handle());
 }
 
@@ -888,30 +976,38 @@ fn spawn_confirm_review(
     filters_hash: String,
 ) {
     let context = Arc::clone(context);
-    tokio::spawn(async move {
-        match sheet_io::confirm_review(&context.paths, &pair_id, kind, filters_hash).await {
-            Ok(()) => spawn_sync(&context, vec![pair_id]),
-            Err(text) => fail(&context, text),
-        }
-    });
+    guarded(
+        context.emitter.clone(),
+        "confirming the review",
+        async move {
+            match sheet_io::confirm_review(&context.paths, &pair_id, kind, filters_hash).await {
+                Ok(()) => spawn_sync(&context, vec![pair_id]),
+                Err(text) => fail(&context, text),
+            }
+        },
+    );
 }
 
 fn spawn_load_credentials(context: &Arc<Context>, name: String) {
     let context = Arc::clone(context);
-    tokio::spawn(async move {
-        let loaded = match rclone() {
-            Ok(rclone) => sheet_io::load_credentials(&rclone, &name).await,
-            Err(text) => Err(text),
-        };
-        match loaded {
-            Ok((client_id, client_secret)) => context.emitter.send(Event::Credentials {
-                name,
-                client_id,
-                client_secret,
-            }),
-            Err(text) => fail(&context, text),
-        }
-    });
+    guarded(
+        context.emitter.clone(),
+        "loading the credentials",
+        async move {
+            let loaded = match rclone() {
+                Ok(rclone) => sheet_io::load_credentials(&rclone, &name).await,
+                Err(text) => Err(text),
+            };
+            match loaded {
+                Ok((client_id, client_secret)) => context.emitter.send(Event::Credentials {
+                    name,
+                    client_id,
+                    client_secret,
+                }),
+                Err(text) => fail(&context, text),
+            }
+        },
+    );
 }
 
 fn cancel_connect(context: &Context) {
@@ -924,19 +1020,22 @@ fn spawn_connect(context: &Arc<Context>, request: ConnectRequest) {
     let (cancel, cancelled) = oneshot::channel();
     context.tasks().connect = Some(cancel);
     let context = Arc::clone(context);
-    tokio::spawn(async move {
+    guarded(context.emitter.clone(), "signing in", async move {
         let account = request
             .mode
             .remote()
             .map_or_else(|| request.name.clone(), str::to_owned);
         let signed_in = match rclone() {
-            Ok(rclone) => sheet_io::connect(&rclone, &request, cancelled).await,
+            Ok(rclone) => sheet_io::sign_in(&rclone, &request, cancelled).await,
             Err(text) => Err(text),
         };
-        match signed_in {
-            Ok(true) => reconnected(&context, account).await,
-            Ok(false) => {}
-            Err(text) => context.emitter.send(Event::Connected(Err(text))),
+        match (signed_in, &request.mode) {
+            (Ok(true), AccountMode::Rename { from }) => {
+                renamed(&context, from, &request.name).await;
+            }
+            (Ok(true), _) => reconnected(&context, account).await,
+            (Ok(false), _) => {}
+            (Err(text), _) => context.emitter.send(Event::Connected(Err(text))),
         }
     });
 }
@@ -951,11 +1050,275 @@ async fn reconnected(context: &Arc<Context>, account: String) {
         Err(text) => fail(context, text),
     }
     context.emitter.send(Event::Connected(Ok(account)));
+    spawn_check_accounts(context);
+}
+
+/// The new account is signed in: the syncs of `from` move to it, held for a
+/// review, and `from` goes. A failure before the move leaves both accounts
+/// for the user to sort out.
+async fn renamed(context: &Arc<Context>, from: &str, to: &str) {
+    let renamed =
+        sheet_io::rename_account(&context.paths, from, to, sheet_io::ACCOUNT_LOCK_TIMEOUT).await;
+    if let Err(text) = renamed {
+        context.emitter.send(Event::Connected(Err(text)));
+        return;
+    }
+    let removed = match rclone() {
+        Ok(rclone) => rclone
+            .delete_remote(from)
+            .await
+            .map_err(|err| err.to_string()),
+        Err(text) => Err(text),
+    };
+    if let Err(text) = removed {
+        fail(
+            context,
+            format!("Renamed, but the old account \"{from}\" could not be removed: {text}"),
+        );
+    }
+    publish_remotes(context).await;
+    if let Err(text) = apply_config(&context.paths).await {
+        fail(context, text);
+    }
+    context.emitter.send(Event::Connected(Ok(to.to_owned())));
+    spawn_check_accounts(context);
+    context.refresh.notify_one();
+}
+
+fn spawn_check_accounts(context: &Arc<Context>) {
+    let context = Arc::clone(context);
+    guarded(
+        context.emitter.clone(),
+        "checking the accounts",
+        async move {
+            let rclone = match rclone() {
+                Ok(rclone) => rclone,
+                Err(text) => return fail(&context, text),
+            };
+            let names = match rclone.listremotes().await {
+                Ok(names) => names,
+                Err(err) => return fail(&context, err.to_string()),
+            };
+            let online = NetworkManager.is_online().await;
+            for name in names {
+                context.emitter.send(Event::AccountStatus {
+                    name: name.clone(),
+                    status: AccountStatus::Checking,
+                });
+                let rclone = rclone.clone();
+                let checked = name.clone();
+                spawn_account_check(&context.emitter, name, async move {
+                    sheet_io::check_account(&rclone, online, &checked).await
+                });
+            }
+        },
+    );
+}
+
+/// Reports the status `check` ends with for `name`. A check that panics
+/// still ends the account's "Checking" state, as a problem.
+fn spawn_account_check(
+    emitter: &Emitter,
+    name: String,
+    check: impl Future<Output = AccountStatus> + Send + 'static,
+) -> tokio::task::JoinHandle<()> {
+    let mut pending = PendingCheck {
+        emitter: emitter.clone(),
+        name: Some(name),
+    };
+    guarded(emitter.clone(), "checking an account", async move {
+        let status = check.await;
+        pending.finish(status);
+    })
+}
+
+struct PendingCheck {
+    emitter: Emitter,
+    name: Option<String>,
+}
+
+impl PendingCheck {
+    fn finish(&mut self, status: AccountStatus) {
+        if let Some(name) = self.name.take() {
+            self.emitter.send(Event::AccountStatus { name, status });
+        }
+    }
+}
+
+impl Drop for PendingCheck {
+    fn drop(&mut self) {
+        self.finish(AccountStatus::Problem(
+            "The check stopped unexpectedly.".to_owned(),
+        ));
+    }
+}
+
+fn spawn_remove_account(context: &Arc<Context>, name: String) {
+    let context = Arc::clone(context);
+    guarded(
+        context.emitter.clone(),
+        "removing the account",
+        async move {
+            let removed = match rclone() {
+                Ok(rclone) => {
+                    sheet_io::remove_account(
+                        &context.paths,
+                        &rclone,
+                        &name,
+                        sheet_io::ACCOUNT_LOCK_TIMEOUT,
+                    )
+                    .await
+                }
+                Err(text) => Err(text),
+            };
+            match removed {
+                Ok(ids) => {
+                    publish_remotes(&context).await;
+                    if !ids.is_empty() {
+                        spawn_sync(&context, ids);
+                    }
+                }
+                Err(text) => fail(&context, text),
+            }
+        },
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn emitter() -> (Emitter, mpsc::Receiver<Event>) {
+        let (events, received) = mpsc::channel();
+        let emitter = Emitter {
+            events,
+            waker: Waker::default(),
+        };
+        (emitter, received)
+    }
+
+    fn failures(events: impl IntoIterator<Item = Event>) -> Vec<String> {
+        events
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::Failed(text) => Some(text),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_handler_that_panics_tells_the_user_what_to_retry() {
+        let (emitter, received) = emitter();
+
+        guarded(emitter, "saving the filters", async {
+            panic!("boom");
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(
+            failures(received.try_iter()),
+            ["Something went wrong in syncfast: saving the filters. Try again."]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_handler_that_finishes_emits_nothing_of_its_own() {
+        let (emitter, received) = emitter();
+
+        guarded(emitter, "x", async {}).await.unwrap();
+
+        assert!(received.try_iter().next().is_none());
+    }
+
+    fn account_statuses(events: impl IntoIterator<Item = Event>) -> Vec<(String, AccountStatus)> {
+        events
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::AccountStatus { name, status } => Some((name, status)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn an_account_check_that_panics_ends_its_checking_state_as_a_problem() {
+        let (emitter, received) = emitter();
+
+        spawn_account_check(&emitter, "gdrive".to_owned(), async {
+            panic!("boom");
+        })
+        .await
+        .unwrap();
+
+        let events: Vec<Event> = received.try_iter().collect();
+        assert_eq!(
+            account_statuses(events),
+            [(
+                "gdrive".to_owned(),
+                AccountStatus::Problem("The check stopped unexpectedly.".to_owned())
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_account_check_that_finishes_reports_only_its_status() {
+        let (emitter, received) = emitter();
+
+        spawn_account_check(&emitter, "gdrive".to_owned(), async {
+            AccountStatus::SignedIn
+        })
+        .await
+        .unwrap();
+
+        let events: Vec<Event> = received.try_iter().collect();
+        assert_eq!(
+            account_statuses(events),
+            [("gdrive".to_owned(), AccountStatus::SignedIn)]
+        );
+    }
+
+    #[tokio::test]
+    async fn aborting_a_guarded_handler_stops_it_without_an_error() {
+        let (emitter, received) = emitter();
+        let (finished_tx, mut finished) = oneshot::channel::<()>();
+        let job = guarded(emitter, "x", async move {
+            let _keep = finished_tx;
+            std::future::pending::<()>().await;
+        });
+        tokio::task::yield_now().await;
+
+        job.abort();
+        let _ = job.await;
+
+        assert!(matches!(
+            finished.try_recv(),
+            Err(oneshot::error::TryRecvError::Closed)
+        ));
+        assert!(received.try_iter().next().is_none());
+    }
+
+    #[test]
+    fn sending_to_a_stopped_backend_reports_the_worker_stopped_once() {
+        let (commands, receiver) = unbounded_channel();
+        let (_events_tx, events) = mpsc::channel();
+        drop(receiver);
+        let backend = Backend {
+            commands,
+            events,
+            thread: None,
+            stopped: AtomicBool::new(false),
+        };
+
+        backend.send(Command::SyncAll);
+
+        assert_eq!(
+            failures(backend.events()),
+            ["syncfast's background worker stopped. Restart syncfast."]
+        );
+        assert!(backend.events().is_empty());
+    }
 
     #[test]
     fn poll_is_fast_with_a_visible_round_calm_when_visible_and_rare_when_hidden() {

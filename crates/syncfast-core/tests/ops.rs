@@ -603,6 +603,24 @@ async fn pausing_and_resuming_change_the_config_and_the_status() {
 }
 
 #[tokio::test]
+async fn a_sync_the_watcher_could_not_watch_says_real_time_sync_is_off() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs().await;
+    let file = bed.ops.paths.watch_limit_file();
+    fs::write(&file, r#"{"pairs":["docs"]}"#).unwrap();
+
+    let limited = bed.ops.status().await.unwrap();
+    fs::remove_file(&file).unwrap();
+    let watched = bed.ops.status().await.unwrap();
+
+    assert_eq!(
+        limited[0].notice,
+        Some("Real-time sync is off: raise fs.inotify.max_user_watches.")
+    );
+    assert_eq!(watched[0].notice, None);
+}
+
+#[tokio::test]
 async fn removing_a_sync_takes_it_out_and_unknown_ids_are_not_found() {
     let Some(bed) = bed() else { return };
     bed.synced_docs().await;

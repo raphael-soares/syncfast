@@ -2,23 +2,25 @@
 //! folder checks and the files the confirmation leaves for the next round.
 //! The backend runs these and turns the results into events.
 
+use std::fs::File;
 use std::path::Path;
+use std::time::Duration;
 
 use jiff::Zoned;
-use syncfast_core::bisync::ReviewKind;
+use syncfast_core::bisync::{Fault, ReviewKind, fault_of};
 use syncfast_core::config::{Config, Pair, expand_tilde, split_remote};
 use syncfast_core::network::NetworkManager;
 use syncfast_core::notify::NativeNotifier;
 use syncfast_core::paths::Paths;
 use syncfast_core::preview::{Preview, PreviewError, preview};
-use syncfast_core::rclone::Rclone;
+use syncfast_core::rclone::{Rclone, RcloneError};
 use syncfast_core::run::RunEnv;
-use syncfast_core::state::{ConfirmMarker, GateKind, State};
+use syncfast_core::state::{ConfirmMarker, Gate, GateKind, State, lock_pair};
 use tokio::sync::oneshot;
 
-use crate::ui::RemoteRow;
 use crate::ui::account_sheet::{AccountMode, ConnectRequest, Secret};
 use crate::ui::add_sync::{LocalFacts, LocalStatus, NewSync};
+use crate::ui::{AccountStatus, RemoteRow};
 
 /// Why a preview did not come out.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,23 +105,25 @@ pub async fn create_local(home: &Path, typed: &str) -> Result<(), String> {
 pub async fn create_sync(paths: &Paths, rclone: &Rclone, new: NewSync) -> Result<(), String> {
     let mut config = Config::load(paths).await.map_err(|e| e.to_string())?;
     let id = new.id.clone();
-    config
-        .add_pair(Pair {
-            id: new.id,
-            name: new.name,
-            local: new.local,
-            remote: new.remote,
-            enabled: true,
-            presets: new.presets,
-            filters: new.filters,
-        })
-        .map_err(|e| e.to_string())?;
+    let pair = Pair {
+        id: new.id,
+        name: new.name,
+        local: new.local,
+        remote: new.remote,
+        enabled: true,
+        presets: new.presets,
+        filters: new.filters,
+    };
+    config.add_pair(pair.clone()).map_err(|e| e.to_string())?;
     let accounts = rclone.listremotes().await.map_err(|e| e.to_string())?;
     let validation = config.validate(paths, &accounts);
     if let Some(error) = validation.errors.iter().find(|error| error.pair_id == id) {
         return Err(error.message.clone());
     }
-    config.save(paths).await.map_err(|e| e.to_string())
+    Config::edit(paths, |config| config.add_pair(pair))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
 }
 
 /// The dry run behind the Review sheet.
@@ -190,7 +194,9 @@ pub async fn connect(
 ) -> Result<bool, String> {
     let secret = request.client_secret.expose();
     let child = match &request.mode {
-        AccountMode::Add => rclone.create_drive_remote(&request.name, &request.client_id, secret),
+        AccountMode::Add | AccountMode::Rename { .. } => {
+            rclone.create_drive_remote(&request.name, &request.client_id, secret)
+        }
         AccountMode::Update { name } | AccountMode::ChangeClientId { name } => {
             rclone.update_drive_credentials(name, &request.client_id, secret)
         }
@@ -249,6 +255,192 @@ pub async fn clear_auth_gates(paths: &Paths, account: &str) -> Result<Vec<String
         cleared.push(pair.id.clone());
     }
     Ok(cleared)
+}
+
+const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+const NO_ABOUT: &str = "doesn't support about";
+
+/// What `rclone about` says of the sign-in of `name`. `online` tells why a
+/// failure that is not a lost sign-in happened: no network, or something
+/// the user has to read.
+pub async fn check_account(rclone: &Rclone, online: bool, name: &str) -> AccountStatus {
+    let detail = match tokio::time::timeout(CHECK_TIMEOUT, rclone.check_remote(name)).await {
+        Ok(Ok(())) => return AccountStatus::SignedIn,
+        Ok(Err(RcloneError::Failed { detail, .. })) => detail,
+        Ok(Err(other)) => other.to_string(),
+        Err(_) => {
+            return AccountStatus::Problem(format!(
+                "No answer from the account within {} seconds.",
+                CHECK_TIMEOUT.as_secs()
+            ));
+        }
+    };
+    if detail.contains(NO_ABOUT) {
+        return AccountStatus::SignedIn;
+    }
+    if fault_of(&detail) == Some(Fault::Auth) {
+        AccountStatus::SignedOut
+    } else if online {
+        AccountStatus::Problem(detail)
+    } else {
+        AccountStatus::Offline
+    }
+}
+
+/// How long removing or renaming an account waits for a running round of
+/// its syncs.
+pub const ACCOUNT_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
+const SYNC_RUNNING: &str = "A sync on this account is running. Try again when it finishes.";
+
+/// The locks of `ids`, so no round runs while their states change.
+async fn lock_syncs(paths: &Paths, ids: &[String], timeout: Duration) -> Result<Vec<File>, String> {
+    let mut locks = Vec::with_capacity(ids.len());
+    for id in ids {
+        match lock_pair(paths, id, timeout).await {
+            Ok(Some(lock)) => locks.push(lock),
+            Ok(None) => return Err(SYNC_RUNNING.to_owned()),
+            Err(err) => return Err(err.to_string()),
+        }
+    }
+    Ok(locks)
+}
+
+/// Takes `name` out of rclone's config; returns its syncs' ids, which owe a
+/// reviewed first run if an account of that name returns.
+///
+/// # Errors
+/// A sync is running, rclone fails, or a config or state file fails.
+pub async fn remove_account(
+    paths: &Paths,
+    rclone: &Rclone,
+    name: &str,
+    lock_timeout: Duration,
+) -> Result<Vec<String>, String> {
+    let config = Config::load(paths).await.map_err(|e| e.to_string())?;
+    let ids = pair_ids_on(&config, name);
+    let _locks = lock_syncs(paths, &ids, lock_timeout).await?;
+    rclone
+        .delete_remote(name)
+        .await
+        .map_err(|e| e.to_string())?;
+    for id in &ids {
+        let mut state = State::load(paths, id).await.map_err(|e| e.to_string())?;
+        state.applied_filters_hash = None;
+        state.save(paths, id).await.map_err(|e| e.to_string())?;
+        ConfirmMarker::remove(paths, id)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(ids)
+}
+
+fn pair_ids_on(config: &Config, account: &str) -> Vec<String> {
+    config
+        .pairs()
+        .iter()
+        .filter(|pair| split_remote(&pair.remote).map(|(name, _)| name) == Some(account))
+        .map(|pair| pair.id.clone())
+        .collect()
+}
+
+/// Moves the syncs of `from` to `to` and holds each for a reviewed first run,
+/// as bisync's listings are named after the remote. Returns their ids.
+///
+/// # Errors
+/// A sync on `from` is running (nothing changes), or a file fails.
+pub async fn rename_account(
+    paths: &Paths,
+    from: &str,
+    to: &str,
+    lock_timeout: Duration,
+) -> Result<Vec<String>, String> {
+    let config = Config::load(paths).await.map_err(|e| e.to_string())?;
+    let _locks = lock_syncs(paths, &pair_ids_on(&config, from), lock_timeout).await?;
+    let moved = Config::edit(paths, |config| config.rename_account(from, to))
+        .await
+        .map_err(|e| e.to_string())?;
+    let held = GateKind::NeedsReviewFirstRun;
+    for id in &moved {
+        let mut state = State::load(paths, id).await.map_err(|e| e.to_string())?;
+        state.gate = Some(Gate {
+            kind: held,
+            since: jiff::Timestamp::now(),
+            detail: format!("Account renamed to {to}."),
+            fault: None,
+        });
+        state.notified.retain(|key| *key != held.notified_key());
+        state.save(paths, id).await.map_err(|e| e.to_string())?;
+        ConfirmMarker::remove(paths, id)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(moved)
+}
+
+/// Signs in. A new account that fails or is cancelled leaves no remote
+/// behind; changed credentials are checked with `rclone about`.
+///
+/// # Errors
+/// As [`connect`], or Google Drive refuses the account.
+pub async fn sign_in(
+    rclone: &Rclone,
+    request: &ConnectRequest,
+    cancel: oneshot::Receiver<()>,
+) -> Result<bool, String> {
+    match &request.mode {
+        AccountMode::Add | AccountMode::Rename { .. } => {
+            let before = rclone.listremotes().await.ok();
+            let result = connect(rclone, request, cancel).await;
+            if !matches!(result, Ok(true)) {
+                discard_new_remote(rclone, &request.name, before.as_deref()).await;
+            }
+            result
+        }
+        AccountMode::Update { name } | AccountMode::ChangeClientId { name } => {
+            let signed_in = connect(rclone, request, cancel).await?;
+            if signed_in {
+                verify_signed_in(rclone, name).await?;
+            }
+            Ok(signed_in)
+        }
+    }
+}
+
+/// Deletes `name` when it exists now and `before` shows it did not exist
+/// before the sign-in started. Without `before` nothing is known: it stays.
+async fn discard_new_remote(rclone: &Rclone, name: &str, before: Option<&[String]>) {
+    let Some(before) = before else {
+        return;
+    };
+    if before.iter().any(|existing| existing == name) {
+        return;
+    }
+    let exists = rclone
+        .listremotes()
+        .await
+        .is_ok_and(|now| now.iter().any(|existing| existing == name));
+    if exists && let Err(err) = rclone.delete_remote(name).await {
+        log::warn!("cannot remove the unfinished account \"{name}\": {err}");
+    }
+}
+
+/// After a sign-in with new credentials: an account Google Drive refuses
+/// (the API is off in the project, the client is not allowed) is reported
+/// with Google's message. The new credentials and token stay: they are a
+/// consistent pair, and work once the refusal is fixed on Google's side. A
+/// lost sign-in or no answer in time is not a refusal.
+async fn verify_signed_in(rclone: &Rclone, name: &str) -> Result<(), String> {
+    let detail = match tokio::time::timeout(CHECK_TIMEOUT, rclone.check_remote(name)).await {
+        Ok(Ok(())) | Err(_) => return Ok(()),
+        Ok(Err(RcloneError::Failed { detail, .. })) => detail,
+        Ok(Err(other)) => other.to_string(),
+    };
+    if fault_of(&detail) == Some(Fault::Auth) {
+        return Ok(());
+    }
+    Err(format!(
+        "Signed in, but Google Drive refused the account: {detail}"
+    ))
 }
 
 #[cfg(test)]
@@ -399,6 +591,7 @@ mod tests {
                 kind,
                 since: jiff::Timestamp::UNIX_EPOCH,
                 detail: String::new(),
+                fault: None,
             })
         };
         for (id, kind) in [
@@ -646,5 +839,480 @@ mod tests {
         let result = run_preview(&paths, &rclone, "dev", ReviewKind::Resync).await;
 
         assert_eq!(result, Err(PreviewFailure::Busy));
+    }
+
+    fn args_logged(root: &Path) -> Vec<String> {
+        std::fs::read_to_string(root.join("args.txt"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn removing_an_account_deletes_the_remote_and_names_the_syncs_that_were_on_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        let local = dir.path().join("l");
+        write_config(
+            &paths,
+            &format!(
+                "version = 1\n{}{}{}",
+                pair_toml("a", &local.join("a"), "gdrive:a"),
+                pair_toml("b", &local.join("b"), "work:b"),
+                pair_toml("c", &local.join("c"), "gdrive:"),
+            ),
+        );
+        let rclone = fake_rclone(dir.path(), "exit 0");
+
+        let ids = remove_account(&paths, &rclone, "gdrive", ACCOUNT_LOCK_TIMEOUT)
+            .await
+            .unwrap();
+
+        assert_eq!(ids, ["a", "c"]);
+        assert_eq!(args_logged(dir.path()), ["config delete gdrive"]);
+    }
+
+    #[tokio::test]
+    async fn a_failed_removal_names_nothing_and_reports_rclone() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        write_config(&paths, "version = 1\n");
+        let rclone = fake_rclone(dir.path(), "echo nope >&2; exit 1");
+
+        let error = remove_account(&paths, &rclone, "gdrive", ACCOUNT_LOCK_TIMEOUT)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, "rclone config delete failed: nope");
+    }
+
+    #[tokio::test]
+    async fn removing_an_account_forgets_what_its_syncs_applied_and_confirmed() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        let local = dir.path().join("l");
+        write_config(
+            &paths,
+            &format!(
+                "version = 1\n{}{}",
+                pair_toml("a", &local.join("a"), "gdrive:a"),
+                pair_toml("b", &local.join("b"), "work:b"),
+            ),
+        );
+        for id in ["a", "b"] {
+            State {
+                applied_filters_hash: Some("applied".into()),
+                ..State::default()
+            }
+            .save(&paths, id)
+            .await
+            .unwrap();
+            confirm_review(&paths, id, ReviewKind::Resync, "hash".into())
+                .await
+                .unwrap();
+        }
+        let rclone = fake_rclone(dir.path(), "exit 0");
+
+        remove_account(&paths, &rclone, "gdrive", ACCOUNT_LOCK_TIMEOUT)
+            .await
+            .unwrap();
+
+        let removed = State::load(&paths, "a").await.unwrap();
+        assert_eq!(removed.applied_filters_hash, None);
+        assert_eq!(ConfirmMarker::load(&paths, "a").await.unwrap(), None);
+        let other = State::load(&paths, "b").await.unwrap();
+        assert_eq!(other.applied_filters_hash.as_deref(), Some("applied"));
+        assert!(ConfirmMarker::load(&paths, "b").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn removing_an_account_with_a_running_sync_leaves_the_remote_and_the_states() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        let local = dir.path().join("l");
+        write_config(
+            &paths,
+            &format!(
+                "version = 1\n{}",
+                pair_toml("a", &local.join("a"), "gdrive:a")
+            ),
+        );
+        State {
+            applied_filters_hash: Some("applied".into()),
+            ..State::default()
+        }
+        .save(&paths, "a")
+        .await
+        .unwrap();
+        let _round = try_lock_pair(&paths, "a").unwrap().unwrap();
+        let rclone = fake_rclone(dir.path(), "exit 0");
+
+        let error = remove_account(&paths, &rclone, "gdrive", Duration::from_millis(150))
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            "A sync on this account is running. Try again when it finishes."
+        );
+        assert!(args_logged(dir.path()).is_empty());
+        let state = State::load(&paths, "a").await.unwrap();
+        assert_eq!(state.applied_filters_hash.as_deref(), Some("applied"));
+    }
+
+    #[tokio::test]
+    async fn renaming_signs_in_with_config_create_under_the_new_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let rclone = fake_rclone(dir.path(), "exit 0");
+        let (_keep, cancel) = oneshot::channel();
+        let mode = AccountMode::Rename {
+            from: "gdrive".into(),
+        };
+
+        let done = connect(&rclone, &request(mode, "personal"), cancel)
+            .await
+            .unwrap();
+
+        assert!(done);
+        assert_eq!(
+            args_logged(dir.path()),
+            [
+                "config create personal drive client_id=id.apps client_secret=s3cret scope=drive config_is_local=true"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_check_that_works_is_signed_in_and_asks_about_the_remote() {
+        let dir = tempfile::tempdir().unwrap();
+        let rclone = fake_rclone(dir.path(), "exit 0");
+
+        let status = check_account(&rclone, true, "gdrive").await;
+
+        assert_eq!(status, AccountStatus::SignedIn);
+        assert_eq!(args_logged(dir.path()), ["about gdrive: --json"]);
+    }
+
+    #[tokio::test]
+    async fn a_lost_sign_in_is_signed_out_whether_or_not_the_computer_is_online() {
+        let dir = tempfile::tempdir().unwrap();
+        let rclone = fake_rclone(dir.path(), "echo 'oauth2: cannot fetch token' >&2; exit 1");
+
+        for online in [true, false] {
+            let status = check_account(&rclone, online, "gdrive").await;
+            assert_eq!(status, AccountStatus::SignedOut, "online={online}");
+        }
+    }
+
+    #[tokio::test]
+    async fn another_failure_is_offline_without_a_network_and_a_problem_with_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let detail = "Error 403: Google Drive API has not been used in project 1";
+        let rclone = fake_rclone(dir.path(), &format!("echo '{detail}' >&2; exit 1"));
+
+        let offline = check_account(&rclone, false, "gdrive").await;
+        let online = check_account(&rclone, true, "gdrive").await;
+
+        assert_eq!(offline, AccountStatus::Offline);
+        assert_eq!(online, AccountStatus::Problem(detail.to_owned()));
+    }
+
+    #[tokio::test]
+    async fn a_remote_type_without_about_counts_as_signed_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let rclone = fake_rclone(
+            dir.path(),
+            "echo \"NOTICE: Failed to about: http://x/ doesn't support about\" >&2; exit 1",
+        );
+
+        let status = check_account(&rclone, true, "web").await;
+
+        assert_eq!(status, AccountStatus::SignedIn);
+    }
+
+    #[tokio::test]
+    async fn renaming_an_account_moves_its_syncs_holds_them_for_review_and_drops_their_markers() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        let local = dir.path().join("l");
+        write_config(
+            &paths,
+            &format!(
+                "version = 1\n{}{}{}",
+                pair_toml("a", &local.join("a"), "gdrive:a"),
+                pair_toml("b", &local.join("b"), "work:b"),
+                pair_toml("c", &local.join("c"), "gdrive:"),
+            ),
+        );
+        for (id, kind) in [
+            ("a", GateKind::AuthError),
+            ("b", GateKind::AuthError),
+            ("c", GateKind::NeedsReviewFirstRun),
+        ] {
+            State {
+                gate: Some(Gate {
+                    kind,
+                    since: jiff::Timestamp::UNIX_EPOCH,
+                    detail: String::new(),
+                    fault: None,
+                }),
+                notified: vec![
+                    GateKind::NeedsReviewFirstRun.notified_key(),
+                    "failures".into(),
+                ],
+                ..State::default()
+            }
+            .save(&paths, id)
+            .await
+            .unwrap();
+            confirm_review(&paths, id, ReviewKind::Resync, "hash".into())
+                .await
+                .unwrap();
+        }
+
+        let moved = rename_account(&paths, "gdrive", "personal", ACCOUNT_LOCK_TIMEOUT)
+            .await
+            .unwrap();
+
+        assert_eq!(moved, ["a", "c"]);
+        let config = Config::load(&paths).await.unwrap();
+        let remotes: Vec<_> = config.pairs().iter().map(|p| p.remote.as_str()).collect();
+        assert_eq!(remotes, ["personal:a", "work:b", "personal:"]);
+        for id in ["a", "c"] {
+            let state = State::load(&paths, id).await.unwrap();
+            let gate = state.gate.unwrap();
+            assert_eq!(gate.kind, GateKind::NeedsReviewFirstRun, "{id}");
+            assert_eq!(gate.detail, "Account renamed to personal.");
+            assert_eq!(state.notified, ["failures"], "{id}");
+            assert_eq!(ConfirmMarker::load(&paths, id).await.unwrap(), None, "{id}");
+        }
+        let untouched = State::load(&paths, "b").await.unwrap();
+        assert_eq!(untouched.gate.map(|g| g.kind), Some(GateKind::AuthError));
+        assert!(ConfirmMarker::load(&paths, "b").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn renaming_an_account_with_a_running_sync_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        let local = dir.path().join("l");
+        let config = format!(
+            "version = 1\n{}{}",
+            pair_toml("a", &local.join("a"), "gdrive:a"),
+            pair_toml("b", &local.join("b"), "gdrive:b"),
+        );
+        write_config(&paths, &config);
+        State::default().save(&paths, "a").await.unwrap();
+        let _round = try_lock_pair(&paths, "b").unwrap().unwrap();
+
+        let error = rename_account(&paths, "gdrive", "personal", Duration::from_millis(150))
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            "A sync on this account is running. Try again when it finishes."
+        );
+        assert_eq!(Config::load(&paths).await.unwrap().to_toml(), config);
+        assert_eq!(State::load(&paths, "a").await.unwrap().gate, None);
+    }
+
+    const REFUSED: &str = "Error 403: Google Drive API has not been used in project 1";
+
+    /// A Drive account whose `about` runs `about`.
+    fn drive_account(root: &Path, about: &str) -> Rclone {
+        fake_rclone(
+            root,
+            &format!("case \"$1 $2\" in\n  \"about gdrive:\") {about} ;;\nesac"),
+        )
+    }
+
+    async fn sign_in_once(rclone: &Rclone, mode: AccountMode) -> Result<bool, String> {
+        let (_keep, cancel) = oneshot::channel();
+        sign_in(rclone, &request(mode, "gdrive"), cancel).await
+    }
+
+    fn update() -> AccountMode {
+        AccountMode::Update {
+            name: "gdrive".into(),
+        }
+    }
+
+    const SIGN_IN: &str = "config update gdrive client_id=id.apps client_secret=s3cret";
+
+    #[tokio::test]
+    async fn credentials_google_drive_refuses_are_reported_and_kept_without_a_second_update() {
+        for mode in [
+            update(),
+            AccountMode::ChangeClientId {
+                name: "gdrive".into(),
+            },
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let rclone = drive_account(dir.path(), &format!("echo '{REFUSED}' >&2; exit 1"));
+
+            let error = sign_in_once(&rclone, mode).await.unwrap_err();
+
+            assert_eq!(
+                error,
+                format!("Signed in, but Google Drive refused the account: {REFUSED}")
+            );
+            assert_eq!(
+                args_logged(dir.path()),
+                [SIGN_IN, "about gdrive: --json"],
+                "only the sign-in writes credentials"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_account_that_checks_out_after_the_sign_in_is_connected() {
+        let dir = tempfile::tempdir().unwrap();
+        let rclone = drive_account(dir.path(), "exit 0");
+
+        let done = sign_in_once(&rclone, update()).await.unwrap();
+
+        assert!(done);
+        assert_eq!(args_logged(dir.path()), [SIGN_IN, "about gdrive: --json"]);
+    }
+
+    #[tokio::test]
+    async fn a_lost_sign_in_after_the_sign_in_is_not_a_refusal() {
+        let dir = tempfile::tempdir().unwrap();
+        let rclone = drive_account(
+            dir.path(),
+            "echo \"couldn't fetch token: invalid_client\" >&2; exit 1",
+        );
+
+        let done = sign_in_once(&rclone, update()).await.unwrap();
+
+        assert!(done);
+        assert_eq!(args_logged(dir.path()).len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_failed_sign_in_never_runs_the_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let rclone = fake_rclone(dir.path(), "echo denied >&2; exit 1");
+
+        let error = sign_in_once(&rclone, update()).await.unwrap_err();
+
+        assert_eq!(error, "denied");
+        assert_eq!(args_logged(dir.path()), [SIGN_IN]);
+    }
+
+    #[tokio::test]
+    async fn adding_an_account_is_not_checked_afterwards() {
+        let dir = tempfile::tempdir().unwrap();
+        let rclone = fake_rclone(dir.path(), "exit 0");
+        let (_keep, cancel) = oneshot::channel();
+
+        let done = sign_in(&rclone, &request(AccountMode::Add, "trabalho"), cancel)
+            .await
+            .unwrap();
+
+        assert!(done);
+        assert_eq!(
+            args_logged(dir.path()),
+            [
+                "listremotes",
+                "config create trabalho drive client_id=id.apps client_secret=s3cret scope=drive config_is_local=true",
+            ]
+        );
+    }
+
+    /// A rclone that lists `gdrive` and, once `config create` ran,
+    /// `trabalho`; `create` runs `on_create` after leaving the mark.
+    fn creating_rclone(root: &Path, on_create: &str) -> Rclone {
+        let mark = root.join("created");
+        fake_rclone(
+            root,
+            &format!(
+                "case \"$1\" in\n  listremotes) if [ -f '{mark}' ]; then printf 'gdrive:\\ntrabalho:\\n'; else printf 'gdrive:\\n'; fi ;;\n  config) case \"$2\" in\n    create) touch '{mark}'; {on_create} ;;\n    delete) rm -f '{mark}' ;;\n  esac ;;\nesac",
+                mark = mark.display()
+            ),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_failed_add_removes_the_remote_it_left_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let rclone = creating_rclone(dir.path(), "echo boom >&2; exit 1");
+        let (_keep, cancel) = oneshot::channel();
+
+        let error = sign_in(&rclone, &request(AccountMode::Add, "trabalho"), cancel)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, "boom");
+        let logged = args_logged(dir.path());
+        assert_eq!(logged.first().map(String::as_str), Some("listremotes"));
+        assert_eq!(
+            logged.last().map(String::as_str),
+            Some("config delete trabalho")
+        );
+        assert!(!dir.path().join("created").exists());
+    }
+
+    #[tokio::test]
+    async fn a_failed_rename_removes_the_new_remote_and_keeps_the_old_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let rclone = creating_rclone(dir.path(), "echo boom >&2; exit 1");
+        let (_keep, cancel) = oneshot::channel();
+        let mode = AccountMode::Rename {
+            from: "gdrive".into(),
+        };
+
+        let error = sign_in(&rclone, &request(mode, "trabalho"), cancel)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, "boom");
+        let logged = args_logged(dir.path());
+        assert!(logged.contains(&"config delete trabalho".to_owned()));
+        assert!(!logged.contains(&"config delete gdrive".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_add_removes_the_remote_it_left_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let rclone = creating_rclone(dir.path(), "exec sleep 30");
+        let (cancel_tx, cancel) = oneshot::channel();
+        let request = request(AccountMode::Add, "trabalho");
+        let job = tokio::spawn(async move { sign_in(&rclone, &request, cancel).await });
+        while !dir.path().join("created").exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        cancel_tx.send(()).unwrap();
+        let done = job.await.unwrap().unwrap();
+
+        assert!(!done);
+        assert_eq!(
+            args_logged(dir.path()).last().map(String::as_str),
+            Some("config delete trabalho")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_add_never_deletes_a_remote_that_existed_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let rclone = fake_rclone(
+            dir.path(),
+            "case \"$1\" in listremotes) printf 'gdrive:\\ntrabalho:\\n' ;; config) echo boom >&2; exit 1 ;; esac",
+        );
+        let (_keep, cancel) = oneshot::channel();
+
+        let error = sign_in(&rclone, &request(AccountMode::Add, "trabalho"), cancel)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, "boom");
+        assert!(
+            args_logged(dir.path())
+                .iter()
+                .all(|line| !line.starts_with("config delete"))
+        );
     }
 }

@@ -35,7 +35,9 @@ fn pair(id: &str, gate: Option<GateKind>) -> PairRow {
         last_success: None,
         progress: None,
         gate_detail: String::new(),
+        gate_fault: None,
         consecutive_failures: 0,
+        realtime_off: false,
         presets: Vec::new(),
         filters: Vec::new(),
     }
@@ -44,6 +46,7 @@ fn pair(id: &str, gate: Option<GateKind>) -> PairRow {
 fn found(hash: &str) -> Preview {
     Preview {
         filters_hash: hash.into(),
+        excluded_repos: Vec::new(),
         summary: RunSummary::default(),
     }
 }
@@ -401,4 +404,31 @@ fn giving_an_account_its_own_client_id_also_asks_for_the_saved_client() {
             Command::LoadCredentials("gdrive".into())
         ]
     );
+}
+
+#[test]
+fn renaming_an_account_asks_for_the_saved_client_of_the_old_name() {
+    let mut sheets = sheets();
+
+    let commands = sheets.apply(&Action::RenameAccount("gdrive".into()), &around(&[], false));
+
+    assert_eq!(
+        commands,
+        [
+            Command::LoadRemotes,
+            Command::LoadCredentials("gdrive".into())
+        ]
+    );
+    assert!(sheets.is_open());
+}
+
+#[test]
+fn a_finished_rename_closes_the_sheet_even_on_the_welcome_screen() {
+    let mut sheets = sheets();
+    sheets.apply(&Action::RenameAccount("gdrive".into()), &around(&[], true));
+
+    let commands = sheets.handle_event(&Event::Connected(Ok("personal".into())));
+
+    assert!(commands.is_empty());
+    assert!(!sheets.is_open());
 }

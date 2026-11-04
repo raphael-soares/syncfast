@@ -32,7 +32,7 @@ async fn find_pair(paths: &Paths, id: &str) -> Result<Pair, String> {
 /// be listed.
 pub async fn scan_conflicts(paths: &Paths, id: &str) -> Result<Vec<Conflict>, String> {
     let pair = find_pair(paths, id).await?;
-    let matcher = DirMatcher::new(&filters::render(&pair));
+    let matcher = DirMatcher::new(&filters::render_live(&pair).await.text);
     let local = pair.local;
     let scanned = tokio::task::spawn_blocking(move || {
         conflicts::list_conflicts(&local, &matcher).map_err(|err| (local, err))
@@ -85,7 +85,10 @@ pub async fn test_filters(
     let folder = local
         .to_str()
         .ok_or_else(|| "the folder's path is not valid text".to_owned())?;
-    let rendered = filters::render(&Pair {
+    let filters::Rendered {
+        text: rendered,
+        git_repos,
+    } = filters::render_live(&Pair {
         id: "test".to_owned(),
         name: "test".to_owned(),
         local: local.to_owned(),
@@ -93,7 +96,8 @@ pub async fn test_filters(
         enabled: true,
         presets: presets.to_vec(),
         filters: rules.to_vec(),
-    });
+    })
+    .await;
     let dir = paths.state_dir().join("filters");
     tokio::fs::create_dir_all(&dir)
         .await
@@ -111,7 +115,7 @@ pub async fn test_filters(
         log::warn!("cannot delete {}: {err}", file.display());
     }
     let (all, kept) = listed?;
-    Ok(filters::summarize_exclusions(&all, &kept))
+    Ok(filters::summarize_exclusions(&all, &kept, git_repos))
 }
 
 async fn list_both(folder: &str, filters: &Path) -> Result<(Vec<String>, Vec<String>), String> {
@@ -137,11 +141,14 @@ pub async fn write_filters(
     presets: &[String],
     rules: &[String],
 ) -> Result<(), String> {
-    let mut config = Config::load(paths).await.map_err(|err| err.to_string())?;
-    if !config.set_filters(id, presets, rules) {
-        return Err(format!("there is no sync with id \"{id}\""));
+    let found = Config::edit(paths, |config| config.set_filters(id, presets, rules))
+        .await
+        .map_err(|err| err.to_string())?;
+    if found {
+        Ok(())
+    } else {
+        Err(format!("there is no sync with id \"{id}\""))
     }
-    config.save(paths).await.map_err(|err| err.to_string())
 }
 
 /// After the filters changed: see [`ops::after_filters_saved`]. Returns whether
@@ -160,11 +167,14 @@ pub async fn after_filters_saved(paths: &Paths, id: &str) -> Result<bool, String
 /// # Errors
 /// The config cannot be read or written, or there is no such sync.
 pub async fn remove_from_config(paths: &Paths, id: &str) -> Result<(), String> {
-    let mut config = Config::load(paths).await.map_err(|err| err.to_string())?;
-    if !config.remove_pair(id) {
-        return Err(format!("there is no sync with id \"{id}\""));
+    let found = Config::edit(paths, |config| config.remove_pair(id))
+        .await
+        .map_err(|err| err.to_string())?;
+    if found {
+        Ok(())
+    } else {
+        Err(format!("there is no sync with id \"{id}\""))
     }
-    config.save(paths).await.map_err(|err| err.to_string())
 }
 
 #[cfg(test)]
@@ -203,6 +213,7 @@ mod tests {
                 kind,
                 since: Timestamp::UNIX_EPOCH,
                 detail: String::new(),
+                fault: None,
             }),
             ..State::default()
         };
