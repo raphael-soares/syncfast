@@ -14,14 +14,34 @@ jobs:
       contents: write
       pull-requests: write
     outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
+      release_created: ${{ steps.tag.outputs.release_created || steps.release.outputs.release_created }}
+      tag_name: ${{ steps.tag.outputs.tag_name || steps.release.outputs.tag_name }}
     steps:
       - id: release
         uses: googleapis/release-please-action@v5.0.0
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+      - id: merge
+        if: steps.release.outputs.release_created != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          number=$(gh pr list --repo "$GITHUB_REPOSITORY" --base main --state open \
+            --label 'autorelease: pending' --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh pr merge "$number" --repo "$GITHUB_REPOSITORY" --squash
+            echo "merged=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - id: tag
+        if: steps.merge.outputs.merged == 'true'
+        uses: googleapis/release-please-action@v5.0.0
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          skip-github-pull-request: true
 
   flatpak:
     needs: release-please
