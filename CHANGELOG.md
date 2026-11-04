@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/raphael-soares/syncfast/compare/v0.3.3...v0.4.0) (2026-11-04)
+
+
+### Features
+
+* git_repos preset, account management and errors the user can act on ([#46](https://github.com/raphael-soares/syncfast/issues/46)) ([56dec61](https://github.com/raphael-soares/syncfast/commit/56dec61ea8e891613f2b47d143edd464539e71fd))
+
 ## [0.3.3](https://github.com/raphael-soares/syncfast/compare/v0.3.2...v0.3.3) (2026-11-04)
 
 
