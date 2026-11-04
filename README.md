@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/screenshot.png" alt="The syncfast window showing a sync waiting for review" width="720">
+  <img src="assets/screenshot.png" alt="The syncfast window with four syncs and the activity of one of them" width="720">
 </p>
 
 ## What it is
@@ -41,6 +41,11 @@ flatpak run io.github.raphael_soares.syncfast
 2. Add your Google Drive account with your own OAuth client ID ([how](docs/guide/google-drive.md)).
 3. Choose a folder on Drive and a folder on this computer, then **Create Sync**.
 4. Review the first sync. After you confirm it, syncfast keeps both sides equal by itself.
+
+<p align="center">
+  <img src="assets/screenshot-add-sync.png" alt="Adding a sync: account, folder on Drive, folder on this computer, filters and name" width="45%">
+  <img src="assets/screenshot-review.png" alt="A new sync waiting for the review of its first round" width="45%">
+</p>
 
 The full walkthrough is in [Getting started](docs/guide/getting-started.md). If something stops, see [Troubleshooting](docs/guide/troubleshooting.md) and [Privacy](docs/guide/privacy.md).
 
