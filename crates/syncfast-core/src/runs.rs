@@ -12,9 +12,17 @@ use crate::state::{DisplayStatus, LastRun, RUNS_KEPT, State};
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, Zoned};
 use serde::Deserialize;
+use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 
 /// How many messages of a round's log the expanded row shows.
 pub const MESSAGES_KEPT: usize = 200;
+
+/// How much of the end of a log is read; a round that logs more than this
+/// shows its last lines only.
+const LOG_BYTES_KEPT: u64 = 4 * 1024 * 1024;
+/// How much of the start of a log is searched for its first line, which
+/// carries the time the round started.
+const LOG_HEAD_BYTES: u64 = 4096;
 
 /// rclone's exit code for a failure that is not critical. A round that did
 /// not finish and whose exit code was not kept is classified as this one.
@@ -148,6 +156,43 @@ async fn log_names(runs: &Path) -> Vec<String> {
     names
 }
 
+/// The log's text. Past [`LOG_BYTES_KEPT`] it is the first line (for the
+/// start time) and the last complete lines.
+async fn read_log(path: &Path) -> std::io::Result<String> {
+    let mut file = tokio::fs::File::open(path).await?;
+    let length = file.metadata().await?.len();
+    let mut bytes = Vec::new();
+    if length <= LOG_BYTES_KEPT {
+        file.read_to_end(&mut bytes).await?;
+        return Ok(String::from_utf8_lossy(&bytes).into_owned());
+    }
+    (&mut file)
+        .take(LOG_HEAD_BYTES)
+        .read_to_end(&mut bytes)
+        .await?;
+    bytes.truncate(
+        bytes
+            .iter()
+            .position(|&byte| byte == b'\n')
+            .map_or(0, |end| end + 1),
+    );
+    // One byte before the window says whether its first line is whole.
+    let start = length - LOG_BYTES_KEPT - 1;
+    file.seek(std::io::SeekFrom::Start(start)).await?;
+    let mut tail = Vec::new();
+    file.read_to_end(&mut tail).await?;
+    let whole = tail.first() == Some(&b'\n');
+    let skip = if whole {
+        1
+    } else {
+        tail.iter()
+            .position(|&byte| byte == b'\n')
+            .map_or(tail.len(), |end| end + 1)
+    };
+    bytes.extend_from_slice(&tail[skip..]);
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 fn is_log_of(last: &LastRun, runs: &Path, name: &str) -> bool {
     last.log_file == runs.join(name)
 }
@@ -161,8 +206,8 @@ pub async fn load(paths: &Paths, pair_id: &str, running: bool) -> Arc<[RunEntry]
     let workdir: PathBuf = paths.bisync_workdir(pair_id);
     let mut entries = Vec::new();
     for (index, name) in log_names(&runs).await.iter().enumerate() {
-        let text = match tokio::fs::read(runs.join(name)).await {
-            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        let text = match read_log(&runs.join(name)).await {
+            Ok(text) => text,
             Err(err) => {
                 log::warn!("cannot read {}: {err}", runs.join(name).display());
                 continue;
@@ -331,6 +376,49 @@ mod tests {
         let runs = load(&paths, "p", true).await;
 
         assert_eq!(runs[0].status, DisplayStatus::UpToDate);
+    }
+
+    #[tokio::test]
+    async fn a_log_over_the_cap_still_parses_its_last_lines_and_keeps_its_start_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let filler = format!(
+            "{{\"time\":\"2026-11-03T13:46:00.000-03:00\",\"level\":\"info\",\"msg\":\"{}\"}}\n",
+            "x".repeat(1000)
+        );
+        let mut text = String::from(OK.lines().next().unwrap());
+        text.push('\n');
+        while u64::try_from(text.len()).unwrap() < LOG_BYTES_KEPT + 5000 {
+            text.push_str(&filler);
+        }
+        text.push_str(OK.lines().nth(1).unwrap());
+        text.push('\n');
+        write_log(&paths, "20261103-120000.jsonl", &text);
+
+        let runs = load(&paths, "p", false).await;
+
+        assert_eq!(runs[0].status, DisplayStatus::UpToDate);
+        assert_eq!(runs[0].messages.last().unwrap(), "Bisync successful");
+        assert_eq!(runs[0].messages.len(), MESSAGES_KEPT);
+        assert_eq!(runs[0].seconds, Some(3));
+    }
+
+    #[tokio::test]
+    async fn reading_a_log_over_the_cap_drops_the_line_the_window_cuts() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("log");
+        let line = "y".repeat(99) + "\n";
+        let count = usize::try_from(LOG_BYTES_KEPT).unwrap() / line.len() + 3;
+        std::fs::write(&file, line.repeat(count)).unwrap();
+
+        let text = read_log(&file).await.unwrap();
+
+        assert!(
+            text.lines().all(|row| row.len() == 99),
+            "a cut line was kept"
+        );
+        let cap = usize::try_from(LOG_BYTES_KEPT).unwrap();
+        assert!(text.len() <= cap + line.len());
     }
 
     #[tokio::test]
