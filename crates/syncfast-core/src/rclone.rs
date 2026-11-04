@@ -340,37 +340,6 @@ impl Rclone {
         ])
     }
 
-    /// Writes `client_id` and `client_secret` into the remote `name` without
-    /// a sign-in. Plain `config update` goes on to ask for a new token and
-    /// opens the browser; `--non-interactive` stops after saving the
-    /// options and leaves the saved token alone.
-    ///
-    /// # Errors
-    /// rclone cannot run or fails. The secret is never part of the error.
-    pub async fn set_drive_credentials(
-        &self,
-        name: &str,
-        client_id: &str,
-        client_secret: &str,
-    ) -> Result<(), RcloneError> {
-        self.output(
-            "config update",
-            [
-                "config".to_owned(),
-                "update".to_owned(),
-                name.to_owned(),
-                format!("client_id={client_id}"),
-                format!("client_secret={client_secret}"),
-                "--non-interactive".to_owned(),
-            ]
-            .map(OsString::from)
-            .to_vec(),
-            false,
-        )
-        .await?;
-        Ok(())
-    }
-
     fn config_child(&self, args: impl IntoIterator<Item = String>) -> Result<Child, RcloneError> {
         self.command(args)
             .stdout(Stdio::piped())
@@ -1072,58 +1041,5 @@ type = local
     #[test]
     fn short_calls_wait_sixty_seconds() {
         assert_eq!(SHORT_CALL_TIMEOUT, Duration::from_secs(60));
-    }
-
-    #[tokio::test]
-    async fn set_drive_credentials_passes_the_options_non_interactively_and_keeps_the_secret_out_of_errors()
-     {
-        let dir = tempfile::tempdir().unwrap();
-        let failing = fake_rclone(
-            dir.path(),
-            "printf '%s\\n' \"$@\" > \"$0.args\"; echo TOPSECRET >&2; exit 4",
-        );
-        let error = failing
-            .set_drive_credentials("mine", "the-id", "TOPSECRET")
-            .await
-            .unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            "rclone config update failed: exit code 4"
-        );
-        let recorded = std::fs::read_to_string(dir.path().join("fake-rclone.args")).unwrap();
-        assert_eq!(
-            recorded.lines().collect::<Vec<_>>(),
-            [
-                "config",
-                "update",
-                "mine",
-                "client_id=the-id",
-                "client_secret=TOPSECRET",
-                "--non-interactive",
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn set_drive_credentials_rewrites_a_signed_in_drive_remote_without_signing_in_again() {
-        let config = "[mine]\ntype = drive\nclient_id = old-id\nclient_secret = old-secret\ntoken = {\"access_token\":\"a\",\"refresh_token\":\"r\",\"expiry\":\"2020-01-01T00:00:00Z\"}\n";
-        let Some((rclone, dir)) = rclone_with(config) else {
-            return;
-        };
-
-        rclone
-            .set_drive_credentials("mine", "new-id", "new-secret")
-            .await
-            .unwrap();
-
-        let (id, secret) = rclone
-            .drive_client_credentials("mine")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!((id.as_str(), secret.as_str()), ("new-id", "new-secret"));
-        let saved = std::fs::read_to_string(dir.path().join("rclone.conf")).unwrap();
-        assert!(saved.contains("\"refresh_token\":\"r\""), "{saved}");
     }
 }

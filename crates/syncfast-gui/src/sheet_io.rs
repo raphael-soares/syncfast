@@ -343,7 +343,7 @@ pub async fn rename_account(paths: &Paths, from: &str, to: &str) -> Result<Vec<S
 /// - a sign-in that creates an account (`Add`, `Rename`) and fails or is
 ///   cancelled leaves no half-made remote behind;
 /// - one that changes the credentials of an account is checked with
-///   `rclone about`, and credentials Google Drive refuses are put back.
+///   `rclone about`, and an account Google Drive refuses is an error.
 ///
 /// # Errors
 /// As [`connect`], or the account is refused after signing in.
@@ -362,15 +362,9 @@ pub async fn sign_in(
             result
         }
         AccountMode::Update { name } | AccountMode::ChangeClientId { name } => {
-            let previous = rclone
-                .drive_client_credentials(name)
-                .await
-                .ok()
-                .flatten()
-                .map(|(id, secret)| (id, Secret::new(secret)));
             let signed_in = connect(rclone, request, cancel).await?;
             if signed_in {
-                verify_signed_in(rclone, name, previous).await?;
+                verify_signed_in(rclone, name).await?;
             }
             Ok(signed_in)
         }
@@ -396,16 +390,11 @@ async fn discard_new_remote(rclone: &Rclone, name: &str, before: Option<&[String
 }
 
 /// After a sign-in with new credentials: an account Google Drive refuses
-/// (the API is off in the project, the client is not allowed) gets its old
-/// client ID and secret back and the refusal is the error. A lost sign-in
-/// or no answer in time is not a refusal.
-///
-/// The token of the new sign-in stays: only the credentials go back.
-async fn verify_signed_in(
-    rclone: &Rclone,
-    name: &str,
-    previous: Option<(String, Secret)>,
-) -> Result<(), String> {
+/// (the API is off in the project, the client is not allowed) is reported
+/// with Google's message. The new credentials and token stay: they are a
+/// consistent pair, and work once the refusal is fixed on Google's side. A
+/// lost sign-in or no answer in time is not a refusal.
+async fn verify_signed_in(rclone: &Rclone, name: &str) -> Result<(), String> {
     let detail = match tokio::time::timeout(CHECK_TIMEOUT, rclone.check_remote(name)).await {
         Ok(Ok(())) | Err(_) => return Ok(()),
         Ok(Err(RcloneError::Failed { detail, .. })) => detail,
@@ -413,13 +402,6 @@ async fn verify_signed_in(
     };
     if fault_of(&detail) == Some(Fault::Auth) {
         return Ok(());
-    }
-    if let Some((id, secret)) = previous
-        && let Err(err) = rclone
-            .set_drive_credentials(name, &id, secret.expose())
-            .await
-    {
-        log::warn!("cannot put the old credentials of \"{name}\" back: {err}");
     }
     Err(format!(
         "Signed in, but Google Drive refused the account: {detail}"
@@ -995,14 +977,11 @@ mod tests {
 
     const REFUSED: &str = "Error 403: Google Drive API has not been used in project 1";
 
-    /// A Drive account whose saved client is `old-id` and whose `about`
-    /// runs `about`.
+    /// A Drive account whose `about` runs `about`.
     fn drive_account(root: &Path, about: &str) -> Rclone {
         fake_rclone(
             root,
-            &format!(
-                "case \"$1 $2\" in\n  \"config dump\") echo '{{\"gdrive\":{{\"type\":\"drive\",\"client_id\":\"old-id\",\"client_secret\":\"old-secret\"}}}}' ;;\n  \"about gdrive:\") {about} ;;\nesac"
-            ),
+            &format!("case \"$1 $2\" in\n  \"about gdrive:\") {about} ;;\nesac"),
         )
     }
 
@@ -1017,8 +996,10 @@ mod tests {
         }
     }
 
+    const SIGN_IN: &str = "config update gdrive client_id=id.apps client_secret=s3cret";
+
     #[tokio::test]
-    async fn credentials_google_drive_refuses_are_rolled_back_without_a_new_sign_in() {
+    async fn credentials_google_drive_refuses_are_reported_and_kept_without_a_second_update() {
         for mode in [
             update(),
             AccountMode::ChangeClientId {
@@ -1036,36 +1017,25 @@ mod tests {
             );
             assert_eq!(
                 args_logged(dir.path()),
-                [
-                    "config dump",
-                    "config update gdrive client_id=id.apps client_secret=s3cret",
-                    "about gdrive: --json",
-                    "config update gdrive client_id=old-id client_secret=old-secret --non-interactive",
-                ]
+                [SIGN_IN, "about gdrive: --json"],
+                "only the sign-in writes credentials"
             );
         }
     }
 
     #[tokio::test]
-    async fn an_account_that_checks_out_after_the_sign_in_keeps_its_new_credentials() {
+    async fn an_account_that_checks_out_after_the_sign_in_is_connected() {
         let dir = tempfile::tempdir().unwrap();
         let rclone = drive_account(dir.path(), "exit 0");
 
         let done = sign_in_once(&rclone, update()).await.unwrap();
 
         assert!(done);
-        assert_eq!(
-            args_logged(dir.path()),
-            [
-                "config dump",
-                "config update gdrive client_id=id.apps client_secret=s3cret",
-                "about gdrive: --json",
-            ]
-        );
+        assert_eq!(args_logged(dir.path()), [SIGN_IN, "about gdrive: --json"]);
     }
 
     #[tokio::test]
-    async fn a_lost_sign_in_after_the_sign_in_is_not_a_refusal_and_nothing_is_rolled_back() {
+    async fn a_lost_sign_in_after_the_sign_in_is_not_a_refusal() {
         let dir = tempfile::tempdir().unwrap();
         let rclone = drive_account(
             dir.path(),
@@ -1075,47 +1045,18 @@ mod tests {
         let done = sign_in_once(&rclone, update()).await.unwrap();
 
         assert!(done);
-        assert_eq!(args_logged(dir.path()).len(), 3);
+        assert_eq!(args_logged(dir.path()).len(), 2);
     }
 
     #[tokio::test]
-    async fn without_the_old_credentials_a_refusal_is_reported_and_nothing_is_written_back() {
+    async fn a_failed_sign_in_never_runs_the_check() {
         let dir = tempfile::tempdir().unwrap();
-        let rclone = fake_rclone(
-            dir.path(),
-            &format!(
-                "case \"$1 $2\" in\n  \"config dump\") exit 1 ;;\n  \"about gdrive:\") echo '{REFUSED}' >&2; exit 1 ;;\nesac"
-            ),
-        );
-
-        let error = sign_in_once(&rclone, update()).await.unwrap_err();
-
-        assert!(error.ends_with(REFUSED), "{error}");
-        assert!(
-            args_logged(dir.path())
-                .iter()
-                .all(|line| !line.contains("--non-interactive"))
-        );
-    }
-
-    #[tokio::test]
-    async fn a_failed_sign_in_never_runs_the_check_or_the_rollback() {
-        let dir = tempfile::tempdir().unwrap();
-        let rclone = fake_rclone(
-            dir.path(),
-            "[ \"$1 $2\" = 'config update' ] && { echo denied >&2; exit 1; }\ncase \"$1 $2\" in \"config dump\") echo '{\"gdrive\":{\"client_id\":\"old-id\",\"client_secret\":\"old-secret\"}}' ;; esac",
-        );
+        let rclone = fake_rclone(dir.path(), "echo denied >&2; exit 1");
 
         let error = sign_in_once(&rclone, update()).await.unwrap_err();
 
         assert_eq!(error, "denied");
-        assert_eq!(
-            args_logged(dir.path()),
-            [
-                "config dump",
-                "config update gdrive client_id=id.apps client_secret=s3cret",
-            ]
-        );
+        assert_eq!(args_logged(dir.path()), [SIGN_IN]);
     }
 
     #[tokio::test]

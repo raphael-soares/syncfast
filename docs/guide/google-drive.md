@@ -19,7 +19,7 @@ Open **Settings…**, **Accounts**, **Add Google Drive Account…**, or use **Ge
 
 An account that still uses rclone's shared client ID shows a warning. Press **Use My Client ID…** next to it and enter yours; the sign-in is repeated. An account that already has its own client ID offers **Change Client ID…** instead.
 
-If the sign-in works but Google Drive then refuses the account (for example the Drive API is not enabled in the project), syncfast puts the previous client ID and secret back and shows Google's message under the fields. A sign-in that fails or is cancelled while adding an account leaves no half-made account behind.
+If the sign-in works but Google Drive then refuses the account (for example the Drive API is not enabled in the project), syncfast shows Google's message under the fields and keeps the new client ID, secret and sign-in. Fix the cause in the Google Cloud console and the account works without signing in again; the status line under the account shows when it does. A sign-in that fails or is cancelled while adding an account leaves no half-made account behind.
 
 ## Account status
 
