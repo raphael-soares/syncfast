@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/raphael-soares/syncfast/compare/v0.4.0...v0.5.0) (2026-11-04)
+
+
+### Features
+
+* new app icon and fresh README screenshots ([#61](https://github.com/raphael-soares/syncfast/issues/61)) ([2d882a6](https://github.com/raphael-soares/syncfast/commit/2d882a653b4e13e096bed8fe9b424adf35bb03cf))
+
+
+### Documentation
+
+* specify phase 2 options and sync modes and phase 3 backups ([#48](https://github.com/raphael-soares/syncfast/issues/48)) ([5d0459a](https://github.com/raphael-soares/syncfast/commit/5d0459a9ad305e955d6eed46928dce570516ce8b))
+
 ## [0.4.0](https://github.com/raphael-soares/syncfast/compare/v0.3.3...v0.4.0) (2026-11-04)
 
 
