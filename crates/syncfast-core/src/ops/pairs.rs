@@ -200,18 +200,16 @@ impl Ops {
                 Some(id) => vec![id.to_owned()],
                 None => config.pairs().iter().map(|pair| pair.id.clone()).collect(),
             };
-            match ids
+            if let Some(missing) = ids
                 .iter()
                 .find(|id| !config.pairs().iter().any(|pair| &pair.id == *id))
             {
-                Some(missing) => Err(OpError::NotFound(missing.clone())),
-                None => {
-                    for id in &ids {
-                        config.set_enabled(id, enabled);
-                    }
-                    Ok(ids)
-                }
+                return Err(OpError::NotFound(missing.clone()));
             }
+            for id in &ids {
+                config.set_enabled(id, enabled);
+            }
+            Ok(ids)
         })
         .await??;
         let warnings = self.reapply(&[]).await;

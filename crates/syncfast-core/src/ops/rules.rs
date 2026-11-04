@@ -100,7 +100,11 @@ impl Ops {
         let presets = presets.unwrap_or(current.presets);
         let rules = rules.unwrap_or(current.filters);
         check_rules(&presets, &rules)?;
-        if !Config::edit(&self.paths, |config| config.set_filters(id, &presets, &rules)).await? {
+        if !Config::edit(&self.paths, |config| {
+            config.set_filters(id, &presets, &rules)
+        })
+        .await?
+        {
             return Err(OpError::NotFound(id.to_owned()));
         }
         let saved = self.find_pair(id).await?;

@@ -384,17 +384,15 @@ impl Config {
     /// exist (writing would replace the link).
     pub async fn save(&self, paths: &Paths) -> Result<(), ConfigSaveError> {
         let file = paths.config_file();
-        let target = match tokio::fs::canonicalize(&file).await {
-            Ok(target) => target,
-            Err(_) => {
-                if let Ok(meta) = tokio::fs::symlink_metadata(&file).await
-                    && meta.is_symlink()
-                {
-                    let target = tokio::fs::read_link(&file).await.unwrap_or(file);
-                    return Err(ConfigSaveError::DanglingLink { target });
-                }
-                file
-            }
+        let target = if let Ok(target) = tokio::fs::canonicalize(&file).await {
+            target
+        } else if let Ok(meta) = tokio::fs::symlink_metadata(&file).await
+            && meta.is_symlink()
+        {
+            let target = tokio::fs::read_link(&file).await.unwrap_or(file);
+            return Err(ConfigSaveError::DanglingLink { target });
+        } else {
+            file
         };
         let contents = self.to_toml();
         let written = target.clone();
