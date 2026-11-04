@@ -53,20 +53,27 @@ pub fn decide(input: &DecideInput<'_>) -> Decision {
     }
     if !input.local_exists {
         // Another gate keeps its place: a review still pending must survive
-        // the folder going away and coming back.
-        return if matches!(input.gate, None | Some(GateKind::LocalMissing)) {
+        // the folder going away and coming back. Attention gives way: it
+        // blocks nothing and the next round finds the failure again.
+        return if matches!(
+            input.gate,
+            None | Some(GateKind::LocalMissing | GateKind::NeedsAttention)
+        ) {
             Decision::SetGate(GateKind::LocalMissing)
         } else {
             Decision::Skip(SkipReason::Gated)
         };
     }
     let gate = match input.gate {
-        // The pair is valid again. One that never synced still owes its
-        // first review.
-        Some(GateKind::ConfigError) if input.applied_filters_hash.is_none() => {
+        // The pair is valid again (or its failure may be gone). One that
+        // never synced still owes its first review.
+        Some(GateKind::ConfigError | GateKind::NeedsAttention)
+            if input.applied_filters_hash.is_none() =>
+        {
             return Decision::SetGate(GateKind::NeedsReviewFirstRun);
         }
-        Some(GateKind::LocalMissing | GateKind::ConfigError) => None,
+        // Attention never stops rounds: the next one may succeed.
+        Some(GateKind::LocalMissing | GateKind::ConfigError | GateKind::NeedsAttention) => None,
         other => other,
     };
     if !input.online {
@@ -155,6 +162,38 @@ mod tests {
         });
 
         assert_eq!(decision, Decision::Run(Mode::Normal));
+    }
+
+    #[test]
+    fn an_attention_gate_does_not_stop_rounds() {
+        let decision = decide(&DecideInput {
+            gate: Some(GateKind::NeedsAttention),
+            ..input()
+        });
+
+        assert_eq!(decision, Decision::Run(Mode::Normal));
+    }
+
+    #[test]
+    fn an_attention_gate_of_a_pair_that_never_synced_goes_back_to_its_first_review() {
+        let decision = decide(&DecideInput {
+            gate: Some(GateKind::NeedsAttention),
+            applied_filters_hash: None,
+            ..input()
+        });
+
+        assert_eq!(decision, Decision::SetGate(GateKind::NeedsReviewFirstRun));
+    }
+
+    #[test]
+    fn a_missing_local_folder_replaces_an_attention_gate() {
+        let decision = decide(&DecideInput {
+            local_exists: false,
+            gate: Some(GateKind::NeedsAttention),
+            ..input()
+        });
+
+        assert_eq!(decision, Decision::SetGate(GateKind::LocalMissing));
     }
 
     #[test]

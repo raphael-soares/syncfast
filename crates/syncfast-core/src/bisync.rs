@@ -73,7 +73,7 @@ const TOO_MANY_DELETES: &str = "too many deletes";
 const ALL_FILES_CHANGED: &str = "Safety abort: all files were changed";
 const MUST_RESYNC: &str = "Must run --resync to recover";
 const EMPTY_PRIOR_LISTINGS: [&str; 2] = ["Empty prior Path1 listing", "Empty prior Path2 listing"];
-const FAILED_TO_BISYNC: &str = "Failed to bisync";
+pub(crate) const FAILED_TO_BISYNC: &str = "Failed to bisync";
 const EXIT_NOT_CRITICAL: i32 = 1;
 const EXIT_USAGE: i32 = 2;
 const EXIT_CRITICAL: i32 = 7;
@@ -207,7 +207,7 @@ pub enum NeedsReviewCause {
     CriticalError,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Ok,
     NeedsReview(NeedsReviewCause),
@@ -216,17 +216,27 @@ pub enum Outcome {
     /// like [`Outcome::TooManyDeletes`], `--force` lets it through.
     AllFilesChanged,
     AuthError,
+    /// A failure that retrying does not fix and the user can act on. The
+    /// next round still runs: it ends the attention when it succeeds.
+    NeedsAttention {
+        fault: Fault,
+        /// The failure message that named the fault.
+        detail: String,
+    },
     /// rclone rejected the arguments: a syncfast bug.
     ConfigError,
     Transient,
 }
 
+/// A workdir that cannot be read (other than being absent) counts as
+/// marked: assuming the listings are fine is the unsafe direction.
 fn has_lst_err(workdir: &Path) -> bool {
-    std::fs::read_dir(workdir).is_ok_and(|entries| {
-        entries
+    match std::fs::read_dir(workdir) {
+        Ok(entries) => entries
             .filter_map(Result::ok)
-            .any(|entry| entry.file_name().to_string_lossy().ends_with(".lst-err"))
-    })
+            .any(|entry| entry.file_name().to_string_lossy().ends_with(".lst-err")),
+        Err(err) => err.kind() != std::io::ErrorKind::NotFound,
+    }
 }
 
 /// Lines that can say why a run failed: errors, anything that was not JSON,
@@ -249,10 +259,7 @@ pub fn classify(exit_code: i32, lines: &[LogLine], workdir: &Path) -> Outcome {
     if has_lst_err(workdir) {
         return Outcome::NeedsReview(NeedsReviewCause::CriticalError);
     }
-    if failure_msgs(lines).any(|msg| {
-        let msg = msg.to_lowercase();
-        AUTH_PATTERNS.iter().any(|pattern| msg.contains(pattern))
-    }) {
+    if failure_msgs(lines).any(|msg| fault_of(msg) == Some(Fault::Auth)) {
         return Outcome::AuthError;
     }
     if exit_code == EXIT_NOT_CRITICAL
@@ -264,6 +271,13 @@ pub fn classify(exit_code: i32, lines: &[LogLine], workdir: &Path) -> Outcome {
         && failure_msgs(lines).any(|msg| msg.contains(ALL_FILES_CHANGED))
     {
         return Outcome::AllFilesChanged;
+    }
+    if let Some((fault, msg)) = failure_msgs(lines).find_map(|msg| fault_of(msg).map(|f| (f, msg)))
+    {
+        return Outcome::NeedsAttention {
+            fault,
+            detail: msg.to_owned(),
+        };
     }
     if exit_code == EXIT_CRITICAL && failure_msgs(lines).any(|msg| msg.contains(MUST_RESYNC)) {
         return Outcome::NeedsReview(NeedsReviewCause::CriticalError);
@@ -572,6 +586,132 @@ mod tests {
         ]);
 
         assert_eq!(classify(1, &log, workdir.path()), Outcome::AuthError);
+    }
+
+    #[test]
+    fn fault_of_names_the_google_error_texts() {
+        let cases = [
+            (
+                "Error 403: Google Drive API has not been used in project 1 before or it is disabled",
+                Some(Fault::Account),
+            ),
+            (
+                "googleapi: Error 403: The user's Drive storage quota has been exceeded., storageQuotaExceeded",
+                Some(Fault::Quota),
+            ),
+            (
+                "googleapi: Error 403: The user does not have sufficient permissions for this file., insufficientFilePermissions",
+                Some(Fault::Permission),
+            ),
+            (
+                "error listing: directory not found",
+                Some(Fault::RemoteMissing),
+            ),
+            (
+                "Failed to create file system: invalid_grant",
+                Some(Fault::Auth),
+            ),
+            (
+                "googleapi: Error 403: Rate Limit Exceeded, userRateLimitExceeded",
+                None,
+            ),
+        ];
+
+        for (text, fault) in cases {
+            assert_eq!(fault_of(text), fault, "{text}");
+        }
+    }
+
+    #[test]
+    fn each_non_auth_fault_needs_attention_with_the_matching_message() {
+        let workdir = workdir_with(&[]);
+        for (text, fault) in [
+            (
+                "Error 403: Google Drive API has not been used in project 1 before or it is disabled",
+                Fault::Account,
+            ),
+            ("storageQuotaExceeded", Fault::Quota),
+            ("insufficientFilePermissions", Fault::Permission),
+            ("directory not found", Fault::RemoteMissing),
+        ] {
+            let log = lines(&[
+                ("info", "- Path1  File is new  - a.txt"),
+                ("error", text),
+                ("notice", "Failed to bisync: bisync aborted"),
+            ]);
+
+            assert_eq!(
+                classify(1, &log, workdir.path()),
+                Outcome::NeedsAttention {
+                    fault,
+                    detail: text.to_owned()
+                },
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_fault_in_the_closing_notice_needs_attention() {
+        let workdir = workdir_with(&[]);
+        let log = lines(&[("notice", "Failed to bisync: directory not found")]);
+
+        assert_eq!(
+            classify(7, &log, workdir.path()),
+            Outcome::NeedsAttention {
+                fault: Fault::RemoteMissing,
+                detail: "Failed to bisync: directory not found".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn auth_wins_over_the_other_faults() {
+        let workdir = workdir_with(&[]);
+        let log = lines(&[
+            ("error", "storageQuotaExceeded"),
+            ("error", "invalid_grant"),
+        ]);
+
+        assert_eq!(classify(1, &log, workdir.path()), Outcome::AuthError);
+    }
+
+    #[test]
+    fn too_many_deletes_and_all_files_changed_win_over_a_non_auth_fault() {
+        let workdir = workdir_with(&[]);
+        for (text, expected) in [
+            ("too many deletes (>50%, 3 of 4)", Outcome::TooManyDeletes),
+            (ALL_FILES_CHANGED, Outcome::AllFilesChanged),
+        ] {
+            let log = lines(&[("error", "storageQuotaExceeded"), ("error", text)]);
+
+            assert_eq!(classify(1, &log, workdir.path()), expected, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_rate_limit_error_is_transient() {
+        let workdir = workdir_with(&[]);
+        let log = lines(&[(
+            "error",
+            "Error 403: Rate Limit Exceeded, userRateLimitExceeded",
+        )]);
+
+        assert_eq!(classify(1, &log, workdir.path()), Outcome::Transient);
+    }
+
+    #[test]
+    fn a_workdir_that_cannot_be_read_needs_review() {
+        let dir = tempfile::tempdir().unwrap();
+        let not_a_folder = dir.path().join("file");
+        std::fs::write(&not_a_folder, "").unwrap();
+
+        let outcome = classify(5, &[], &not_a_folder);
+
+        assert_eq!(
+            outcome,
+            Outcome::NeedsReview(NeedsReviewCause::CriticalError)
+        );
     }
 
     #[test]

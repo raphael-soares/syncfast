@@ -61,13 +61,15 @@ fn time_of(line: Option<&str>) -> Option<Timestamp> {
     serde_json::from_str::<Stamped>(line?).ok().map(|s| s.time)
 }
 
-fn status_of(outcome: Outcome) -> DisplayStatus {
+fn status_of(outcome: &Outcome) -> DisplayStatus {
     match outcome {
         Outcome::Ok => DisplayStatus::UpToDate,
         Outcome::NeedsReview(_) | Outcome::TooManyDeletes | Outcome::AllFilesChanged => {
             DisplayStatus::NeedsReview
         }
-        Outcome::AuthError | Outcome::ConfigError => DisplayStatus::Error,
+        Outcome::AuthError | Outcome::ConfigError | Outcome::NeedsAttention { .. } => {
+            DisplayStatus::Error
+        }
         Outcome::Transient => DisplayStatus::Retrying,
     }
 }
@@ -92,7 +94,7 @@ fn status_and_detail(
     let detail = (outcome != Outcome::Ok)
         .then(|| last_error_message(lines).map(str::to_owned))
         .flatten();
-    (status_of(outcome), detail)
+    (status_of(&outcome), detail)
 }
 
 fn entry(file_name: &str, text: &str, known: &Known<'_>) -> RunEntry {

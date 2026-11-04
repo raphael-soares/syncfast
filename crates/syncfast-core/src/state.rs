@@ -56,6 +56,9 @@ pub enum GateKind {
     ConfigError,
     AuthError,
     LocalMissing,
+    /// A failure the user can act on (see [`crate::bisync::Fault`]). The
+    /// only gate that does not stop rounds: the next one may succeed.
+    NeedsAttention,
 }
 
 impl GateKind {
@@ -70,6 +73,7 @@ impl GateKind {
             Self::ConfigError => "config_error",
             Self::AuthError => "auth_error",
             Self::LocalMissing => "local_missing",
+            Self::NeedsAttention => "needs_attention",
         }
     }
 
@@ -96,7 +100,8 @@ impl GateKind {
     }
 }
 
-/// Why normal rounds are blocked. Every gate blocks them.
+/// Why a sync needs the user. Every gate but [`GateKind::NeedsAttention`]
+/// blocks normal rounds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Gate {
     pub kind: GateKind,
@@ -129,6 +134,9 @@ pub struct State {
     /// `gate` nor `last_outcome`.
     pub offline: bool,
     pub consecutive_failures: u32,
+    /// When the current series of failed rounds began; cleared by a
+    /// success.
+    pub failing_since: Option<Timestamp>,
     pub last_success: Option<Timestamp>,
     pub last_attempt: Option<Timestamp>,
     pub applied_filters_hash: Option<String>,
@@ -415,7 +423,12 @@ pub fn display_status(pair: &Pair, state: &State, running: bool) -> DisplayStatu
         DisplayStatus::Syncing
     } else if matches!(
         gate,
-        Some(GateKind::ConfigError | GateKind::AuthError | GateKind::LocalMissing)
+        Some(
+            GateKind::ConfigError
+                | GateKind::AuthError
+                | GateKind::LocalMissing
+                | GateKind::NeedsAttention
+        )
     ) {
         DisplayStatus::Error
     } else if gate.is_some() {
@@ -488,6 +501,7 @@ mod tests {
             last_outcome: Some(LastOutcome::Error),
             offline: true,
             consecutive_failures: 2,
+            failing_since: Some(at("2026-01-01T09:00:00Z")),
             last_success: Some(at("2026-01-01T10:00:00Z")),
             last_attempt: Some(at("2026-01-01T11:00:00Z")),
             applied_filters_hash: Some("abc".into()),
@@ -571,6 +585,7 @@ mod tests {
                 "last_outcome": "ok",
                 "offline": false,
                 "consecutive_failures": 0,
+                "failing_since": null,
                 "last_success": null,
                 "last_attempt": null,
                 "applied_filters_hash": null,
@@ -805,11 +820,12 @@ mod tests {
     }
 
     #[test]
-    fn a_config_auth_or_missing_folder_gate_is_an_error() {
+    fn a_config_auth_missing_folder_or_attention_gate_is_an_error() {
         for kind in [
             GateKind::ConfigError,
             GateKind::AuthError,
             GateKind::LocalMissing,
+            GateKind::NeedsAttention,
         ] {
             let state = State {
                 gate: Some(gate(kind)),
@@ -997,6 +1013,7 @@ mod tests {
             (GateKind::ConfigError, "config_error"),
             (GateKind::AuthError, "auth_error"),
             (GateKind::LocalMissing, "local_missing"),
+            (GateKind::NeedsAttention, "needs_attention"),
         ];
 
         for (kind, name) in kinds {

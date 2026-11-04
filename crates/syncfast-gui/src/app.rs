@@ -906,10 +906,11 @@ mod tests {
         app.snapshot.pairs = vec![
             pair_with_gate("auth", Some(GateKind::AuthError)),
             pair_with_gate("missing", Some(GateKind::LocalMissing)),
+            pair_with_gate("attention", Some(GateKind::NeedsAttention)),
             pair_with_gate("fine", None),
         ];
 
-        for id in ["auth", "missing", "fine", "gone"] {
+        for id in ["auth", "missing", "attention", "fine", "gone"] {
             assert_eq!(
                 opened(&mut app, id),
                 [Action::ShowWindow, Action::SelectPair(id.into())],

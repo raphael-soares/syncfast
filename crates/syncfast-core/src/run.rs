@@ -12,7 +12,9 @@ use tokio::process::Child;
 use tokio::signal::unix::{SignalKind, signal};
 
 use crate::behavior::Behavior;
-use crate::bisync::{Mode, Outcome, bisync_args, classify, is_empty_prior_listing, log_file};
+use crate::bisync::{
+    Mode, Outcome, bisync_args, classify, is_empty_prior_listing, log_file, stamp,
+};
 use crate::bisync_log::{LogLine, read_log, summarize};
 use crate::config::{Config, GlobalConfigError, Pair, PairError};
 use crate::conflicts::find_conflicts;
@@ -32,7 +34,10 @@ use crate::versions;
 /// the full list stays in the run's log.
 pub const STORED_CHANGES: usize = 100;
 /// Failed rounds in a row that raise the "sync failing" notification.
-const NOTIFY_FAILURES_AFTER: u32 = 3;
+pub(crate) const NOTIFY_FAILURES_AFTER: u32 = 3;
+/// How long a series of transient failures may last before the user is
+/// told: retrying has not fixed it.
+const ESCALATE_AFTER: SignedDuration = SignedDuration::from_hours(6);
 
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
@@ -98,7 +103,7 @@ impl RunEnv<'_> {
 }
 
 /// How a round ended. Every variant is a normal end (exit code 0).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunReport {
     /// Another round of the pair holds the lock.
     Busy,
@@ -116,6 +121,29 @@ pub(crate) enum PairLookup {
     Valid(Pair),
     /// The pair as written in the config, and why it cannot run.
     Invalid(Pair, PairError),
+}
+
+/// Loads the pair's state. A file that is not valid JSON is set aside as
+/// `state.json.corrupt-<stamp>` and the pair starts over from its first
+/// review, which is the safe way to lose its history.
+async fn load_state(env: &RunEnv<'_>, pair_id: &str) -> Result<State, RunError> {
+    match State::load(env.paths, pair_id).await {
+        Err(StateError::Parse { path, source }) => {
+            let now = env.now();
+            let mut aside = path.clone().into_os_string();
+            aside.push(format!(".corrupt-{}", stamp(&now)));
+            log::warn!(
+                "{} is not valid ({source}); keeping it as {} and starting over",
+                path.display(),
+                Path::new(&aside).display()
+            );
+            tokio::fs::rename(&path, &aside)
+                .await
+                .map_err(RunError::io("setting aside a corrupt state file"))?;
+            Ok(State::first_run(now.timestamp()))
+        }
+        other => Ok(other?),
+    }
 }
 
 pub(crate) async fn lookup_pair(env: &RunEnv<'_>, pair_id: &str) -> Result<PairLookup, RunError> {
@@ -152,6 +180,14 @@ pub(crate) fn set_gate(state: &mut State, kind: GateKind, detail: String, now: T
         since,
         detail,
     });
+}
+
+/// Counts a failed round; the first of a series starts the clock that
+/// [`ESCALATE_AFTER`] reads.
+fn record_failure(state: &mut State, finished: Timestamp) {
+    state.last_outcome = Some(LastOutcome::Error);
+    state.consecutive_failures = state.consecutive_failures.saturating_add(1);
+    state.failing_since.get_or_insert(finished);
 }
 
 /// Records one notification per transition: the key stays in
@@ -294,7 +330,7 @@ pub async fn run(env: &RunEnv<'_>, pair_id: &str) -> Result<RunReport, RunError>
     let pair = match lookup_pair(env, pair_id).await? {
         PairLookup::Valid(pair) => pair,
         PairLookup::Invalid(pair, error) => {
-            let mut state = State::load(env.paths, pair_id).await?;
+            let mut state = load_state(env, pair_id).await?;
             set_gate(
                 &mut state,
                 GateKind::ConfigError,
@@ -313,7 +349,7 @@ pub async fn run(env: &RunEnv<'_>, pair_id: &str) -> Result<RunReport, RunError>
     let behavior = Behavior::for_pair(&pair);
     let online = env.network.is_online().await;
     let filters_file = filters::write_if_changed(env.paths, &pair).await?;
-    let mut state = State::load(env.paths, pair_id).await?;
+    let mut state = load_state(env, pair_id).await?;
     let marker = ConfirmMarker::load(env.paths, pair_id).await?;
     let local_exists = tokio::fs::metadata(&pair.local)
         .await
@@ -444,7 +480,7 @@ impl Round<'_> {
         });
         let detail = last_error_message(&lines).map(str::to_owned);
         let notice = self
-            .apply_outcome(state, outcome, exit_code, conflicts_new, detail, finished)
+            .apply_outcome(state, &outcome, exit_code, conflicts_new, detail, finished)
             .await;
         state.save(env.paths, id).await?;
         send(env, notice);
@@ -478,7 +514,7 @@ impl Round<'_> {
     async fn apply_outcome(
         &self,
         state: &mut State,
-        outcome: Outcome,
+        outcome: &Outcome,
         exit_code: i32,
         conflicts_new: Option<u32>,
         detail: Option<String>,
@@ -490,6 +526,7 @@ impl Round<'_> {
                 state.gate = None;
                 state.last_outcome = Some(LastOutcome::Ok);
                 state.consecutive_failures = 0;
+                state.failing_since = None;
                 state.applied_filters_hash = Some(self.filters.hash.clone());
                 state.last_success = Some(finished);
                 state
@@ -514,20 +551,36 @@ impl Round<'_> {
                     detail.unwrap_or_else(|| format!("exit code {exit_code}"))
                 ),
             ),
+            Outcome::NeedsAttention {
+                detail: failure, ..
+            } => {
+                record_failure(state, finished);
+                (GateKind::NeedsAttention, failure.clone())
+            }
             Outcome::Transient => {
-                state.last_outcome = Some(LastOutcome::Error);
-                state.consecutive_failures = state.consecutive_failures.saturating_add(1);
-                if state.consecutive_failures >= NOTIFY_FAILURES_AFTER {
-                    let message =
-                        detail.unwrap_or_else(|| format!("rclone exited with code {exit_code}."));
+                record_failure(state, finished);
+                let message =
+                    detail.unwrap_or_else(|| format!("rclone exited with code {exit_code}."));
+                let stalled = state.gate.is_none()
+                    && state
+                        .failing_since
+                        .is_some_and(|since| finished.duration_since(since) > ESCALATE_AFTER);
+                if stalled {
+                    let hours = ESCALATE_AFTER.as_hours();
+                    (
+                        GateKind::NeedsAttention,
+                        format!("Syncing has failed for over {hours} hours: {message}"),
+                    )
+                } else if state.consecutive_failures >= NOTIFY_FAILURES_AFTER {
                     return announce(
                         pair,
                         state,
                         NOTIFIED_FAILURES.to_owned(),
                         &Alert::Failing(message),
                     );
+                } else {
+                    return None;
                 }
-                return None;
             }
         };
         set_gate(state, gate.0, gate.1, finished);

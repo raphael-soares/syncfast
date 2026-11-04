@@ -232,6 +232,23 @@ fn the_card_of_a_disconnected_account_offers_to_reconnect_in_settings() {
 }
 
 #[test]
+fn the_card_of_a_sync_that_needs_attention_shows_the_message_and_offers_to_try_again() {
+    let row = PairRow {
+        gate_detail: "googleapi: Error 403: storageQuotaExceeded".into(),
+        ..gated(DisplayStatus::Error, GateKind::NeedsAttention)
+    };
+    let mut harness = harness(view(row));
+
+    harness.get_by_label("Needs attention");
+    harness.get_by_label("googleapi: Error 403: storageQuotaExceeded");
+    assert!(!disabled(&harness, "Sync Now"));
+    harness.get_by_label("Try Again").click();
+    harness.run_steps(4);
+
+    assert_eq!(harness.state().actions, [Action::SyncNow("drive".into())]);
+}
+
+#[test]
 fn the_card_of_a_missing_folder_names_it_and_offers_no_button() {
     let harness = harness(view(gated(DisplayStatus::Error, GateKind::LocalMissing)));
 

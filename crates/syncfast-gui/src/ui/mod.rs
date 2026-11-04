@@ -61,10 +61,15 @@ pub struct PairRow {
 
 impl PairRow {
     /// `Sync Now` is offered unless a round is running, a gate blocks it or
-    /// the sync is paused (a round of a paused sync does nothing).
+    /// the sync is paused (a round of a paused sync does nothing). A gate
+    /// that needs attention blocks nothing.
     #[must_use]
     pub fn can_sync(&self) -> bool {
-        self.status != DisplayStatus::Syncing && self.gate.is_none() && self.enabled
+        self.status != DisplayStatus::Syncing
+            && self
+                .gate
+                .is_none_or(|gate| gate == GateKind::NeedsAttention)
+            && self.enabled
     }
 }
 

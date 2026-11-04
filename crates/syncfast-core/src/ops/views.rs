@@ -114,6 +114,7 @@ fn explanation(gate: &Gate) -> String {
         GateKind::LocalMissing => {
             "The local folder is missing: syncing resumes when it is back.".to_owned()
         }
+        GateKind::NeedsAttention => format!("Needs attention: {}", gate.detail),
     }
 }
 

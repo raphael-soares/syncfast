@@ -166,12 +166,15 @@ fn more_menu(
 struct CardText {
     phrase: String,
     button: Option<(&'static str, Action)>,
+    /// The text can be selected, to copy an error message.
+    selectable: bool,
 }
 
 fn card_text(pair: &PairRow, now: jiff::Timestamp) -> CardText {
     let plain = |phrase: String| CardText {
         phrase,
         button: None,
+        selectable: false,
     };
     if let Some(gate) = pair.gate {
         return match gate {
@@ -182,6 +185,7 @@ fn card_text(pair: &PairRow, now: jiff::Timestamp) -> CardText {
             | GateKind::AllFilesChanged => CardText {
                 phrase: "Review what will change before syncing resumes.".to_owned(),
                 button: Some(("Review…", Action::OpenReview(pair.id.clone()))),
+                selectable: false,
             },
             GateKind::AuthError => CardText {
                 phrase: format!(
@@ -189,6 +193,12 @@ fn card_text(pair: &PairRow, now: jiff::Timestamp) -> CardText {
                     pair.remote.split(':').next().unwrap_or(&pair.remote)
                 ),
                 button: Some(("Reconnect Account…", Action::OpenAccounts)),
+                selectable: false,
+            },
+            GateKind::NeedsAttention => CardText {
+                phrase: pair.gate_detail.clone(),
+                button: Some(("Try Again", Action::SyncNow(pair.id.clone()))),
+                selectable: true,
             },
             GateKind::LocalMissing => plain(format!("{} is missing.", pair.local.display())),
             GateKind::ConfigError => plain(if pair.gate_detail.is_empty() {
@@ -233,10 +243,13 @@ fn status_card(
             }
             let text = card_text(pair, now);
             if !text.phrase.is_empty() {
-                ui.label(
-                    RichText::new(text.phrase)
-                        .font(theme::callout())
-                        .color(palette.secondary),
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(text.phrase)
+                            .font(theme::callout())
+                            .color(palette.secondary),
+                    )
+                    .selectable(text.selectable),
                 );
             }
             if let Some((label, action)) = text.button

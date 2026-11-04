@@ -82,6 +82,7 @@ impl From<RunReport> for RoundOutcome {
                     Outcome::TooManyDeletes => "too_many_deletes",
                     Outcome::AllFilesChanged => "all_files_changed",
                     Outcome::AuthError => "auth_error",
+                    Outcome::NeedsAttention { .. } => "needs_attention",
                     Outcome::ConfigError => "config_error",
                     Outcome::Transient => "transient_error",
                 });
