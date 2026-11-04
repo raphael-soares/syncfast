@@ -1057,7 +1057,9 @@ async fn reconnected(context: &Arc<Context>, account: String) {
 /// review, and `from` goes. A failure before the move leaves both accounts
 /// for the user to sort out.
 async fn renamed(context: &Arc<Context>, from: &str, to: &str) {
-    if let Err(text) = sheet_io::rename_account(&context.paths, from, to).await {
+    let renamed =
+        sheet_io::rename_account(&context.paths, from, to, sheet_io::ACCOUNT_LOCK_TIMEOUT).await;
+    if let Err(text) = renamed {
         context.emitter.send(Event::Connected(Err(text)));
         return;
     }
@@ -1085,48 +1087,101 @@ async fn renamed(context: &Arc<Context>, from: &str, to: &str) {
 
 fn spawn_check_accounts(context: &Arc<Context>) {
     let context = Arc::clone(context);
-    tokio::spawn(async move {
-        let rclone = match rclone() {
-            Ok(rclone) => rclone,
-            Err(text) => return fail(&context, text),
-        };
-        let names = match rclone.listremotes().await {
-            Ok(names) => names,
-            Err(err) => return fail(&context, err.to_string()),
-        };
-        let online = NetworkManager.is_online().await;
-        for name in names {
-            context.emitter.send(Event::AccountStatus {
-                name: name.clone(),
-                status: AccountStatus::Checking,
-            });
-            let context = Arc::clone(&context);
-            let rclone = rclone.clone();
-            tokio::spawn(async move {
-                let status = sheet_io::check_account(&rclone, online, &name).await;
-                context.emitter.send(Event::AccountStatus { name, status });
-            });
+    guarded(
+        context.emitter.clone(),
+        "checking the accounts",
+        async move {
+            let rclone = match rclone() {
+                Ok(rclone) => rclone,
+                Err(text) => return fail(&context, text),
+            };
+            let names = match rclone.listremotes().await {
+                Ok(names) => names,
+                Err(err) => return fail(&context, err.to_string()),
+            };
+            let online = NetworkManager.is_online().await;
+            for name in names {
+                context.emitter.send(Event::AccountStatus {
+                    name: name.clone(),
+                    status: AccountStatus::Checking,
+                });
+                let rclone = rclone.clone();
+                let checked = name.clone();
+                spawn_account_check(&context.emitter, name, async move {
+                    sheet_io::check_account(&rclone, online, &checked).await
+                });
+            }
+        },
+    );
+}
+
+/// Reports the status `check` ends with for `name`. A check that panics
+/// still ends the account's "Checking" state, as a problem.
+fn spawn_account_check(
+    emitter: &Emitter,
+    name: String,
+    check: impl Future<Output = AccountStatus> + Send + 'static,
+) -> tokio::task::JoinHandle<()> {
+    let mut pending = PendingCheck {
+        emitter: emitter.clone(),
+        name: Some(name),
+    };
+    guarded(emitter.clone(), "checking an account", async move {
+        let status = check.await;
+        pending.finish(status);
+    })
+}
+
+struct PendingCheck {
+    emitter: Emitter,
+    name: Option<String>,
+}
+
+impl PendingCheck {
+    fn finish(&mut self, status: AccountStatus) {
+        if let Some(name) = self.name.take() {
+            self.emitter.send(Event::AccountStatus { name, status });
         }
-    });
+    }
+}
+
+impl Drop for PendingCheck {
+    fn drop(&mut self) {
+        self.finish(AccountStatus::Problem(
+            "The check stopped unexpectedly.".to_owned(),
+        ));
+    }
 }
 
 fn spawn_remove_account(context: &Arc<Context>, name: String) {
     let context = Arc::clone(context);
-    tokio::spawn(async move {
-        let removed = match rclone() {
-            Ok(rclone) => sheet_io::remove_account(&context.paths, &rclone, &name).await,
-            Err(text) => Err(text),
-        };
-        match removed {
-            Ok(ids) => {
-                publish_remotes(&context).await;
-                if !ids.is_empty() {
-                    spawn_sync(&context, ids);
+    guarded(
+        context.emitter.clone(),
+        "removing the account",
+        async move {
+            let removed = match rclone() {
+                Ok(rclone) => {
+                    sheet_io::remove_account(
+                        &context.paths,
+                        &rclone,
+                        &name,
+                        sheet_io::ACCOUNT_LOCK_TIMEOUT,
+                    )
+                    .await
                 }
+                Err(text) => Err(text),
+            };
+            match removed {
+                Ok(ids) => {
+                    publish_remotes(&context).await;
+                    if !ids.is_empty() {
+                        spawn_sync(&context, ids);
+                    }
+                }
+                Err(text) => fail(&context, text),
             }
-            Err(text) => fail(&context, text),
-        }
-    });
+        },
+    );
 }
 
 #[cfg(test)]
@@ -1175,6 +1230,53 @@ mod tests {
         guarded(emitter, "x", async {}).await.unwrap();
 
         assert!(received.try_iter().next().is_none());
+    }
+
+    fn account_statuses(events: impl IntoIterator<Item = Event>) -> Vec<(String, AccountStatus)> {
+        events
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::AccountStatus { name, status } => Some((name, status)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn an_account_check_that_panics_ends_its_checking_state_as_a_problem() {
+        let (emitter, received) = emitter();
+
+        spawn_account_check(&emitter, "gdrive".to_owned(), async {
+            panic!("boom");
+        })
+        .await
+        .unwrap();
+
+        let events: Vec<Event> = received.try_iter().collect();
+        assert_eq!(
+            account_statuses(events),
+            [(
+                "gdrive".to_owned(),
+                AccountStatus::Problem("The check stopped unexpectedly.".to_owned())
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_account_check_that_finishes_reports_only_its_status() {
+        let (emitter, received) = emitter();
+
+        spawn_account_check(&emitter, "gdrive".to_owned(), async {
+            AccountStatus::SignedIn
+        })
+        .await
+        .unwrap();
+
+        let events: Vec<Event> = received.try_iter().collect();
+        assert_eq!(
+            account_statuses(events),
+            [("gdrive".to_owned(), AccountStatus::SignedIn)]
+        );
     }
 
     #[tokio::test]

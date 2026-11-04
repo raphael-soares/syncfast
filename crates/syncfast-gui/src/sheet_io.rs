@@ -2,6 +2,7 @@
 //! folder checks and the files the confirmation leaves for the next round.
 //! The backend runs these and turns the results into events.
 
+use std::fs::File;
 use std::path::Path;
 use std::time::Duration;
 
@@ -14,7 +15,7 @@ use syncfast_core::paths::Paths;
 use syncfast_core::preview::{Preview, PreviewError, preview};
 use syncfast_core::rclone::{Rclone, RcloneError};
 use syncfast_core::run::RunEnv;
-use syncfast_core::state::{ConfirmMarker, Gate, GateKind, State};
+use syncfast_core::state::{ConfirmMarker, Gate, GateKind, State, lock_pair};
 use tokio::sync::oneshot;
 
 use crate::ui::account_sheet::{AccountMode, ConnectRequest, Secret};
@@ -256,7 +257,6 @@ pub async fn clear_auth_gates(paths: &Paths, account: &str) -> Result<Vec<String
     Ok(cleared)
 }
 
-/// How long a check of an account may take before it counts as unanswered.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 const NO_ABOUT: &str = "doesn't support about";
 
@@ -287,22 +287,51 @@ pub async fn check_account(rclone: &Rclone, online: bool, name: &str) -> Account
     }
 }
 
-/// Takes `name` out of rclone's config. Returns the ids of the syncs that
-/// were on it: they stay in the config and stop with the missing account.
+/// How long removing or renaming an account waits for a running round of
+/// its syncs.
+pub const ACCOUNT_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
+const SYNC_RUNNING: &str = "A sync on this account is running. Try again when it finishes.";
+
+/// The locks of `ids`, so no round runs while their states change.
+async fn lock_syncs(paths: &Paths, ids: &[String], timeout: Duration) -> Result<Vec<File>, String> {
+    let mut locks = Vec::with_capacity(ids.len());
+    for id in ids {
+        match lock_pair(paths, id, timeout).await {
+            Ok(Some(lock)) => locks.push(lock),
+            Ok(None) => return Err(SYNC_RUNNING.to_owned()),
+            Err(err) => return Err(err.to_string()),
+        }
+    }
+    Ok(locks)
+}
+
+/// Takes `name` out of rclone's config; returns its syncs' ids, which owe a
+/// reviewed first run if an account of that name returns.
 ///
 /// # Errors
-/// rclone fails or the config cannot be read.
+/// A sync is running, rclone fails, or a config or state file fails.
 pub async fn remove_account(
     paths: &Paths,
     rclone: &Rclone,
     name: &str,
+    lock_timeout: Duration,
 ) -> Result<Vec<String>, String> {
     let config = Config::load(paths).await.map_err(|e| e.to_string())?;
+    let ids = pair_ids_on(&config, name);
+    let _locks = lock_syncs(paths, &ids, lock_timeout).await?;
     rclone
         .delete_remote(name)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(pair_ids_on(&config, name))
+    for id in &ids {
+        let mut state = State::load(paths, id).await.map_err(|e| e.to_string())?;
+        state.applied_filters_hash = None;
+        state.save(paths, id).await.map_err(|e| e.to_string())?;
+        ConfirmMarker::remove(paths, id)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(ids)
 }
 
 fn pair_ids_on(config: &Config, account: &str) -> Vec<String> {
@@ -314,16 +343,22 @@ fn pair_ids_on(config: &Config, account: &str) -> Vec<String> {
         .collect()
 }
 
-/// Moves the syncs of the account `from` to `to` in the config and holds
-/// each for a reviewed first run: bisync names its listings after the
-/// remote, so the old ones no longer apply. Returns their ids.
+/// Moves the syncs of `from` to `to` and holds each for a reviewed first run,
+/// as bisync's listings are named after the remote. Returns their ids.
 ///
 /// # Errors
-/// The config or a state file cannot be read or written.
-pub async fn rename_account(paths: &Paths, from: &str, to: &str) -> Result<Vec<String>, String> {
-    let mut config = Config::load(paths).await.map_err(|e| e.to_string())?;
-    let moved = config.rename_account(from, to);
-    config.save(paths).await.map_err(|e| e.to_string())?;
+/// A sync on `from` is running (nothing changes), or a file fails.
+pub async fn rename_account(
+    paths: &Paths,
+    from: &str,
+    to: &str,
+    lock_timeout: Duration,
+) -> Result<Vec<String>, String> {
+    let config = Config::load(paths).await.map_err(|e| e.to_string())?;
+    let _locks = lock_syncs(paths, &pair_ids_on(&config, from), lock_timeout).await?;
+    let moved = Config::edit(paths, |config| config.rename_account(from, to))
+        .await
+        .map_err(|e| e.to_string())?;
     let held = GateKind::NeedsReviewFirstRun;
     for id in &moved {
         let mut state = State::load(paths, id).await.map_err(|e| e.to_string())?;
@@ -331,6 +366,7 @@ pub async fn rename_account(paths: &Paths, from: &str, to: &str) -> Result<Vec<S
             kind: held,
             since: jiff::Timestamp::now(),
             detail: format!("Account renamed to {to}."),
+            fault: None,
         });
         state.notified.retain(|key| *key != held.notified_key());
         state.save(paths, id).await.map_err(|e| e.to_string())?;
@@ -341,14 +377,11 @@ pub async fn rename_account(paths: &Paths, from: &str, to: &str) -> Result<Vec<S
     Ok(moved)
 }
 
-/// The sign-in of a request, with what a bare `connect` leaves undone:
-/// - a sign-in that creates an account (`Add`, `Rename`) and fails or is
-///   cancelled leaves no half-made remote behind;
-/// - one that changes the credentials of an account is checked with
-///   `rclone about`, and an account Google Drive refuses is an error.
+/// Signs in. A new account that fails or is cancelled leaves no remote
+/// behind; changed credentials are checked with `rclone about`.
 ///
 /// # Errors
-/// As [`connect`], or the account is refused after signing in.
+/// As [`connect`], or Google Drive refuses the account.
 pub async fn sign_in(
     rclone: &Rclone,
     request: &ConnectRequest,
@@ -558,6 +591,7 @@ mod tests {
                 kind,
                 since: jiff::Timestamp::UNIX_EPOCH,
                 detail: String::new(),
+                fault: None,
             })
         };
         for (id, kind) in [
@@ -831,7 +865,9 @@ mod tests {
         );
         let rclone = fake_rclone(dir.path(), "exit 0");
 
-        let ids = remove_account(&paths, &rclone, "gdrive").await.unwrap();
+        let ids = remove_account(&paths, &rclone, "gdrive", ACCOUNT_LOCK_TIMEOUT)
+            .await
+            .unwrap();
 
         assert_eq!(ids, ["a", "c"]);
         assert_eq!(args_logged(dir.path()), ["config delete gdrive"]);
@@ -844,9 +880,85 @@ mod tests {
         write_config(&paths, "version = 1\n");
         let rclone = fake_rclone(dir.path(), "echo nope >&2; exit 1");
 
-        let error = remove_account(&paths, &rclone, "gdrive").await.unwrap_err();
+        let error = remove_account(&paths, &rclone, "gdrive", ACCOUNT_LOCK_TIMEOUT)
+            .await
+            .unwrap_err();
 
         assert_eq!(error, "rclone config delete failed: nope");
+    }
+
+    #[tokio::test]
+    async fn removing_an_account_forgets_what_its_syncs_applied_and_confirmed() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        let local = dir.path().join("l");
+        write_config(
+            &paths,
+            &format!(
+                "version = 1\n{}{}",
+                pair_toml("a", &local.join("a"), "gdrive:a"),
+                pair_toml("b", &local.join("b"), "work:b"),
+            ),
+        );
+        for id in ["a", "b"] {
+            State {
+                applied_filters_hash: Some("applied".into()),
+                ..State::default()
+            }
+            .save(&paths, id)
+            .await
+            .unwrap();
+            confirm_review(&paths, id, ReviewKind::Resync, "hash".into())
+                .await
+                .unwrap();
+        }
+        let rclone = fake_rclone(dir.path(), "exit 0");
+
+        remove_account(&paths, &rclone, "gdrive", ACCOUNT_LOCK_TIMEOUT)
+            .await
+            .unwrap();
+
+        let removed = State::load(&paths, "a").await.unwrap();
+        assert_eq!(removed.applied_filters_hash, None);
+        assert_eq!(ConfirmMarker::load(&paths, "a").await.unwrap(), None);
+        let other = State::load(&paths, "b").await.unwrap();
+        assert_eq!(other.applied_filters_hash.as_deref(), Some("applied"));
+        assert!(ConfirmMarker::load(&paths, "b").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn removing_an_account_with_a_running_sync_leaves_the_remote_and_the_states() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        let local = dir.path().join("l");
+        write_config(
+            &paths,
+            &format!(
+                "version = 1\n{}",
+                pair_toml("a", &local.join("a"), "gdrive:a")
+            ),
+        );
+        State {
+            applied_filters_hash: Some("applied".into()),
+            ..State::default()
+        }
+        .save(&paths, "a")
+        .await
+        .unwrap();
+        let _round = try_lock_pair(&paths, "a").unwrap().unwrap();
+        let rclone = fake_rclone(dir.path(), "exit 0");
+
+        let error = remove_account(&paths, &rclone, "gdrive", Duration::from_millis(150))
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            "A sync on this account is running. Try again when it finishes."
+        );
+        assert!(args_logged(dir.path()).is_empty());
+        let state = State::load(&paths, "a").await.unwrap();
+        assert_eq!(state.applied_filters_hash.as_deref(), Some("applied"));
     }
 
     #[tokio::test]
@@ -943,6 +1055,7 @@ mod tests {
                     kind,
                     since: jiff::Timestamp::UNIX_EPOCH,
                     detail: String::new(),
+                    fault: None,
                 }),
                 notified: vec![
                     GateKind::NeedsReviewFirstRun.notified_key(),
@@ -958,7 +1071,9 @@ mod tests {
                 .unwrap();
         }
 
-        let moved = rename_account(&paths, "gdrive", "personal").await.unwrap();
+        let moved = rename_account(&paths, "gdrive", "personal", ACCOUNT_LOCK_TIMEOUT)
+            .await
+            .unwrap();
 
         assert_eq!(moved, ["a", "c"]);
         let config = Config::load(&paths).await.unwrap();
@@ -975,6 +1090,32 @@ mod tests {
         let untouched = State::load(&paths, "b").await.unwrap();
         assert_eq!(untouched.gate.map(|g| g.kind), Some(GateKind::AuthError));
         assert!(ConfirmMarker::load(&paths, "b").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn renaming_an_account_with_a_running_sync_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        let local = dir.path().join("l");
+        let config = format!(
+            "version = 1\n{}{}",
+            pair_toml("a", &local.join("a"), "gdrive:a"),
+            pair_toml("b", &local.join("b"), "gdrive:b"),
+        );
+        write_config(&paths, &config);
+        State::default().save(&paths, "a").await.unwrap();
+        let _round = try_lock_pair(&paths, "b").unwrap().unwrap();
+
+        let error = rename_account(&paths, "gdrive", "personal", Duration::from_millis(150))
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            "A sync on this account is running. Try again when it finishes."
+        );
+        assert_eq!(Config::load(&paths).await.unwrap().to_toml(), config);
+        assert_eq!(State::load(&paths, "a").await.unwrap().gate, None);
     }
 
     const REFUSED: &str = "Error 403: Google Drive API has not been used in project 1";

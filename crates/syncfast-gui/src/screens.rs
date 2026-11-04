@@ -346,6 +346,7 @@ mod tests {
             kind: GateKind::NeedsReviewFiltersChanged,
             since: Timestamp::UNIX_EPOCH,
             detail: String::new(),
+            fault: None,
         });
         snapshot
     }

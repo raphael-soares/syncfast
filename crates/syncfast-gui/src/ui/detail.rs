@@ -2,6 +2,7 @@
 
 use egui::{Frame, Margin, RichText, Ui};
 use syncfast_core::bisync_log::Progress;
+use syncfast_core::notify::attention_body;
 use syncfast_core::state::{DisplayStatus, GateKind};
 use syncfast_core::watch::WATCH_LIMIT_NOTICE;
 
@@ -166,16 +167,16 @@ fn more_menu(
 /// What the card says beside the status, and the button that goes with it.
 struct CardText {
     phrase: String,
+    /// Raw text of the failure, selectable so the user can copy it.
+    detail: Option<String>,
     button: Option<(&'static str, Action)>,
-    /// The text can be selected, to copy an error message.
-    selectable: bool,
 }
 
 fn card_text(pair: &PairRow, now: jiff::Timestamp) -> CardText {
     let plain = |phrase: String| CardText {
         phrase,
+        detail: None,
         button: None,
-        selectable: false,
     };
     if let Some(gate) = pair.gate {
         return match gate {
@@ -185,21 +186,21 @@ fn card_text(pair: &PairRow, now: jiff::Timestamp) -> CardText {
             | GateKind::TooManyDeletes
             | GateKind::AllFilesChanged => CardText {
                 phrase: "Review what will change before syncing resumes.".to_owned(),
+                detail: None,
                 button: Some(("Review…", Action::OpenReview(pair.id.clone()))),
-                selectable: false,
             },
             GateKind::AuthError => CardText {
                 phrase: format!(
                     "Reconnect \"{}\" in Settings > Accounts.",
                     pair.remote.split(':').next().unwrap_or(&pair.remote)
                 ),
+                detail: None,
                 button: Some(("Reconnect Account…", Action::OpenAccounts)),
-                selectable: false,
             },
             GateKind::NeedsAttention => CardText {
-                phrase: pair.gate_detail.clone(),
+                phrase: attention_body(pair.gate_fault, &pair.gate_detail).to_owned(),
+                detail: Some(pair.gate_detail.clone()).filter(|detail| !detail.is_empty()),
                 button: Some(("Try Again", Action::SyncNow(pair.id.clone()))),
-                selectable: true,
             },
             GateKind::LocalMissing => plain(format!("{} is missing.", pair.local.display())),
             GateKind::ConfigError => plain(if pair.gate_detail.is_empty() {
@@ -250,7 +251,17 @@ fn status_card(
                             .font(theme::callout())
                             .color(palette.secondary),
                     )
-                    .selectable(text.selectable),
+                    .selectable(false),
+                );
+            }
+            if let Some(detail) = text.detail {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(detail)
+                            .font(theme::subheadline())
+                            .color(palette.secondary),
+                    )
+                    .selectable(true),
                 );
             }
             if pair.realtime_off {

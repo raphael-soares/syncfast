@@ -50,6 +50,7 @@ fn pair(id: &str, name: &str, local: &str, remote: &str) -> PairRow {
         last_success: None,
         progress: None,
         gate_detail: String::new(),
+        gate_fault: None,
         consecutive_failures: 0,
         realtime_off: false,
         presets: Vec::new(),

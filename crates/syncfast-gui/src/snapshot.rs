@@ -96,6 +96,7 @@ fn unreadable_state(detail: &str) -> State {
             // poll and the UI is not woken for nothing.
             since: Timestamp::UNIX_EPOCH,
             detail: detail.to_owned(),
+            fault: None,
         }),
         ..State::default()
     }

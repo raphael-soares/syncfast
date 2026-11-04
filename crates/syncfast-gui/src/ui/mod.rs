@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use jiff::Timestamp;
+use syncfast_core::bisync::Fault;
 use syncfast_core::bisync_log::Progress;
 use syncfast_core::conflicts::{Conflict, Resolution};
 use syncfast_core::state::{DisplayStatus, GateKind};
@@ -52,6 +53,8 @@ pub struct PairRow {
     pub progress: Option<Progress>,
     /// What the gate says about itself; empty without a gate.
     pub gate_detail: String,
+    /// The fault a gate that needs attention names.
+    pub gate_fault: Option<Fault>,
     pub consecutive_failures: u32,
     /// The watcher could not watch this sync's folder in full.
     pub realtime_off: bool,
@@ -93,6 +96,7 @@ impl From<&PairSnapshot> for PairRow {
                 .as_ref()
                 .map(|gate| gate.detail.clone())
                 .unwrap_or_default(),
+            gate_fault: snapshot.state.gate.as_ref().and_then(|gate| gate.fault),
             consecutive_failures: snapshot.state.consecutive_failures,
             realtime_off: snapshot.realtime_off,
             presets: snapshot.pair.presets.clone(),
@@ -162,7 +166,6 @@ pub struct ViewModel {
     pub removing: Option<String>,
     /// What the last check of each account found, by account name.
     pub account_status: BTreeMap<String, AccountStatus>,
-    /// The account the `Remove` alert asks about.
     pub removing_account: Option<String>,
 }
 

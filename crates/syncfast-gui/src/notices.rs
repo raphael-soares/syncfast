@@ -20,6 +20,7 @@ pub fn alert_for(state: &State, last_error: Option<&str>) -> Option<Alert> {
         return Some(Alert::Gate {
             kind: gate.kind,
             detail: gate.detail.clone(),
+            fault: gate.fault,
         });
     }
     let new_conflicts = state
@@ -148,6 +149,7 @@ mod tests {
                 kind: GateKind::AuthError,
                 since: at(),
                 detail: String::new(),
+                fault: None,
             }),
             consecutive_failures: 5,
             ..state_with_conflicts(Some(2))

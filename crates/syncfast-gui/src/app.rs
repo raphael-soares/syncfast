@@ -861,6 +861,7 @@ mod tests {
                     kind,
                     since: Timestamp::UNIX_EPOCH,
                     detail: String::new(),
+                    fault: None,
                 }),
                 ..State::default()
             },
