@@ -619,6 +619,10 @@ impl App {
                 self.error = None;
                 self.backend.send(Command::OpenVersionsFolder(id));
             }
+            Action::OpenUrl(url) => {
+                self.error = None;
+                self.backend.send(Command::OpenUrl(url));
+            }
             Action::SkipWelcome => self.finish_welcome_now(),
             Action::ShowWindow => self.show_window(ctx),
             Action::HideWindow => self.hide_window(ctx),

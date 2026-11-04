@@ -76,7 +76,7 @@ pub fn sheet_with_header(
     let mut action = None;
     egui::Area::new(id.with("panel"))
         .order(Order::Foreground)
-        .anchor(Align2::CENTER_TOP, egui::vec2(0.0, 40.0))
+        .anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
         .show(ctx, |ui| {
             egui::Frame::new()
                 .fill(palette.overlay)

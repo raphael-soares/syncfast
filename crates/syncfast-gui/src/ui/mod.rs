@@ -195,6 +195,8 @@ pub enum Action {
     OpenLocalFolder(String),
     /// Opens the folder that keeps the sync's saved versions.
     OpenVersionsFolder(String),
+    /// Opens a web link in the desktop's browser.
+    OpenUrl(String),
     /// Asks to remove a sync (the alert decides).
     RemoveSync(String),
     /// Opens Settings on Accounts.
