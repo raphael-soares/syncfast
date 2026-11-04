@@ -21,6 +21,54 @@ const AUTH_PATTERNS: [&str; 4] = [
     "oauth2: cannot fetch token",
     "token expired",
 ];
+const ACCOUNT_PATTERNS: [&str; 4] = [
+    "service_disabled",
+    "accessnotconfigured",
+    "has not been used in project",
+    "unauthorized_client",
+];
+const QUOTA_PATTERNS: [&str; 2] = ["storagequotaexceeded", "storage quota has been exceeded"];
+const PERMISSION_PATTERNS: [&str; 3] = [
+    "insufficientfilepermissions",
+    "insufficientpermissions",
+    "appnotauthorizedtofile",
+];
+const REMOTE_MISSING_PATTERNS: [&str; 1] = ["directory not found"];
+
+/// A failure that retrying does not fix: the user has to act.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Fault {
+    /// The sign-in was lost or revoked.
+    Auth,
+    /// The account or its Google Cloud project refuses the app (API off,
+    /// client not allowed).
+    Account,
+    Quota,
+    Permission,
+    RemoteMissing,
+}
+
+/// The fault an rclone error line names, if any. Case-insensitive.
+#[must_use]
+pub fn fault_of(message: &str) -> Option<Fault> {
+    let message = message.to_lowercase();
+    let has = |patterns: &[&str]| patterns.iter().any(|pattern| message.contains(pattern));
+    if has(&AUTH_PATTERNS) {
+        Some(Fault::Auth)
+    } else if has(&ACCOUNT_PATTERNS) {
+        Some(Fault::Account)
+    } else if has(&QUOTA_PATTERNS) {
+        Some(Fault::Quota)
+    } else if has(&PERMISSION_PATTERNS) {
+        Some(Fault::Permission)
+    } else if has(&REMOTE_MISSING_PATTERNS) {
+        Some(Fault::RemoteMissing)
+    } else {
+        None
+    }
+}
+
 const TOO_MANY_DELETES: &str = "too many deletes";
 const ALL_FILES_CHANGED: &str = "Safety abort: all files were changed";
 const MUST_RESYNC: &str = "Must run --resync to recover";
