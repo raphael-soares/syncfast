@@ -103,7 +103,6 @@ pub fn render(pair: &Pair, git_repos: &[String]) -> String {
     out
 }
 
-/// A rendered filters-file and the repositories it leaves out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rendered {
     pub text: String,

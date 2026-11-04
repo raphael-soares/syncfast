@@ -606,8 +606,6 @@ impl Watcher {
         self.publish_limit();
     }
 
-    /// Writes which syncs ran into the inotify limit for `status` and the
-    /// GUI, or removes the file when there are none.
     fn publish_limit(&self) {
         let mut ids: Vec<String> = self
             .limit_hit

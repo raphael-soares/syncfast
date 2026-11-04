@@ -13,19 +13,19 @@ use std::time::Duration;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use crate::bisync::ReviewKind;
+use crate::bisync::{Fault, ReviewKind};
 use crate::bisync_log::RunSummary;
 use crate::config::Pair;
 use crate::paths::Paths;
 
 /// How many rounds keep their log in `runs/`.
 pub const RUNS_KEPT: usize = 50;
-/// How long a preview log is kept.
 pub const PREVIEWS_KEPT: Duration = Duration::from_hours(24);
 /// Key in [`State::notified`] for the "sync failing" notification.
 pub const NOTIFIED_FAILURES: &str = "failures";
 /// Failed rounds in a row before the status turns into [`DisplayStatus::Failing`].
 const FAILING_AFTER: u32 = 3;
+const LOCK_POLL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, thiserror::Error)]
 pub enum StateError {
@@ -111,6 +111,9 @@ pub struct Gate {
     pub kind: GateKind,
     pub since: Timestamp,
     pub detail: String,
+    /// The fault a `needs_attention` gate names; absent from older files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fault: Option<Fault>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,6 +161,7 @@ impl State {
                 kind: GateKind::NeedsReviewFirstRun,
                 since: now,
                 detail: String::new(),
+                fault: None,
             }),
             ..Self::default()
         }
@@ -177,6 +181,24 @@ impl State {
                 Ok(Self::first_run(Timestamp::now()))
             }
             Err(source) => Err(StateError::Read { path, source }),
+        }
+    }
+
+    /// As [`State::load`], but a file that cannot be read becomes a
+    /// `config_error` gate carrying the error, so one broken file shows on
+    /// its own sync instead of failing every listing.
+    pub async fn load_or_config_error(paths: &Paths, pair_id: &str) -> Self {
+        match Self::load(paths, pair_id).await {
+            Ok(state) => state,
+            Err(err) => Self {
+                gate: Some(Gate {
+                    kind: GateKind::ConfigError,
+                    since: Timestamp::UNIX_EPOCH,
+                    detail: err.to_string(),
+                    fault: None,
+                }),
+                ..Self::default()
+            },
         }
     }
 
@@ -280,6 +302,28 @@ pub(crate) fn is_locked(path: &Path) -> bool {
 /// The lock file cannot be created or locked.
 pub fn try_lock_pair(paths: &Paths, pair_id: &str) -> Result<Option<File>, StateError> {
     try_lock(paths, paths.lock_file(pair_id))
+}
+
+/// [`try_lock_pair`], polled until the lock is free or `timeout` passes
+/// (`None`).
+///
+/// # Errors
+/// The lock file cannot be created or locked.
+pub async fn lock_pair(
+    paths: &Paths,
+    pair_id: &str,
+    timeout: Duration,
+) -> Result<Option<File>, StateError> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if let Some(lock) = try_lock_pair(paths, pair_id)? {
+            return Ok(Some(lock));
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(None);
+        }
+        tokio::time::sleep(LOCK_POLL).await;
+    }
 }
 
 /// [`try_lock_pair`] for any lock file in the runtime folder.
@@ -522,6 +566,7 @@ mod tests {
             kind,
             since: at("2026-01-01T12:00:00Z"),
             detail: String::new(),
+            fault: None,
         }
     }
 
@@ -544,6 +589,7 @@ mod tests {
                 kind: GateKind::TooManyDeletes,
                 since: at("2026-01-01T12:00:00Z"),
                 detail: "3 of 4".into(),
+                fault: Some(Fault::Quota),
             }),
             last_outcome: Some(LastOutcome::Error),
             offline: true,
@@ -641,6 +687,27 @@ mod tests {
                 "notified": []
             })
         );
+    }
+
+    #[tokio::test]
+    async fn a_gate_saved_without_a_fault_loads_with_none_and_a_named_fault_round_trips() {
+        let (_dir, paths) = temp_paths();
+        let file = paths.state_file("drive");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(
+            &file,
+            r#"{"gate":{"kind":"needs_attention","since":"2026-01-01T12:00:00Z","detail":"x"}}"#,
+        )
+        .unwrap();
+
+        let old = State::load(&paths, "drive").await.unwrap();
+        let mut named = old.clone();
+        named.gate.as_mut().unwrap().fault = Some(Fault::Permission);
+        named.save(&paths, "drive").await.unwrap();
+        let reloaded = State::load(&paths, "drive").await.unwrap();
+
+        assert_eq!(old.gate.unwrap().fault, None);
+        assert_eq!(reloaded.gate.unwrap().fault, Some(Fault::Permission));
     }
 
     #[tokio::test]
@@ -762,6 +829,23 @@ mod tests {
         assert!(second.is_none());
         assert!(running);
         assert!(after.is_some());
+    }
+
+    #[tokio::test]
+    async fn waiting_for_the_pair_lock_gives_up_after_the_timeout_and_gets_it_once_free() {
+        let (_dir, paths) = temp_paths();
+        let held = try_lock_pair(&paths, "drive").unwrap().unwrap();
+
+        let timed_out = lock_pair(&paths, "drive", Duration::from_millis(150))
+            .await
+            .unwrap();
+        drop(held);
+        let free = lock_pair(&paths, "drive", Duration::from_millis(150))
+            .await
+            .unwrap();
+
+        assert!(timed_out.is_none());
+        assert!(free.is_some());
     }
 
     #[test]

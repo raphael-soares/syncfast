@@ -7,23 +7,20 @@ use jiff::Timestamp;
 
 use crate::config::{Config, GlobalConfigError};
 use crate::paths::Paths;
-use crate::state::{DisplayStatus, State, StateError, display_status, is_running};
+use crate::state::{DisplayStatus, State, display_status, is_running};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StatusError {
     #[error("{0}")]
     Config(#[from] GlobalConfigError),
-    #[error("{0}")]
-    State(#[from] StateError),
 }
 
 impl StatusError {
-    /// 2 for a config the user must fix, 1 for anything else.
+    /// 2: a config the user must fix.
     #[must_use]
     pub fn exit_code(&self) -> u8 {
         match self {
             Self::Config(_) => 2,
-            Self::State(_) => 1,
         }
     }
 }
@@ -46,15 +43,16 @@ impl fmt::Display for StatusLine {
     }
 }
 
-/// One line per sync in the config, valid or not.
+/// One line per sync in the config, valid or not. A state file that cannot
+/// be read shows as that sync's `config_error`.
 ///
 /// # Errors
-/// The config has a global problem or a sync's state cannot be read.
+/// The config has a global problem.
 pub async fn collect(paths: &Paths) -> Result<Vec<StatusLine>, StatusError> {
     let config = Config::load(paths).await?;
     let mut lines = Vec::with_capacity(config.pairs().len());
     for pair in config.pairs() {
-        let state = State::load(paths, &pair.id).await?;
+        let state = State::load_or_config_error(paths, &pair.id).await;
         lines.push(StatusLine {
             id: pair.id.clone(),
             status: display_status(pair, &state, is_running(paths, &pair.id)),
@@ -154,6 +152,29 @@ mod tests {
         let lines = collect(&paths).await.unwrap();
 
         assert_eq!(lines[0].status, DisplayStatus::Syncing);
+    }
+
+    #[tokio::test]
+    async fn one_corrupt_state_file_only_shows_as_an_error_on_its_own_sync() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        write_config(&paths, &[("notes", true), ("docs", true)]);
+        State {
+            gate: None,
+            last_outcome: Some(LastOutcome::Ok),
+            ..State::default()
+        }
+        .save(&paths, "docs")
+        .await
+        .unwrap();
+        let broken = paths.state_file("notes");
+        std::fs::create_dir_all(broken.parent().unwrap()).unwrap();
+        std::fs::write(broken, "{ not json").unwrap();
+
+        let lines = collect(&paths).await.unwrap();
+
+        let printed: Vec<String> = lines.iter().map(ToString::to_string).collect();
+        assert_eq!(printed, ["notes\tError\tnever", "docs\tUpToDate\tnever"]);
     }
 
     #[tokio::test]

@@ -13,7 +13,7 @@ use tokio::signal::unix::{SignalKind, signal};
 
 use crate::behavior::Behavior;
 use crate::bisync::{
-    Mode, Outcome, bisync_args, classify, is_empty_prior_listing, log_file, stamp,
+    Fault, Mode, Outcome, bisync_args, classify, is_empty_prior_listing, log_file, stamp,
 };
 use crate::bisync_log::{LogLine, read_log, summarize};
 use crate::config::{Config, GlobalConfigError, Pair, PairError};
@@ -169,7 +169,13 @@ pub(crate) async fn lookup_pair(env: &RunEnv<'_>, pair_id: &str) -> Result<PairL
 
 /// Records `kind` as the gate, keeping `since` when the pair was already
 /// gated for the same reason.
-pub(crate) fn set_gate(state: &mut State, kind: GateKind, detail: String, now: Timestamp) {
+pub(crate) fn set_gate(
+    state: &mut State,
+    kind: GateKind,
+    detail: String,
+    fault: Option<Fault>,
+    now: Timestamp,
+) {
     let since = state
         .gate
         .as_ref()
@@ -179,6 +185,7 @@ pub(crate) fn set_gate(state: &mut State, kind: GateKind, detail: String, now: T
         kind,
         since,
         detail,
+        fault,
     });
 }
 
@@ -203,16 +210,20 @@ fn announce(pair: &Pair, state: &mut State, key: String, alert: &Alert) -> Optio
 }
 
 fn announce_gate(pair: &Pair, state: &mut State, kind: GateKind) -> Option<Notice> {
-    let detail = state
+    let (detail, fault) = state
         .gate
         .as_ref()
-        .map(|gate| gate.detail.clone())
+        .map(|gate| (gate.detail.clone(), gate.fault))
         .unwrap_or_default();
     announce(
         pair,
         state,
         kind.notified_key(),
-        &Alert::Gate { kind, detail },
+        &Alert::Gate {
+            kind,
+            detail,
+            fault,
+        },
     )
 }
 
@@ -335,6 +346,7 @@ pub async fn run(env: &RunEnv<'_>, pair_id: &str) -> Result<RunReport, RunError>
                 &mut state,
                 GateKind::ConfigError,
                 error.message,
+                None,
                 env.now().timestamp(),
             );
             let notice = announce_gate(&pair, &mut state, GateKind::ConfigError);
@@ -382,6 +394,7 @@ pub async fn run(env: &RunEnv<'_>, pair_id: &str) -> Result<RunReport, RunError>
         Decision::Skip(SkipReason::Paused) => Ok(RunReport::Skipped(SkipReason::Paused)),
         Decision::Skip(SkipReason::Offline) => {
             state.offline = true;
+            state.failing_since = None;
             state.save(env.paths, pair_id).await?;
             Ok(RunReport::Skipped(SkipReason::Offline))
         }
@@ -403,7 +416,7 @@ pub async fn run(env: &RunEnv<'_>, pair_id: &str) -> Result<RunReport, RunError>
         Decision::SetGate(kind) => {
             let unchanged = state.gate.as_ref().is_some_and(|gate| gate.kind == kind);
             if !unchanged {
-                set_gate(&mut state, kind, String::new(), env.now().timestamp());
+                set_gate(&mut state, kind, String::new(), None, env.now().timestamp());
             }
             let notice = announce_gate(&pair, &mut state, kind);
             state.save(env.paths, pair_id).await?;
@@ -486,7 +499,7 @@ impl Round<'_> {
         send(env, notice);
 
         self.prune().await;
-        if outcome != Outcome::Transient {
+        if !matches!(outcome, Outcome::Transient | Outcome::NeedsAttention { .. }) {
             ConfirmMarker::remove(env.paths, id).await?;
         }
         Ok((mode, outcome))
@@ -530,12 +543,14 @@ impl Round<'_> {
         finished: Timestamp,
     ) -> Option<Notice> {
         let pair = self.pair;
+        if !matches!(outcome, Outcome::Transient | Outcome::NeedsAttention { .. }) {
+            state.failing_since = None;
+        }
         let gate = match outcome {
             Outcome::Ok => {
                 state.gate = None;
                 state.last_outcome = Some(LastOutcome::Ok);
                 state.consecutive_failures = 0;
-                state.failing_since = None;
                 state.applied_filters_hash = Some(self.filters.hash.clone());
                 state.last_success = Some(finished);
                 state
@@ -546,25 +561,25 @@ impl Round<'_> {
                     .filter(|count| *count > 0)
                     .map(|count| notice(pair, &Alert::NewConflicts(count)));
             }
-            Outcome::TooManyDeletes => (GateKind::TooManyDeletes, String::new()),
-            Outcome::AllFilesChanged => (GateKind::AllFilesChanged, String::new()),
+            Outcome::TooManyDeletes => (GateKind::TooManyDeletes, String::new(), None),
+            Outcome::AllFilesChanged => (GateKind::AllFilesChanged, String::new(), None),
             Outcome::NeedsReview(_) => (
                 GateKind::NeedsReviewCriticalError,
                 detail.unwrap_or_default(),
+                None,
             ),
-            Outcome::AuthError => (GateKind::AuthError, detail.unwrap_or_default()),
+            Outcome::AuthError => (GateKind::AuthError, detail.unwrap_or_default(), None),
             Outcome::ConfigError => (
                 GateKind::ConfigError,
                 format!(
                     "rclone rejected its arguments: {}",
                     detail.unwrap_or_else(|| format!("exit code {exit_code}"))
                 ),
+                None,
             ),
-            Outcome::NeedsAttention {
-                detail: failure, ..
-            } => {
+            Outcome::NeedsAttention { fault, detail } => {
                 record_failure(state, finished);
-                (GateKind::NeedsAttention, failure.clone())
+                (GateKind::NeedsAttention, detail.clone(), Some(*fault))
             }
             Outcome::Transient => {
                 record_failure(state, finished);
@@ -579,6 +594,7 @@ impl Round<'_> {
                     (
                         GateKind::NeedsAttention,
                         format!("Syncing has failed for over {hours} hours: {message}"),
+                        None,
                     )
                 } else if state.consecutive_failures >= NOTIFY_FAILURES_AFTER {
                     return announce(
@@ -592,7 +608,7 @@ impl Round<'_> {
                 }
             }
         };
-        set_gate(state, gate.0, gate.1, finished);
+        set_gate(state, gate.0, gate.1, gate.2, finished);
         announce_gate(pair, state, gate.0)
     }
 

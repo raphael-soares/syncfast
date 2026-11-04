@@ -64,7 +64,17 @@ pub fn decide(input: &DecideInput<'_>) -> Decision {
             Decision::Skip(SkipReason::Gated)
         };
     }
+    let resync_confirmed = input.marker.is_some_and(|marker| {
+        marker.kind == ReviewKind::Resync && marker.filters_hash == input.current_filters_hash
+    });
     let gate = match input.gate {
+        // The first review was confirmed and its round failed: run it again
+        // instead of hiding the failure behind a new review.
+        Some(GateKind::NeedsAttention)
+            if input.applied_filters_hash.is_none() && resync_confirmed =>
+        {
+            Some(GateKind::NeedsReviewFirstRun)
+        }
         // The pair is valid again (or its failure may be gone). One that
         // never synced still owes its first review.
         Some(GateKind::ConfigError | GateKind::NeedsAttention)
@@ -183,6 +193,53 @@ mod tests {
         });
 
         assert_eq!(decision, Decision::SetGate(GateKind::NeedsReviewFirstRun));
+    }
+
+    #[test]
+    fn an_attention_gate_of_a_never_synced_pair_resumes_its_confirmed_resync() {
+        let confirmed = marker(ReviewKind::Resync, HASH);
+
+        let decision = decide(&DecideInput {
+            gate: Some(GateKind::NeedsAttention),
+            applied_filters_hash: None,
+            marker: Some(&confirmed),
+            ..input()
+        });
+
+        assert_eq!(decision, Decision::Run(Mode::Resync));
+        assert!(!decision.discards_marker());
+    }
+
+    #[test]
+    fn an_attention_gate_of_a_never_synced_pair_ignores_a_marker_for_other_filters_or_a_force() {
+        for stale in [
+            marker(ReviewKind::Resync, "old-hash"),
+            marker(ReviewKind::Force, HASH),
+        ] {
+            let decision = decide(&DecideInput {
+                gate: Some(GateKind::NeedsAttention),
+                applied_filters_hash: None,
+                marker: Some(&stale),
+                ..input()
+            });
+
+            assert_eq!(decision, Decision::SetGate(GateKind::NeedsReviewFirstRun));
+        }
+    }
+
+    #[test]
+    fn an_attention_gate_of_a_never_synced_pair_waits_offline_for_its_confirmed_resync() {
+        let confirmed = marker(ReviewKind::Resync, HASH);
+
+        let decision = decide(&DecideInput {
+            online: false,
+            gate: Some(GateKind::NeedsAttention),
+            applied_filters_hash: None,
+            marker: Some(&confirmed),
+            ..input()
+        });
+
+        assert_eq!(decision, Decision::Skip(SkipReason::Offline));
     }
 
     #[test]

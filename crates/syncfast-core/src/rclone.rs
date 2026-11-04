@@ -153,8 +153,6 @@ impl Rclone {
         })
     }
 
-    /// Removes the remote `name` from the rclone config.
-    ///
     /// # Errors
     /// rclone cannot run or fails.
     pub async fn delete_remote(&self, name: &str) -> Result<(), RcloneError> {

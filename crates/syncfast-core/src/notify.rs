@@ -28,11 +28,12 @@ pub struct Notice {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Alert {
-    /// `detail` is the gate's detail: the message of a `config_error`, or
-    /// the failure a `needs_attention` names.
+    /// `detail` and `fault` are the gate's: the message of a `config_error`,
+    /// or the failure a `needs_attention` names and the fault it is.
     Gate {
         kind: GateKind,
         detail: String,
+        fault: Option<Fault>,
     },
     NewConflicts(u32),
     /// The newest error line of the log.
@@ -43,7 +44,11 @@ pub enum Alert {
 pub fn notice(pair: &Pair, alert: &Alert) -> Notice {
     let name = &pair.name;
     let (title, body) = match alert {
-        Alert::Gate { kind, detail } => match kind {
+        Alert::Gate {
+            kind,
+            detail,
+            fault,
+        } => match kind {
             GateKind::NeedsReviewFirstRun => (
                 format!("{name}: review needed"),
                 "Review the first sync before it starts.".to_owned(),
@@ -82,7 +87,7 @@ pub fn notice(pair: &Pair, alert: &Alert) -> Notice {
             ),
             GateKind::NeedsAttention => (
                 format!("{name}: needs attention"),
-                attention_body(detail).to_owned(),
+                attention_body(*fault, detail).to_owned(),
             ),
         },
         Alert::NewConflicts(count) => (
@@ -101,11 +106,12 @@ pub fn notice(pair: &Pair, alert: &Alert) -> Notice {
     }
 }
 
-/// What a `needs_attention` gate tells the user. The fault is read back
-/// from `detail`, which is the failure message that named it; a detail
-/// without one is a sync that kept failing for too long.
-fn attention_body(detail: &str) -> &'static str {
-    match fault_of(detail) {
+/// What a `needs_attention` gate tells the user. Gates saved before they
+/// stored their `fault` read it back from `detail`, the failure message
+/// that named it; neither means a sync that kept failing for too long.
+#[must_use]
+pub fn attention_body(fault: Option<Fault>, detail: &str) -> &'static str {
+    match fault.or_else(|| fault_of(detail)) {
         Some(Fault::Account) => "Google Drive refused the account. Open syncfast for the fix.",
         Some(Fault::Quota) => "Google Drive is full.",
         Some(Fault::Permission) => "No permission to a file or folder on Google Drive.",
@@ -261,6 +267,7 @@ mod tests {
         Alert::Gate {
             kind,
             detail: detail.to_owned(),
+            fault: None,
         }
     }
 
@@ -380,6 +387,17 @@ mod tests {
                 "{detail}"
             );
         }
+    }
+
+    #[test]
+    fn needs_attention_reads_the_stored_fault_before_the_detail() {
+        let alert = Alert::Gate {
+            kind: GateKind::NeedsAttention,
+            detail: "the message no longer names it".to_owned(),
+            fault: Some(Fault::Quota),
+        };
+
+        assert_eq!(text(&alert).1, "Google Drive is full.");
     }
 
     #[test]

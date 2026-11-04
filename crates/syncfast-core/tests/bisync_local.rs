@@ -1007,6 +1007,24 @@ async fn auth_failure_sets_the_account_gate_and_names_the_account() {
 }
 
 #[tokio::test]
+async fn a_round_that_ends_any_way_but_failing_for_now_ends_the_failing_series() {
+    let Some(bed) = bed() else { return };
+    synced_base(&bed).await;
+    let failing = fake_rclone(&bed, r#"{"level":"error","msg":"boom"}"#, 1);
+    bed.run_with(&failing).await;
+    assert!(bed.state().await.failing_since.is_some());
+    let rejected = fake_rclone(
+        &bed,
+        r#"{"level":"error","msg":"couldn't fetch token: invalid_grant"}"#,
+        1,
+    );
+
+    bed.run_with(&rejected).await;
+
+    assert_eq!(bed.state().await.failing_since, None);
+}
+
+#[tokio::test]
 async fn a_fault_sets_the_attention_gate_once_and_the_next_good_round_clears_it() {
     let Some(bed) = bed() else { return };
     synced_base(&bed).await;
@@ -1035,6 +1053,7 @@ async fn a_fault_sets_the_attention_gate_once_and_the_next_good_round_clears_it(
     let gate = state.gate.unwrap();
     assert_eq!(gate.kind, GateKind::NeedsAttention);
     assert_eq!(gate.detail, "googleapi: Error 403: storageQuotaExceeded");
+    assert_eq!(gate.fault, Some(Fault::Quota));
     assert_eq!(state.consecutive_failures, 2);
     assert_eq!(state.last_outcome, Some(LastOutcome::Error));
     assert!(state.failing_since.is_some());
@@ -1056,6 +1075,67 @@ async fn a_fault_sets_the_attention_gate_once_and_the_next_good_round_clears_it(
     assert!(state.failing_since.is_none());
     assert!(state.notified.is_empty(), "{:?}", state.notified);
     assert_eq!(read(&bed.remote, "after.txt"), "after");
+}
+
+#[tokio::test]
+async fn a_confirmed_first_sync_that_needs_attention_keeps_the_failure_and_resumes_once_fixed() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "base.txt", "base");
+    bed.confirm(ReviewKind::Resync).await;
+    let full = fake_rclone(
+        &bed,
+        r#"{"level":"error","msg":"googleapi: Error 403: storageQuotaExceeded"}"#,
+        1,
+    );
+
+    let first = bed.run_with(&full).await;
+    let second = bed.run_with(&full).await;
+
+    for report in [first, second] {
+        assert!(
+            matches!(
+                report,
+                RunReport::Ran {
+                    mode: Mode::Resync,
+                    outcome: Outcome::NeedsAttention {
+                        fault: Fault::Quota,
+                        ..
+                    }
+                }
+            ),
+            "{report:?}"
+        );
+    }
+    let state = bed.state().await;
+    assert_eq!(
+        state.gate.map(|gate| gate.kind),
+        Some(GateKind::NeedsAttention)
+    );
+    assert_eq!(state.applied_filters_hash, None);
+    assert!(
+        ConfirmMarker::load(&bed.paths, PAIR)
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    let recovered = bed.run().await;
+
+    assert_eq!(
+        recovered,
+        RunReport::Ran {
+            mode: Mode::Resync,
+            outcome: Outcome::Ok
+        }
+    );
+    assert!(bed.state().await.gate.is_none());
+    assert!(
+        ConfirmMarker::load(&bed.paths, PAIR)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(read(&bed.remote, "base.txt"), "base");
 }
 
 #[tokio::test]

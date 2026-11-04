@@ -10,6 +10,7 @@ use super::{OpError, Ops};
 use crate::bisync::ReviewKind;
 use crate::config::Pair;
 use crate::filters;
+use crate::notify::attention_body;
 use crate::state::{Gate, GateKind, LastOutcome, State, display_status, is_running};
 use crate::watch::{WATCH_LIMIT_NOTICE, limited_pairs};
 
@@ -118,7 +119,10 @@ fn explanation(gate: &Gate) -> String {
         GateKind::LocalMissing => {
             "The local folder is missing: syncing resumes when it is back.".to_owned()
         }
-        GateKind::NeedsAttention => format!("Needs attention: {}", gate.detail),
+        GateKind::NeedsAttention => format!(
+            "Needs attention: {}",
+            attention_body(gate.fault, &gate.detail)
+        ),
     }
 }
 
@@ -187,17 +191,7 @@ impl LastRunView {
 /// A state file that cannot be read shows as a configuration error rather
 /// than as a healthy sync, as in the GUI.
 pub(crate) async fn load_state(ops: &Ops, id: &str) -> State {
-    match State::load(&ops.paths, id).await {
-        Ok(state) => state,
-        Err(err) => State {
-            gate: Some(Gate {
-                kind: GateKind::ConfigError,
-                since: Timestamp::UNIX_EPOCH,
-                detail: err.to_string(),
-            }),
-            ..State::default()
-        },
-    }
+    State::load_or_config_error(&ops.paths, id).await
 }
 
 impl Ops {

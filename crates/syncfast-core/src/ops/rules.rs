@@ -74,6 +74,7 @@ pub async fn after_filters_saved(paths: &Paths, id: &str) -> Result<bool, OpErro
                 kind: GateKind::NeedsReviewFiltersChanged,
                 since: Timestamp::now(),
                 detail: String::new(),
+                fault: None,
             });
             state.save(paths, id).await?;
             Ok(false)

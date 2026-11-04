@@ -56,7 +56,6 @@ pub enum ConfigSaveError {
     DanglingLink { target: PathBuf },
 }
 
-/// Why [`Config::edit`] did not write.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigUpdateError {
     #[error(transparent)]
@@ -354,14 +353,11 @@ impl Config {
         self.document.to_string()
     }
 
-    /// Loads the config, applies `change` and saves, all under an exclusive
-    /// lock on `config.lock`, so concurrent edits (the GUI, the CLI, an
-    /// agent) never overwrite each other. Nothing is written when `change`
-    /// leaves the document as it was, so it must validate before it mutates.
+    /// Applies `change` under an exclusive lock and saves, so concurrent edits
+    /// never overwrite each other; nothing is saved if it changes nothing.
     ///
     /// # Errors
-    /// The lock cannot be taken, the file cannot be loaded, or the changed
-    /// config cannot be saved.
+    /// The lock, the load or the save fails.
     pub async fn edit<T>(
         paths: &Paths,
         change: impl FnOnce(&mut Self) -> T,
@@ -431,9 +427,10 @@ impl Config {
 }
 
 /// Blocks until this process holds `config.lock` exclusively; the lock is
-/// released when the returned file is dropped.
+/// released when the returned file is dropped. It lives in the state folder
+/// because the config folder may be a link into a dotfiles repo.
 async fn lock_config(paths: &Paths) -> Result<std::fs::File, ConfigSaveError> {
-    let dir = paths.config_dir();
+    let dir = paths.state_dir();
     let path = dir.join("config.lock");
     let locked = path.clone();
     tokio::task::spawn_blocking(move || -> std::io::Result<std::fs::File> {
@@ -1430,6 +1427,22 @@ mod tests {
         assert!(first.unwrap() && second.unwrap());
         let loaded = Config::load(&paths).await.unwrap();
         assert!(loaded.pairs().iter().all(|pair| !pair.enabled));
+    }
+
+    #[tokio::test]
+    async fn an_edit_keeps_its_lock_out_of_the_config_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths_in(root.path());
+        let mut config = Config::empty();
+        config.add_pair(sample_pair("a")).unwrap();
+        config.save(&paths).await.unwrap();
+
+        Config::edit(&paths, |config| config.set_enabled("a", false))
+            .await
+            .unwrap();
+
+        assert!(paths.state_dir().join("config.lock").exists());
+        assert!(!paths.config_dir().join("config.lock").exists());
     }
 
     #[tokio::test]
