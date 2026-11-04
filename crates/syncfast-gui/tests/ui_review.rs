@@ -502,3 +502,61 @@ fn escape_emits_cancel_in_every_phase() {
         assert_eq!(harness.state().actions, review(ReviewAction::Cancel));
     }
 }
+
+/// A sheet drawn before the screen, as the app does so Esc reaches it first.
+fn sheet_over_screen() -> Harness<'static, Case> {
+    let case = Case {
+        gate: GateKind::NeedsReviewFirstRun,
+        phase: preview(changes(ChangeKind::Upload, "up/", 1)),
+        actions: Vec::new(),
+    };
+    let mut harness = Harness::new_ui_state(
+        |ui, case: &mut Case| {
+            if ready(ui) {
+                let view = ReviewView {
+                    name: "Docs",
+                    remote: REMOTE,
+                    gate: case.gate,
+                    phase: &case.phase,
+                };
+                let actions = show(ui.ctx(), &view);
+                case.actions.extend(actions);
+                let _ = ui.button("Behind the sheet");
+            }
+        },
+        case,
+    );
+    harness.run_ok();
+    harness.run_steps(3);
+    harness
+}
+
+#[test]
+fn the_sheet_stays_above_its_scrim_when_drawn_before_the_screen() {
+    let mut harness = sheet_over_screen();
+    let target = harness.get_by_label("Cancel").rect().center();
+
+    let layer = harness
+        .ctx
+        .layer_id_at(target)
+        .expect("a layer under Cancel");
+
+    assert_eq!(layer.order, egui::Order::Foreground);
+}
+
+#[test]
+fn cancel_and_sync_stay_clickable_under_the_scrim() {
+    let mut harness = sheet_over_screen();
+    harness.get_by_label("Sync").click();
+    harness.run_steps(3);
+    harness.get_by_label("Cancel").click();
+    harness.run_steps(3);
+
+    assert_eq!(
+        harness.state().actions,
+        [
+            Action::Review(ReviewAction::Confirm),
+            Action::Review(ReviewAction::Cancel)
+        ]
+    );
+}
