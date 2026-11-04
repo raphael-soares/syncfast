@@ -14,8 +14,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  RCLONE_VERSION: v1.75.2
-  RCLONE_SHA256: 349ac8fba6ff65d6247043f1750cdcb518ec5d500ef91463a10d37c0ccdf3702
 
 jobs:
   check:
@@ -31,9 +29,12 @@ jobs:
             libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev libegl1-mesa-dev
 
       - name: Install rclone
+        env:
+          RELEASE: v1.75.2
+          SHA256: 349ac8fba6ff65d6247043f1750cdcb518ec5d500ef91463a10d37c0ccdf3702
         run: |
-          curl -fsSL -o rclone.zip "https://github.com/rclone/rclone/releases/download/${RCLONE_VERSION}/rclone-${RCLONE_VERSION}-linux-amd64.zip"
-          echo "${RCLONE_SHA256}  rclone.zip" | sha256sum --check
+          curl -fsSL -o rclone.zip "https://github.com/rclone/rclone/releases/download/${RELEASE}/rclone-${RELEASE}-linux-amd64.zip"
+          echo "${SHA256}  rclone.zip" | sha256sum --check
           unzip -j rclone.zip '*/rclone' -d "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
@@ -51,17 +52,3 @@ jobs:
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       - run: cargo nextest run --locked --workspace --no-fail-fast
-
-      - name: Diagnose
-        if: failure()
-        run: |
-          which rclone; rclone version | head -2
-          r=$(mktemp -d); mkdir -p $r/home $r/config $r/state $r/data $r/run $r/local $r/remote
-          printf '[testremote]\ntype = local\n' > $r/rclone.conf
-          echo hello > $r/local/a.txt
-          export HOME=$r/home XDG_CONFIG_HOME=$r/config XDG_STATE_HOME=$r/state XDG_DATA_HOME=$r/data XDG_RUNTIME_DIR=$r/run RCLONE_CONFIG=$r/rclone.conf SYNCFAST_SYSTEMD=off DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent DBUS_SYSTEM_BUS_ADDRESS=unix:path=/nonexistent
-          S=./target/debug/syncfast
-          $S add --json --name Docs --local $r/local --remote testremote:$r/remote; echo "add exit $?"
-          $S review show docs --json; echo "review exit $?"
-          find $r/state -type f | head -20
-          for f in $(find $r/state -name '*.jsonl' | head -3); do tail -20 $f; done
