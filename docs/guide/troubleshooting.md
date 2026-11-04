@@ -28,6 +28,10 @@ journalctl --user -u syncfast-watch.service -n 50
 
 Opening syncfast rewrites the units. The units need `flatpak` on the user systemd `PATH`.
 
+## Real-time syncing stopped after a configuration error
+
+After fixing a configuration error, open syncfast or run `syncfast apply` to restart real-time watching.
+
 ## No tray icon
 
 The tray uses the StatusNotifier protocol. Some desktops (GNOME without an extension) have no tray. The window still works; keep it open.

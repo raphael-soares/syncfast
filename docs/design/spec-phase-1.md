@@ -384,7 +384,7 @@ Cenários:
   }
   ```
 
-  - `gate`: `null` ou um objeto `{ "kind": ..., "since": "<rfc3339>", "detail": "<texto>" }`. O `kind` ∈ `needs_review_first_run`, `needs_review_filters_changed`, `needs_review_critical_error`, `too_many_deletes`, `all_files_changed`, `config_error`, `auth_error`, `local_missing`, `needs_attention`. Todo gate bloqueia rodadas normais, exceto `needs_attention`: a próxima rodada roda no ritmo do timer e um `Ok` o limpa.
+  - `gate`: `null` ou um objeto `{ "kind": ..., "since": "<rfc3339>", "detail": "<texto>" }`, mais `"fault"` (`auth`, `account`, `quota`, `permission`, `remote_missing` ou `local_empty`) no `needs_attention` que um erro de rclone causou; arquivos antigos não o têm. O `kind` ∈ `needs_review_first_run`, `needs_review_filters_changed`, `needs_review_critical_error`, `too_many_deletes`, `all_files_changed`, `config_error`, `auth_error`, `local_missing`, `needs_attention`. Todo gate bloqueia rodadas normais, exceto `needs_attention`: a próxima rodada roda no ritmo do timer e um `Ok` o limpa.
   - `last_outcome` ∈ `null`, `ok`, `error`.
   - `offline`: true quando a última tentativa foi pulada por falta de rede. Não muda `gate` nem `last_outcome`.
   - `last_run`: `{ "started", "finished", "exit_code", "summary": RunSummary, "log_file" }`.
@@ -474,9 +474,9 @@ Fluxo do `run`:
      - `conflicts_pending` = número de arquivos `*.conflict<N>` na árvore local, varrida com o `DirMatcher`.
      - Se `summary.conflicts_new > 0`, notificar conflitos.
    - `TooManyDeletes`, `AllFilesChanged`, `NeedsReview(CriticalError)`, `AuthError`, `ConfigError`: gravar o gate correspondente e notificar se for transição.
-   - `NeedsAttention`: gate `needs_attention` com o `detail`, conta como falha (`last_outcome = error`, `consecutive_failures += 1`) e notifica se for transição.
-   - `Transient`: `last_outcome = error`, `consecutive_failures += 1`. Ao chegar em 3 sem `"failures"` em `notified`, notificar e acrescentar `"failures"`. A primeira falha de uma série grava `failing_since`; um `Ok` o limpa. Sem gate e com `failing_since` há mais de 6 horas, gravar o gate `needs_attention` com `Syncing has failed for over 6 hours: <última mensagem>` e notificar se for transição.
-8. Depois de `Ok`, podar versões: em `versions/<id>/`, apagar os subdiretórios diretos cujo nome casa `^\d{8}-\d{6}$` e cuja data é mais antiga que `versions_keep_days`. Tudo o mais em `versions/<id>/` fica intocado. Remover diretórios datados que ficarem vazios. Podar `runs/`.
+   - `NeedsAttention`: gate `needs_attention` com o `detail` e o `fault`, conta como falha (`last_outcome = error`, `consecutive_failures += 1`) e notifica se for transição. O marker é mantido, como no `Transient`: uma primeira rodada confirmada que falha assim volta a rodar no próximo tick em vez de voltar à primeira revisão.
+   - `Transient`: `last_outcome = error`, `consecutive_failures += 1`. Ao chegar em 3 sem `"failures"` em `notified`, notificar e acrescentar `"failures"`. A primeira falha de uma série grava `failing_since`; qualquer resultado que não seja `Transient` nem `NeedsAttention`, e um tick `Offline`, o limpa. Sem gate e com `failing_since` há mais de 6 horas, gravar o gate `needs_attention` com `Syncing has failed for over 6 hours: <última mensagem>` e notificar se for transição.
+8. Depois de toda rodada, qualquer que seja o resultado, podar versões: em `versions/<id>/`, apagar os subdiretórios diretos cujo nome casa `^\d{8}-\d{6}$` e cuja data é mais antiga que `versions_keep_days`. Tudo o mais em `versions/<id>/` fica intocado. Remover diretórios datados que ficarem vazios. Podar `runs/`. Uma falha ao podar é só um aviso no log, nunca o resultado da rodada.
 9. Sair 0. Erro interno do próprio syncfast (I/O de estado, por exemplo): log e sair 1.
 
 Notificações (`notify.rs`, no core):
