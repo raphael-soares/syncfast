@@ -4,7 +4,9 @@ mod args;
 mod mcp;
 mod render;
 
-use args::{Cli, Command, ConflictsCommand, FiltersCommand, Operation, ReviewCommand};
+use args::{
+    Cli, Command, ConflictsCommand, FiltersCommand, Operation, ReviewCommand, TransferArgs,
+};
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -17,7 +19,10 @@ use serde::Serialize;
 use syncfast_core::flatpak;
 use syncfast_core::network::NetworkManager;
 use syncfast_core::notify::DesktopNotifier;
-use syncfast_core::ops::{ExploreOptions, NewSync, OpError, Ops, RoundOutcome};
+use syncfast_core::ops::{
+    ExploreOptions, NewSync, OpError, Ops, RoundOutcome, TransferOptions, TransferReport,
+    run_transfer,
+};
 use syncfast_core::paths::Paths;
 use syncfast_core::preview::{PreviewError, preview};
 use syncfast_core::rclone::Rclone;
@@ -180,7 +185,23 @@ async fn dispatch(command: Command, json: bool) -> anyhow::Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
+        Command::TransferRun { id } => {
+            run_transfer(&paths()?, &Rclone::from_env()?, &id).await?;
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Operation(operation) => operate(operation, json).await,
+    }
+}
+
+async fn transfer(ops: &Ops, move_it: bool, args: TransferArgs) -> Result<TransferReport, OpError> {
+    let options = TransferOptions {
+        dry_run: args.dry_run,
+        wait: Duration::from_secs(args.wait.wait),
+    };
+    if move_it {
+        ops.r#move(&args.source, &args.destination, options).await
+    } else {
+        ops.copy(&args.source, &args.destination, options).await
     }
 }
 
@@ -237,6 +258,14 @@ async fn operate(operation: Operation, json: bool) -> anyhow::Result<ExitCode> {
         } => {
             let options = ExploreOptions { depth, max_folders };
             emit(json, &ops.explore(&target, options).await?, render::explore)
+        }
+        Operation::Copy(args) => emit(json, &transfer(&ops, false, args).await?, render::transfer),
+        Operation::Move(args) => emit(json, &transfer(&ops, true, args).await?, render::transfer),
+        Operation::Transfer { id, wait } => {
+            let found = ops
+                .transfer_status(&id, Duration::from_secs(wait.wait))
+                .await?;
+            emit(json, &found, render::transfer)
         }
         Operation::Sync { target, wait } => {
             let rounds = ops

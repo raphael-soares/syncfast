@@ -12,6 +12,7 @@ mod review;
 mod rules;
 mod sync;
 mod theme;
+mod transfer;
 mod views;
 
 use std::path::PathBuf;
@@ -41,10 +42,13 @@ pub use review::{ConfirmedReview, ReviewView};
 pub use rules::{FilterTestView, FiltersSaved, FolderCount, after_filters_saved};
 pub use sync::{RoundOutcome, SyncReport, SyncRounds};
 pub use theme::{ThemeInfo, ThemeSet};
+pub use transfer::{
+    DetachedStarter, TransferOptions, TransferReport, TransferStarter, TransferView, run_transfer,
+};
 pub use views::{GateView, LastRunView, PairDetail, PairView};
 
-/// How long `sync` and `review confirm` wait for the round to end before
-/// they report it as still running.
+/// How long `sync`, `review confirm`, `copy` and `move` wait for the
+/// round or transfer to end before they report it as still running.
 pub const DEFAULT_WAIT_SECONDS: u64 = 60;
 
 /// Everything an operation needs from the machine. The CLI builds it with
@@ -62,6 +66,8 @@ pub struct Ops {
     pub flatpak_id: Option<String>,
     /// Starts a round without waiting for it.
     pub trigger: Arc<dyn Trigger>,
+    /// Starts a `copy` or `move` without waiting for it.
+    pub transfers: Arc<dyn TransferStarter>,
 }
 
 impl std::fmt::Debug for Ops {
@@ -94,6 +100,7 @@ impl Ops {
             network: Box::new(NetworkManager),
             notifier: Box::new(DesktopNotifier::new()),
             trigger: trigger_for(systemd, bin.clone(), Arc::clone(&systemctl)),
+            transfers: Arc::new(DetachedStarter::new(bin.clone())),
             systemctl,
             systemd,
             bin,

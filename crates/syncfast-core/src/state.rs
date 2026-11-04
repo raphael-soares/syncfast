@@ -6,7 +6,7 @@
 //! `enabled = false`.
 
 use std::fs::File;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -225,7 +225,7 @@ impl ConfirmMarker {
     }
 }
 
-async fn write_json(path: PathBuf, value: &impl Serialize) -> Result<(), StateError> {
+pub(crate) async fn write_json(path: PathBuf, value: &impl Serialize) -> Result<(), StateError> {
     let mut json = serde_json::to_vec_pretty(value).map_err(|source| StateError::Parse {
         path: path.clone(),
         source,
@@ -241,7 +241,13 @@ async fn write_json(path: PathBuf, value: &impl Serialize) -> Result<(), StateEr
 /// True while a round of `pair_id` holds its lock. Never blocks.
 #[must_use]
 pub fn is_running(paths: &Paths, pair_id: &str) -> bool {
-    let Ok(file) = File::open(paths.lock_file(pair_id)) else {
+    is_locked(&paths.lock_file(pair_id))
+}
+
+/// True while some process holds the lock file `path`. Never blocks.
+#[must_use]
+pub(crate) fn is_locked(path: &Path) -> bool {
+    let Ok(file) = File::open(path) else {
         return false;
     };
     match file.try_lock_shared() {
@@ -261,7 +267,11 @@ pub fn is_running(paths: &Paths, pair_id: &str) -> bool {
 /// # Errors
 /// The lock file cannot be created or locked.
 pub fn try_lock_pair(paths: &Paths, pair_id: &str) -> Result<Option<File>, StateError> {
-    let path = paths.lock_file(pair_id);
+    try_lock(paths, paths.lock_file(pair_id))
+}
+
+/// [`try_lock_pair`] for any lock file in the runtime folder.
+pub(crate) fn try_lock(paths: &Paths, path: PathBuf) -> Result<Option<File>, StateError> {
     let open = || -> std::io::Result<Option<File>> {
         std::fs::create_dir_all(paths.runtime_subdir())?;
         let file = std::fs::OpenOptions::new()

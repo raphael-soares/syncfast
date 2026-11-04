@@ -151,3 +151,105 @@ fn the_agent_guide_is_the_text_of_docs_agents_md() {
             .contains("flatpak run --command=syncfast io.github.raphael_soares.syncfast mcp")
     );
 }
+
+#[test]
+fn copy_and_move_json_carry_the_files_the_bytes_and_the_outcome() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local().join("docs/a.txt"), "aaa");
+    write(&bed.local().join("docs/sub/b.txt"), "bb");
+    let source = bed.local().join("docs");
+    let source = source.to_str().unwrap();
+    let copy_to = format!("{}/copied", bed.remote_arg());
+    let move_to = format!("{}/moved", bed.remote_arg());
+
+    let planned = bed.run(&["move", source, &move_to, "--dry-run", "--json"]);
+    let after_dry_run = (
+        bed.local().join("docs/a.txt").exists(),
+        bed.remote().join("moved").exists(),
+    );
+    let copied = bed.run(&["copy", source, &copy_to, "--json"]);
+    let moved = bed.run(&["move", source, &move_to, "--json"]);
+
+    assert_eq!(planned.code, 0, "{}", planned.stderr);
+    assert_eq!(planned.json()["transfer"]["status"], "dry_run");
+    assert_eq!(planned.json()["transfer"]["files"], 2);
+    assert_eq!(planned.json()["transfer"]["bytes"], 5);
+    assert_eq!(planned.json()["finished"], true);
+    assert_eq!(after_dry_run, (true, false));
+    assert_eq!(copied.code, 0, "{}", copied.stderr);
+    assert_eq!(copied.json()["transfer"]["operation"], "copy");
+    assert_eq!(copied.json()["transfer"]["status"], "done");
+    assert_eq!(moved.code, 0, "{}", moved.stderr);
+    assert_eq!(moved.json()["transfer"]["status"], "done");
+    assert_eq!(
+        fs::read_to_string(bed.remote().join("moved/sub/b.txt")).unwrap(),
+        "bb"
+    );
+    assert!(bed.remote().join("copied/a.txt").exists());
+    assert!(!bed.local().join("docs").exists());
+}
+
+#[test]
+fn a_transfer_that_outlasts_the_wait_is_read_with_transfer_and_the_text_says_what_happened() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local().join("one.txt"), "1");
+    let source = bed.local().join("one.txt");
+    let source = source.to_str().unwrap();
+    let destination = format!("{}/one.txt", bed.remote_arg());
+
+    let started = bed.run(&["copy", source, &destination, "--wait", "0", "--json"]);
+    let id = started.json()["transfer"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let later = bed.run(&["transfer", &id, "--json"]);
+    let text = bed.run(&["transfer", &id]);
+
+    assert_eq!(started.code, 0, "{}", started.stderr);
+    assert_eq!(later.code, 0, "{}", later.stderr);
+    assert_eq!(later.json()["finished"], true);
+    assert_eq!(later.json()["transfer"]["status"], "done");
+    assert!(text.stdout.starts_with("Copied file "), "{}", text.stdout);
+    assert_eq!(
+        fs::read_to_string(bed.remote().join("one.txt")).unwrap(),
+        "1"
+    );
+}
+
+#[test]
+fn an_existing_destination_exits_two_and_an_unknown_transfer_exits_two() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local().join("a.txt"), "new");
+    write(&bed.remote().join("a.txt"), "old");
+    let source = bed.local().join("a.txt");
+    let destination = format!("{}/a.txt", bed.remote_arg());
+
+    let refused = bed.run(&["copy", source.to_str().unwrap(), &destination, "--json"]);
+    let unknown = bed.run(&["transfer", "20260101-000000-000", "--json"]);
+
+    assert_eq!(refused.code, 2);
+    assert_eq!(refused.json()["error"]["code"], "invalid");
+    assert_eq!(
+        fs::read_to_string(bed.remote().join("a.txt")).unwrap(),
+        "old"
+    );
+    assert_eq!(unknown.code, 2);
+}
+
+#[test]
+fn moving_the_folder_of_a_sync_exits_two_and_names_the_sync() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs();
+    let local = bed.local();
+
+    let refused = bed.run(&["move", local.to_str().unwrap(), "~/elsewhere", "--json"]);
+
+    assert_eq!(refused.code, 2);
+    assert!(
+        refused.json()["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("\"docs\"")
+    );
+    assert!(local.join("a.txt").exists());
+}
