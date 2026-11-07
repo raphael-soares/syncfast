@@ -151,6 +151,11 @@ impl Bed {
         fs::write(self.paths.config_file(), text).unwrap();
     }
 
+    /// The same enabled sync with `keys` in the `[notifications]` table.
+    fn write_notifications(&self, keys: &str) {
+        self.write_behavior(&format!("\n[notifications]\n{keys}"), "");
+    }
+
     /// Makes the pair invalid: its local folder becomes a relative path.
     fn break_config(&self) {
         let text = fs::read_to_string(self.paths.config_file())
@@ -987,6 +992,83 @@ async fn third_failure_in_a_row_notifies_once_with_the_last_error_line() {
             body: "Failed 3 times in a row. drive quota exceeded".to_owned(),
         }]
     );
+}
+
+async fn failing_bodies(keys: &str, rounds: usize) -> Option<Vec<String>> {
+    let bed = bed()?;
+    synced_base(&bed).await;
+    bed.write_notifications(keys);
+    let failing = fake_rclone(&bed, r#"{"level":"error","msg":"drive quota exceeded"}"#, 1);
+    for _ in 0..rounds {
+        bed.run_with(&failing).await;
+    }
+    Some(bed.notices.bodies())
+}
+
+#[tokio::test]
+async fn failing_uses_failures_after_and_zero_turns_it_off() {
+    let Some(lowered) = failing_bodies("failures_after = 2\n", 3).await else {
+        return;
+    };
+    let off = failing_bodies("failures_after = 0\n", 4).await.unwrap();
+
+    assert_eq!(lowered, ["Failed 2 times in a row. drive quota exceeded"]);
+    assert!(off.is_empty());
+}
+
+#[tokio::test]
+async fn a_gate_notice_is_dropped_when_needs_action_is_off_but_still_recorded_as_notified() {
+    let Some(bed) = bed() else { return };
+    bed.write_notifications("needs_action = false\n");
+    bed.break_config();
+
+    bed.run().await;
+
+    assert!(bed.notices.titles().is_empty());
+    assert_eq!(bed.state().await.notified, ["gate:config_error"]);
+}
+
+#[tokio::test]
+async fn new_conflicts_respect_conflicts() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "doc.txt", "base");
+    write(&bed.local, "untouched.txt", "same");
+    bed.first_sync().await;
+    bed.write_notifications("conflicts = false\n");
+    write(&bed.local, "doc.txt", "local edit");
+    write(&bed.remote, "doc.txt", "remote edit, newer");
+    set_age(&bed.local, "doc.txt", 3600);
+    set_age(&bed.remote, "doc.txt", 60);
+
+    bed.run().await;
+
+    assert_eq!(bed.state().await.conflicts_pending, 1);
+    assert!(bed.notices.titles().is_empty());
+}
+
+#[tokio::test]
+async fn a_successful_round_notifies_only_when_it_changed_files() {
+    let Some(bed) = bed() else { return };
+    synced_base(&bed).await;
+    bed.write_notifications("success = true\n");
+    write(&bed.local, "new.txt", "hello");
+
+    bed.run().await;
+    bed.run().await;
+
+    assert_eq!(bed.notices.titles(), ["Docs: synced"]);
+    assert_eq!(bed.notices.bodies(), ["1 uploaded"]);
+}
+
+#[tokio::test]
+async fn a_successful_round_stays_quiet_by_default() {
+    let Some(bed) = bed() else { return };
+    synced_base(&bed).await;
+    write(&bed.local, "new.txt", "hello");
+
+    bed.run().await;
+
+    assert!(bed.notices.titles().is_empty());
 }
 
 #[tokio::test]

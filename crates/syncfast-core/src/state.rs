@@ -25,8 +25,6 @@ pub const RUNS_KEPT: usize = 50;
 pub const PREVIEWS_KEPT: Duration = Duration::from_hours(24);
 /// Key in [`State::notified`] for the "sync failing" notification.
 pub const NOTIFIED_FAILURES: &str = "failures";
-/// Failed rounds in a row before the status turns into [`DisplayStatus::Failing`].
-const FAILING_AFTER: u32 = 3;
 const LOCK_POLL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, thiserror::Error)]
@@ -526,9 +524,15 @@ impl DisplayStatus {
 }
 
 /// The one precedence used by the sidebar, the tray and `syncfast status`:
-/// the first rule that matches wins.
+/// the first rule that matches wins. `failing_after` is
+/// [`Policy::failing_after`](crate::notify::Policy::failing_after).
 #[must_use]
-pub fn display_status(pair: &Pair, state: &State, running: bool) -> DisplayStatus {
+pub fn display_status(
+    pair: &Pair,
+    state: &State,
+    running: bool,
+    failing_after: u32,
+) -> DisplayStatus {
     let gate = state.gate.as_ref().map(|gate| gate.kind);
     if running {
         DisplayStatus::Syncing
@@ -551,7 +555,7 @@ pub fn display_status(pair: &Pair, state: &State, running: bool) -> DisplayStatu
     } else if state.offline {
         DisplayStatus::Offline
     } else if state.last_outcome == Some(LastOutcome::Error) {
-        if state.consecutive_failures >= FAILING_AFTER {
+        if state.consecutive_failures >= failing_after {
             DisplayStatus::Failing
         } else {
             DisplayStatus::Retrying
@@ -1028,7 +1032,7 @@ mod tests {
     }
 
     fn status(enabled: bool, state: &State, running: bool) -> DisplayStatus {
-        display_status(&pair(enabled), state, running)
+        display_status(&pair(enabled), state, running, 3)
     }
 
     #[test]
@@ -1140,6 +1144,24 @@ mod tests {
         };
 
         assert_eq!(status(true, &state, false), DisplayStatus::Retrying);
+    }
+
+    #[test]
+    fn the_failing_threshold_is_the_one_given() {
+        let failures = |count| State {
+            last_outcome: Some(LastOutcome::Error),
+            consecutive_failures: count,
+            ..State::default()
+        };
+
+        assert_eq!(
+            display_status(&pair(true), &failures(4), false, 5),
+            DisplayStatus::Retrying
+        );
+        assert_eq!(
+            display_status(&pair(true), &failures(5), false, 5),
+            DisplayStatus::Failing
+        );
     }
 
     #[test]

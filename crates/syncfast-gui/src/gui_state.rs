@@ -6,8 +6,6 @@ use fastframe_shell::window::Geometry;
 use serde::{Deserialize, Serialize};
 use syncfast_core::paths::Paths;
 
-use crate::theme::ThemeChoice;
-
 pub const SIDEBAR_MIN_WIDTH: f32 = 200.0;
 pub const SIDEBAR_MAX_WIDTH: f32 = 320.0;
 pub const SIDEBAR_DEFAULT_WIDTH: f32 = 240.0;
@@ -48,6 +46,8 @@ pub enum SettingsPane {
     #[default]
     Accounts,
     Defaults,
+    General,
+    Notifications,
     Appearance,
 }
 
@@ -72,7 +72,13 @@ impl SettingsGroup {
 
 impl SettingsPane {
     /// In the order the sidebar lists them, group by group.
-    pub const ALL: [Self; 3] = [Self::Accounts, Self::Defaults, Self::Appearance];
+    pub const ALL: [Self; 5] = [
+        Self::Accounts,
+        Self::Defaults,
+        Self::General,
+        Self::Notifications,
+        Self::Appearance,
+    ];
 
     /// The pane's name, shown in the sidebar and as the title of its content.
     #[must_use]
@@ -80,6 +86,8 @@ impl SettingsPane {
         match self {
             Self::Accounts => "Accounts",
             Self::Defaults => "Defaults",
+            Self::General => "General",
+            Self::Notifications => "Notifications",
             Self::Appearance => "Appearance",
         }
     }
@@ -88,7 +96,7 @@ impl SettingsPane {
     pub fn group(self) -> SettingsGroup {
         match self {
             Self::Accounts | Self::Defaults => SettingsGroup::Syncs,
-            Self::Appearance => SettingsGroup::App,
+            Self::General | Self::Notifications | Self::Appearance => SettingsGroup::App,
         }
     }
 }
@@ -101,7 +109,9 @@ pub struct GuiState {
     pub welcome_done: bool,
     pub selected_pair: Option<String>,
     pub sidebar_width: f32,
-    pub theme: ThemeChoice,
+    /// What the desktop was last asked about starting syncfast at login:
+    /// the portal is asked again only when the setting differs from this.
+    pub autostart_applied: bool,
     pub window: WindowRecord,
     /// The pane Settings opens on.
     pub settings_pane: SettingsPane,
@@ -113,7 +123,7 @@ impl Default for GuiState {
             welcome_done: false,
             selected_pair: None,
             sidebar_width: SIDEBAR_DEFAULT_WIDTH,
-            theme: ThemeChoice::System,
+            autostart_applied: false,
             window: WindowRecord::default(),
             settings_pane: SettingsPane::Accounts,
         }
@@ -173,7 +183,6 @@ mod tests {
 
         assert_eq!(state, GuiState::default());
         assert!(!state.welcome_done);
-        assert_eq!(state.theme, ThemeChoice::System);
     }
 
     #[test]
@@ -184,7 +193,7 @@ mod tests {
             welcome_done: true,
             selected_pair: Some("notes".into()),
             sidebar_width: 280.0,
-            theme: ThemeChoice::Named("noctalia.json".into()),
+            autostart_applied: true,
             window: WindowRecord {
                 size: Some([960.0, 640.0]),
                 position: Some([10.0, 20.0]),
@@ -218,13 +227,34 @@ mod tests {
     }
 
     #[test]
-    fn theme_is_stored_as_a_plain_string() {
-        let state = GuiState {
-            theme: ThemeChoice::Dark,
-            ..GuiState::default()
-        };
+    fn an_old_theme_key_is_ignored_and_not_written_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gui.json");
+        std::fs::write(&path, r#"{"theme": "dark", "welcome_done": true}"#).unwrap();
 
-        assert!(state.to_json().unwrap().contains(r#""theme": "dark""#));
+        let state = GuiState::load(&path);
+
+        assert!(state.welcome_done);
+        assert!(!state.to_json().unwrap().contains("theme"));
+    }
+
+    #[test]
+    fn the_panes_list_accounts_and_defaults_under_syncs_then_the_app_panes() {
+        let order: Vec<_> = SettingsPane::ALL
+            .iter()
+            .map(|pane| (pane.group(), pane.title()))
+            .collect();
+
+        assert_eq!(
+            order,
+            [
+                (SettingsGroup::Syncs, "Accounts"),
+                (SettingsGroup::Syncs, "Defaults"),
+                (SettingsGroup::App, "General"),
+                (SettingsGroup::App, "Notifications"),
+                (SettingsGroup::App, "Appearance"),
+            ]
+        );
     }
 
     #[test]

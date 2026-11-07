@@ -50,12 +50,13 @@ impl fmt::Display for StatusLine {
 /// The config has a global problem.
 pub async fn collect(paths: &Paths) -> Result<Vec<StatusLine>, StatusError> {
     let config = Config::load(paths).await?;
+    let failing_after = config.defaults().notifications.failing_after();
     let mut lines = Vec::with_capacity(config.pairs().len());
     for pair in config.pairs() {
         let state = State::load_or_config_error(paths, &pair.id).await;
         lines.push(StatusLine {
             id: pair.id.clone(),
-            status: display_status(pair, &state, is_running(paths, &pair.id)),
+            status: display_status(pair, &state, is_running(paths, &pair.id), failing_after),
             last_success: state.last_success,
         });
     }

@@ -11,15 +11,16 @@ use jiff::Timestamp;
 use syncfast_core::paths::Paths;
 use syncfast_core::state::LastOutcome;
 
+use crate::autostart;
 use crate::backend::{Backend, Command, Event};
 use crate::gui_state::{self, GuiState, SettingsPane};
 use crate::instance::{Inbox, Request};
 use crate::screens::Screens;
 use crate::sheets::{Sheets, Surroundings};
 use crate::snapshot::Snapshot;
-use crate::theme::{self, Palette, Themes};
+use crate::theme::{self, Palette, ThemeChoice, Themes};
 use crate::tray::{IconLook, PairView, Summary, SyncTray, TrayView, action as tray_action};
-use crate::ui::settings::AppearanceView;
+use crate::ui::settings::{AppearanceView, AutostartView};
 use crate::ui::welcome::{self, WelcomeView};
 use crate::ui::{self, Action, DetailTab, PairRow, ViewModel};
 use syncfast_core::runs::RunEntry;
@@ -58,6 +59,12 @@ enum CloseIntent {
     Quit,
 }
 
+#[derive(Debug)]
+struct AutostartState {
+    view: AutostartView,
+    /// The autostart value the desktop was asked for in this run.
+    asked: Option<bool>,
+}
 type RunsKey = (String, bool, Option<Timestamp>);
 
 #[derive(Debug)]
@@ -68,6 +75,8 @@ pub struct App {
     gui_dirty_since: Option<Instant>,
     geometry: Geometry,
     themes: Themes,
+    /// `[app].theme` as of the last readable config.
+    theme: ThemeChoice,
     /// The desktop's colour scheme once the portal has answered.
     system_dark: Option<bool>,
     installed: Option<Palette>,
@@ -94,6 +103,7 @@ pub struct App {
     /// The sync just created needed no review: the welcome says so until
     /// the snapshot brings the sync in.
     auto_confirmed_sync: Option<String>,
+    autostart: AutostartState,
 }
 
 impl App {
@@ -113,6 +123,7 @@ impl App {
     ) -> std::io::Result<Self> {
         let backend = Backend::spawn(paths.clone(), waker.clone(), inbox.clone())?;
         let mut app = Self {
+            theme: ThemeChoice::System,
             backend,
             inbox,
             geometry: gui.window.into(),
@@ -138,6 +149,14 @@ impl App {
             sheets: Sheets::new(paths.home.clone(), paths.data_dir()),
             screens: Screens::default(),
             auto_confirmed_sync: None,
+            autostart: AutostartState {
+                view: AutostartView {
+                    in_flatpak: autostart::in_flatpak(),
+                    hyprland: autostart::on_hyprland(),
+                    refused: false,
+                },
+                asked: None,
+            },
         };
         if with_tray {
             app.tray = SyncTray::spawn(waker, app.tray_view());
@@ -146,6 +165,13 @@ impl App {
             }
         }
         Ok(app)
+    }
+
+    /// The theme the window opens with, before the first snapshot says it.
+    #[must_use]
+    pub fn with_theme(mut self, theme: ThemeChoice) -> Self {
+        self.theme = theme;
+        self
     }
 
     /// What shows where the interface paints nothing: the window colour.
@@ -158,6 +184,29 @@ impl App {
     #[must_use]
     pub fn geometry(&self) -> Geometry {
         self.geometry
+    }
+
+    /// Asks the desktop when the config wants a different autostart than the
+    /// one it last agreed to.
+    fn follow_autostart(&mut self) {
+        if self.snapshot.config_error.is_some() {
+            return;
+        }
+        let wanted = self.snapshot.defaults.app.autostart;
+        if wanted == self.gui.autostart_applied {
+            self.autostart.asked = None;
+            self.autostart.view.refused = false;
+            return;
+        }
+        let applied = self.gui.autostart_applied;
+        let state = &mut self.autostart;
+        if let Some(enabled) =
+            autostart::to_ask(state.view.in_flatpak, wanted, applied, state.asked)
+        {
+            state.asked = Some(enabled);
+            state.view.refused = false;
+            self.backend.send(Command::SetAutostart(enabled));
+        }
     }
 
     fn selected_id(&self) -> Option<String> {
@@ -181,9 +230,13 @@ impl App {
             runs: self.runs_of_selected(),
             remotes: self.sheets.remotes().to_vec(),
             appearance: AppearanceView {
-                choice: self.gui.theme.clone(),
                 themes: self.themes.names(),
                 errors: self.themes.errors().to_vec(),
+            },
+            autostart: AutostartView {
+                in_flatpak: self.autostart.view.in_flatpak,
+                hyprland: self.autostart.view.hyprland,
+                refused: self.autostart.view.refused,
             },
             settings_pane: self.gui.settings_pane,
             conflicts: Vec::new(),
@@ -250,7 +303,7 @@ impl App {
     fn palette(&self) -> Palette {
         *self
             .themes
-            .resolve(&self.gui.theme, self.system_dark.unwrap_or(true))
+            .resolve(&self.theme, self.system_dark.unwrap_or(true))
     }
 
     /// Records what the next window close means. A quit is never
@@ -321,6 +374,9 @@ impl App {
     pub fn handle_event(&mut self, event: Event) {
         match event {
             Event::Snapshot(snapshot) => {
+                if snapshot.config_error.is_none() {
+                    self.theme = ThemeChoice::from(snapshot.defaults.app.theme.clone());
+                }
                 self.snapshot = snapshot;
                 if let Some(id) = &self.auto_confirmed_sync
                     && self.snapshot.pairs.iter().any(|pair| pair.pair.id == *id)
@@ -329,6 +385,7 @@ impl App {
                 }
                 self.finish_welcome();
                 self.load_runs_if_stale();
+                self.follow_autostart();
                 let selected = self.selected_id();
                 if let Some(command) = self
                     .screens
@@ -339,7 +396,14 @@ impl App {
             }
             Event::Runs { pair, runs } => self.runs = Some((pair, runs)),
             Event::Themes(themes) => self.themes = themes,
-            Event::Theme(choice) => self.gui.theme = choice,
+            Event::Autostart { enabled, granted } => {
+                if granted {
+                    self.gui.autostart_applied = enabled;
+                    self.mark_gui_dirty();
+                } else if self.autostart.asked == Some(enabled) {
+                    self.autostart.view.refused = true;
+                }
+            }
             Event::SystemDark(dark) => self.system_dark = Some(dark),
             Event::Failed(text) => self.error = Some(text),
             event @ (Event::Conflicts { .. }
@@ -590,8 +654,7 @@ impl App {
             Action::OpenSettings
             | Action::OpenAccounts
             | Action::CloseSettings
-            | Action::SetSettingsPane(_)
-            | Action::SetTheme(_) => self.apply_to_settings(action, ctx),
+            | Action::SetSettingsPane(_) => self.apply_to_settings(&action, ctx),
             action @ (Action::RemoveSync(_)
             | Action::RemoveAccount(_)
             | Action::CancelRemoveAccount
@@ -673,7 +736,7 @@ impl App {
         }
     }
 
-    fn apply_to_settings(&mut self, action: Action, ctx: &egui::Context) {
+    fn apply_to_settings(&mut self, action: &Action, ctx: &egui::Context) {
         match action {
             Action::OpenSettings => {
                 self.open_settings(ctx);
@@ -687,17 +750,13 @@ impl App {
                 self.backend.send(Command::CheckAccounts);
             }
             Action::CloseSettings => self.screens.settings_open = false,
-            Action::SetSettingsPane(pane) => {
+            &Action::SetSettingsPane(pane) => {
                 let entering_accounts =
                     pane == SettingsPane::Accounts && self.gui.settings_pane != pane;
                 self.remember_pane(pane);
                 if entering_accounts {
                     self.backend.send(Command::CheckAccounts);
                 }
-            }
-            Action::SetTheme(choice) if self.gui.theme != choice => {
-                self.gui.theme = choice;
-                self.mark_gui_dirty();
             }
             _ => {}
         }
@@ -1028,13 +1087,30 @@ mod tests {
     }
 
     #[test]
-    fn a_theme_changed_from_outside_the_window_becomes_the_chosen_one_without_a_save() {
+    fn the_theme_in_the_config_becomes_the_window_theme_without_a_save() {
         let (_dir, mut app) = app();
+        let mut snapshot = Snapshot::default();
+        snapshot.defaults.app.theme = "light".into();
 
-        app.handle_event(Event::Theme(crate::theme::ThemeChoice::Light));
+        app.handle_event(Event::Snapshot(snapshot));
 
-        assert_eq!(app.gui.theme, crate::theme::ThemeChoice::Light);
+        assert_eq!(app.theme, crate::theme::ThemeChoice::Light);
         assert!(app.gui_dirty_since.is_none());
+    }
+
+    #[test]
+    fn a_config_that_cannot_be_read_keeps_the_theme_on_screen() {
+        let (_dir, mut app) = app();
+        let mut snapshot = Snapshot::default();
+        snapshot.defaults.app.theme = "dark".into();
+        app.handle_event(Event::Snapshot(snapshot));
+
+        app.handle_event(Event::Snapshot(Snapshot {
+            config_error: Some("config.toml: broken".into()),
+            ..Snapshot::default()
+        }));
+
+        assert_eq!(app.theme, crate::theme::ThemeChoice::Dark);
     }
 
     #[test]
@@ -1145,7 +1221,7 @@ mod tests {
         let (_dir, mut app) = app();
         app.window_hidden = true;
 
-        app.apply_to_settings(Action::OpenSettings, &egui::Context::default());
+        app.apply_to_settings(&Action::OpenSettings, &egui::Context::default());
 
         assert!(app.screens.settings_open);
         assert!(app.wants_show);

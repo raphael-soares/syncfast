@@ -152,7 +152,7 @@ impl PairView {
         config_error: Option<String>,
         realtime_off: bool,
     ) -> Self {
-        let status = display_status(pair, state, running);
+        let status = display_status(pair, state, running, behavior.notifications.failing_after());
         Self {
             id: pair.id.clone(),
             name: pair.name.clone(),

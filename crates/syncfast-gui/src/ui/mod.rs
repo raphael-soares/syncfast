@@ -36,7 +36,6 @@ use crate::gui_state::SettingsPane;
 use crate::snapshot::PairSnapshot;
 use syncfast_core::runs::RunEntry;
 
-use crate::theme::ThemeChoice;
 pub use detail::DetailTab;
 
 /// The window title when no sync is selected.
@@ -168,6 +167,7 @@ pub struct ViewModel {
     pub runs: Option<Arc<[RunEntry]>>,
     pub remotes: Vec<RemoteRow>,
     pub appearance: settings::AppearanceView,
+    pub autostart: settings::AutostartView,
     pub settings_pane: SettingsPane,
     /// The conflicts of the selected sync.
     pub conflicts: Vec<Conflict>,
@@ -265,7 +265,6 @@ pub enum Action {
     Account(account_sheet::AccountAction),
     SetSettingsPane(SettingsPane),
     CloseSettings,
-    SetTheme(ThemeChoice),
     CancelRemove,
     ConfirmRemove {
         id: String,

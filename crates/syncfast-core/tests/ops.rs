@@ -675,10 +675,8 @@ async fn show_reports_the_filters_hash_and_the_counters_of_the_last_round() {
 }
 
 #[tokio::test]
-async fn a_theme_is_saved_beside_what_the_window_remembers_and_unknown_ones_are_refused() {
+async fn a_theme_is_saved_in_the_app_table_and_unknown_ones_are_refused() {
     let Some(bed) = bed() else { return };
-    let gui = bed.ops.paths.state_dir().join("gui.json");
-    write(&gui, "{\"welcome_done\": true, \"theme\": \"system\"}");
     write(
         &bed.ops.paths.config_dir().join("themes/noctalia.json"),
         "{}",
@@ -688,11 +686,40 @@ async fn a_theme_is_saved_beside_what_the_window_remembers_and_unknown_ones_are_
     let refused = bed.ops.set_theme("neon").await.unwrap_err();
     let info = bed.ops.theme().await;
 
-    let saved: serde_json::Value = serde_json::from_str(&fs::read_to_string(gui).unwrap()).unwrap();
-    assert_eq!(saved["theme"], "noctalia.json");
-    assert_eq!(saved["welcome_done"], true);
+    let config = fs::read_to_string(bed.ops.paths.config_file()).unwrap();
+    assert!(config.contains("[app]\ntheme = \"noctalia.json\""));
     assert_eq!(info.current, "noctalia.json");
     assert_eq!(info.available, ["system", "light", "dark", "noctalia.json"]);
+    assert_eq!(refused.exit_code(), 2);
+}
+
+#[tokio::test]
+async fn the_app_settings_are_listed_with_the_defaults_and_set_without_the_safety_guard() {
+    let Some(bed) = bed() else { return };
+
+    let changed = bed
+        .ops
+        .set_setting(None, "notifications.failures_after", "0")
+        .await
+        .unwrap();
+    let listed = bed.ops.settings(None).await.unwrap();
+    let refused = bed
+        .ops
+        .set_setting(Some("docs"), "app.theme", "dark")
+        .await
+        .unwrap_err();
+
+    assert_eq!(changed.setting.origin, "defaults");
+    assert_eq!(changed.setting.default, serde_json::json!(3));
+    let keys: Vec<&str> = listed.settings.iter().map(|setting| setting.key).collect();
+    assert!(keys.ends_with(&[
+        "notifications.needs_action",
+        "notifications.conflicts",
+        "notifications.failures_after",
+        "notifications.success",
+        "app.autostart",
+        "app.theme",
+    ]));
     assert_eq!(refused.exit_code(), 2);
 }
 

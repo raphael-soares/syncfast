@@ -12,7 +12,7 @@ use syncfast_core::settings::{self, Access, KeyDef, Origin, Value};
 use super::widgets::{icon_button, inline_error, inline_field, setting_row, toggle, warning_row};
 use super::{Action, ViewModel};
 use crate::icons::Icon;
-use crate::theme::{self, size, space};
+use crate::theme::{self, display_name, size, space};
 
 const SECTIONS: [(&str, &[&str]); 7] = [
     ("Schedule", &["watch", "debounce", "max_wait", "interval"]),
@@ -24,6 +24,16 @@ const SECTIONS: [(&str, &[&str]); 7] = [
     ("Advanced", &["resync_mode", "empty_dirs"]),
 ];
 
+const NOTIFICATION_KEYS: [&str; 4] = [
+    "notifications.needs_action",
+    "notifications.conflicts",
+    "notifications.failures_after",
+    "notifications.success",
+];
+
+const AUTOSTART: &str = "app.autostart";
+const FAILURES_AFTER: &str = "notifications.failures_after";
+
 /// What one row shows.
 struct Row {
     value: Value,
@@ -34,6 +44,10 @@ struct Row {
     caption: String,
     /// `Reset to Default` is offered: the key is set in this scope.
     resettable: bool,
+    /// The control can be used.
+    enabled: bool,
+    /// File names of the user's themes, for the theme selector.
+    themes: Vec<String>,
 }
 
 impl Row {
@@ -70,7 +84,7 @@ pub fn sync(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
     };
     let scope = SettingScope::Sync(pair.id.clone());
     let summary = schedule_summary(&pair.effective.behavior);
-    sections(ui, &scope, Some(&summary), |def| {
+    sections(ui, &scope, Some(&summary), &SECTIONS, |def| {
         let inherited = value_label(def.name, &def.get(&vm.defaults));
         let overridden = pair.effective.origin(def.name) == Origin::Sync;
         Row {
@@ -86,6 +100,8 @@ pub fn sync(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
                 format!("Default: {inherited}")
             },
             resettable: overridden,
+            enabled: true,
+            themes: Vec::new(),
         }
     })
 }
@@ -93,7 +109,7 @@ pub fn sync(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
 /// The sections of `[defaults]`.
 #[must_use]
 pub fn defaults(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
-    sections(ui, &SettingScope::Defaults, None, |def| {
+    sections(ui, &SettingScope::Defaults, None, &SECTIONS, |def| {
         let set = vm.defaults_overrides.contains(def.name);
         let overriding = vm
             .pairs
@@ -124,23 +140,93 @@ pub fn defaults(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
             targets,
             caption: notes.join(" \u{b7} "),
             resettable: set,
+            enabled: true,
+            themes: Vec::new(),
         }
     })
+}
+
+/// The rows of `[notifications]` and `[app]`: one pane each, no section
+/// titles. They have no per-sync value, so they only exist in the defaults.
+#[must_use]
+pub fn notifications(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
+    app(ui, vm, &NOTIFICATION_KEYS)
+}
+
+#[must_use]
+pub fn general(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
+    let actions = app(ui, vm, &["app.autostart"]);
+    if vm.autostart.refused {
+        inline_error(ui, "The desktop did not allow autostart.");
+    }
+    actions
+}
+
+#[must_use]
+pub fn appearance(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
+    let actions = app(ui, vm, &["app.theme"]);
+    for error in &vm.appearance.errors {
+        inline_error(ui, error);
+    }
+    actions
+}
+
+fn app(ui: &mut Ui, vm: &ViewModel, keys: &[&str]) -> Vec<Action> {
+    sections(ui, &SettingScope::Defaults, None, &[("", keys)], |def| {
+        app_row(vm, def)
+    })
+}
+
+fn app_row(vm: &ViewModel, def: &KeyDef) -> Row {
+    let builtin = def.builtin();
+    let mut lines: Vec<String> = Vec::new();
+    lines.extend(describe(def.name).map(str::to_owned));
+    let mut enabled = true;
+    if def.name == AUTOSTART {
+        if !vm.autostart.in_flatpak {
+            enabled = false;
+            lines.push("Available in the Flatpak install.".to_owned());
+        }
+        if vm.autostart.hyprland {
+            lines.push(
+                "Hyprland does not run autostart entries. Add an exec line for syncfast to its config."
+                    .to_owned(),
+            );
+        }
+    }
+    lines.push(format!("Default: {}", value_label(def.name, &builtin)));
+    Row {
+        value: def.get(&vm.defaults),
+        fallback: builtin,
+        targets: vec![Target {
+            behavior: vm.defaults.clone(),
+            reached: true,
+        }],
+        caption: lines.join("\n"),
+        resettable: vm.defaults_overrides.contains(def.name),
+        enabled,
+        themes: vm.appearance.themes.clone(),
+    }
+}
+
+fn lookup(name: &str) -> Option<&'static KeyDef> {
+    settings::key(name).or_else(|| settings::app_key(name))
 }
 
 fn sections(
     ui: &mut Ui,
     scope: &SettingScope,
     summary: Option<&str>,
+    list: &[(&str, &[&str])],
     row: impl Fn(&KeyDef) -> Row,
 ) -> Vec<Action> {
     let palette = theme::palette(ui.ctx());
     let mut actions = Vec::new();
     let mut first = true;
-    for (title, keys) in SECTIONS {
+    for (title, keys) in list {
         let defs: Vec<&KeyDef> = keys
             .iter()
-            .filter_map(|name| settings::key(name))
+            .filter_map(|name| lookup(name))
             .filter(|def| !(def.per_sync_only && *scope == SettingScope::Defaults))
             .collect();
         if defs.is_empty() {
@@ -150,12 +236,14 @@ fn sections(
             ui.add_space(space::XXL);
         }
         first = false;
-        ui.label(
-            RichText::new(title)
-                .font(theme::headline())
-                .color(palette.text),
-        );
-        if let (Some(summary), "Schedule") = (summary, title) {
+        if !title.is_empty() {
+            ui.label(
+                RichText::new(*title)
+                    .font(theme::headline())
+                    .color(palette.text),
+            );
+        }
+        if let (Some(summary), "Schedule") = (summary, *title) {
             ui.label(
                 RichText::new(summary)
                     .font(theme::callout())
@@ -165,7 +253,7 @@ fn sections(
         for def in defs {
             setting(ui, scope, def, &row(def), &mut actions);
         }
-        let value_of = |name: &str| settings::key(name).map(|def| row(def).value);
+        let value_of = |name: &str| lookup(name).map(|def| row(def).value);
         if let Some(note) = note(title, &value_of) {
             ui.add_space(space::S);
             ui.label(
@@ -234,7 +322,9 @@ fn setting(ui: &mut Ui, scope: &SettingScope, def: &KeyDef, row: &Row, actions: 
     let error = setting_row(ui, title, caption, |ui| {
         let mut error = draft.as_ref().and_then(|draft| draft.error.clone());
         let typed = draft.and_then(|draft| draft.text);
-        control(ui, &field, typed.clone(), &mut error, actions);
+        ui.add_enabled_ui(row.enabled, |ui| {
+            control(ui, &field, typed.clone(), &mut error, actions);
+        });
         if row.resettable && icon_button(ui, Icon::RotateCcw, "Reset to Default").clicked() {
             if let Some(message) = refusal(row, def, &row.fallback) {
                 field.refuse(ui, typed, message, &mut error);
@@ -364,6 +454,31 @@ fn control(
                 info
             });
         }
+        (Access::Text { .. }, Value::Text(current)) => {
+            let shown = theme_label(current);
+            let names = ["system", "light", "dark"]
+                .into_iter()
+                .map(str::to_owned)
+                .chain(field.row.themes.iter().cloned());
+            let combo = egui::ComboBox::from_id_salt(field.draft_id.with("combo"))
+                .selected_text(shown.clone())
+                .width(size::SETTING_COMBO)
+                .show_ui(ui, |ui| {
+                    for name in names {
+                        let selected = name == *current;
+                        if ui.selectable_label(selected, theme_label(&name)).clicked() && !selected
+                        {
+                            field.propose(ui, &Value::Text(name), None, error, actions);
+                        }
+                    }
+                });
+            combo.response.widget_info(|| {
+                let mut info = WidgetInfo::new(WidgetType::ComboBox);
+                info.label = Some(title.to_owned());
+                info.current_text_value = Some(shown.clone());
+                info
+            });
+        }
         _ => text_control(ui, field, typed, error, actions),
     }
 }
@@ -405,12 +520,14 @@ fn text_control(
             }
         },
     );
-    let mut text = typed.unwrap_or_else(|| match field.row.value {
+    let mut text = typed.unwrap_or_else(|| match &field.row.value {
         Value::Bandwidth(Bandwidth::Off) => String::new(),
+        Value::Int(0) if field.def.name == FAILURES_AFTER => String::new(),
         value => value.to_string(),
     });
     let hint = match field.def.access {
         Access::Bandwidth { .. } => "Unlimited",
+        _ if field.def.name == FAILURES_AFTER => "Off",
         _ => "",
     };
     let response = inline_field(ui, title, &mut text, hint, size::SETTING_FIELD);
@@ -421,6 +538,7 @@ fn text_control(
     if response.lost_focus() {
         let input = match text.trim() {
             "" if matches!(field.def.access, Access::Bandwidth { .. }) => "off",
+            "" if field.def.name == FAILURES_AFTER => "0",
             input => input,
         };
         match field.def.parse_text(input) {
@@ -453,7 +571,34 @@ fn label(key: &str) -> &'static str {
         "review" => "Review",
         "resync_mode" => "When a first sync finds different files",
         "empty_dirs" => "Sync empty folders",
+        "notifications.needs_action" => "Needs action",
+        "notifications.conflicts" => "Conflicts",
+        FAILURES_AFTER => "Failures",
+        "notifications.success" => "Success",
+        AUTOSTART => "Start syncfast when you log in",
+        "app.theme" => "Theme",
         _ => "",
+    }
+}
+
+fn describe(key: &str) -> Option<&'static str> {
+    match key {
+        "notifications.needs_action" => Some("Notify when a sync needs your review or attention."),
+        "notifications.conflicts" => Some("Notify when a round keeps two versions of a file."),
+        FAILURES_AFTER => Some("Notify after this many failed rounds in a row. 0 turns it off."),
+        "notifications.success" => Some("Notify when a round changed files."),
+        _ => None,
+    }
+}
+
+/// `System`, `Light`, `Dark` or the name of a theme file as the selector
+/// shows it.
+fn theme_label(name: &str) -> String {
+    match name {
+        "system" => "System".to_owned(),
+        "light" => "Light".to_owned(),
+        "dark" => "Dark".to_owned(),
+        file => display_name(file).to_owned(),
     }
 }
 
@@ -493,8 +638,11 @@ fn value_label(key: &str, value: &Value) -> String {
         Value::Duration(duration) => duration_label(duration.as_secs()),
         Value::Int(1) if key == "versions_keep_days" => "1 day".to_owned(),
         Value::Int(count) if key == "versions_keep_days" => format!("{count} days"),
+        Value::Int(0) if key == FAILURES_AFTER => "Off".to_owned(),
+        Value::Int(count) if key == FAILURES_AFTER => count.to_string(),
         Value::Int(count) => format!("{count}%"),
         Value::Choice(name) => choice_label(key, name).to_owned(),
+        Value::Text(name) => theme_label(name),
         Value::Bandwidth(Bandwidth::Off) => "Unlimited".to_owned(),
         Value::Bandwidth(Bandwidth::KiBPerSec(kib)) => match kib {
             kib if kib % (1024 * 1024) == 0 => format!("{} GiB/s", kib / (1024 * 1024)),

@@ -35,7 +35,7 @@ use crate::notices::{Notices, notice_for};
 use crate::pair_tools;
 use crate::sheet_io::{self, PreviewFailure};
 use crate::snapshot::{self, Snapshot};
-use crate::theme::{ThemeChoice, Themes};
+use crate::theme::Themes;
 use crate::ui::account_sheet::{AccountMode, ConnectRequest, Secret};
 use crate::ui::add_sync::{LocalFacts, NewSync};
 use crate::ui::{AccountStatus, RemoteRow};
@@ -69,6 +69,8 @@ pub enum Command {
     SaveGuiState(GuiState),
     /// Read the theme files again, after `reload-themes`.
     ReloadThemes,
+    /// Ask the desktop to start the app at login (`true`) or not.
+    SetAutostart(bool),
     /// Look for `.conflict<N>` files in the folder of a sync.
     ScanConflicts(String),
     /// Settle one conflict, look again and start a round.
@@ -165,9 +167,11 @@ pub enum Event {
     Snapshot(Snapshot),
     /// The user's palette files, read in the backend.
     Themes(Themes),
-    /// The theme `gui.json` names now: `syncfast theme` changed it from
-    /// outside the window.
-    Theme(ThemeChoice),
+    /// What the desktop answered to the request for `enabled`.
+    Autostart {
+        enabled: bool,
+        granted: bool,
+    },
     SystemDark(bool),
     /// An action did not work; the text is shown near the sync list.
     Failed(String),
@@ -415,6 +419,7 @@ async fn run(
                     }
                     Command::SaveGuiState(state) => save_gui_state(&context, state).await,
                     Command::ReloadThemes => spawn_reload_themes(&context),
+                    Command::SetAutostart(enabled) => spawn_set_autostart(&context, enabled),
                     Command::SyncNow(id) => spawn_sync(&context, vec![id]),
                     Command::SyncAll => spawn_sync_all(&context),
                     Command::SetAllEnabled(enabled) => spawn_set_all_enabled(&context, enabled),
@@ -518,11 +523,27 @@ fn spawn_reload_themes(context: &Arc<Context>) {
                 Ok(themes) => context.emitter.send(Event::Themes(themes)),
                 Err(err) => log::warn!("cannot read the theme files: {err}"),
             }
-            let file = gui_state::file(&context.paths);
-            match tokio::task::spawn_blocking(move || GuiState::load(&file).theme).await {
-                Ok(choice) => context.emitter.send(Event::Theme(choice)),
-                Err(err) => log::warn!("cannot read the chosen theme: {err}"),
-            }
+            context.refresh.notify_one();
+        },
+    );
+}
+
+/// Asks the desktop to start the app at login, or not, and tells the
+/// window what it answered.
+fn spawn_set_autostart(context: &Arc<Context>, enabled: bool) {
+    let context = Arc::clone(context);
+    guarded(
+        context.emitter.clone(),
+        "asking the desktop about autostart",
+        async move {
+            let granted = match crate::autostart::apply(enabled).await {
+                Ok(granted) => granted,
+                Err(err) => {
+                    log::warn!("the desktop did not answer the autostart request: {err}");
+                    false
+                }
+            };
+            context.emitter.send(Event::Autostart { enabled, granted });
         },
     );
 }

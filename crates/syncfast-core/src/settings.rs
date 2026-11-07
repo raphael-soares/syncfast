@@ -14,13 +14,14 @@ use crate::behavior::{
     parse_duration,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
     Bool(bool),
     Duration(Duration),
     Int(i64),
     Choice(&'static str),
     Bandwidth(Bandwidth),
+    Text(String),
 }
 
 impl fmt::Display for Value {
@@ -32,6 +33,7 @@ impl fmt::Display for Value {
             Self::Int(value) => write!(f, "{value}"),
             Self::Choice(value) => f.write_str(value),
             Self::Bandwidth(value) => f.write_str(&value.format()),
+            Self::Text(value) => f.write_str(value),
         }
     }
 }
@@ -42,17 +44,17 @@ impl Value {
         match self {
             Self::Bool(value) => serde_json::Value::Bool(*value),
             Self::Int(value) => serde_json::Value::from(*value),
-            Self::Duration(_) | Self::Choice(_) | Self::Bandwidth(_) => {
+            Self::Duration(_) | Self::Choice(_) | Self::Bandwidth(_) | Self::Text(_) => {
                 serde_json::Value::String(self.to_string())
             }
         }
     }
 
-    pub(crate) fn to_toml(self) -> toml_edit::Value {
+    pub(crate) fn to_toml(&self) -> toml_edit::Value {
         match self {
-            Self::Bool(value) => toml_edit::Value::from(value),
-            Self::Int(value) => toml_edit::Value::from(value),
-            Self::Duration(_) | Self::Choice(_) | Self::Bandwidth(_) => {
+            Self::Bool(value) => toml_edit::Value::from(*value),
+            Self::Int(value) => toml_edit::Value::from(*value),
+            Self::Duration(_) | Self::Choice(_) | Self::Bandwidth(_) | Self::Text(_) => {
                 toml_edit::Value::from(self.to_string())
             }
         }
@@ -85,6 +87,10 @@ pub enum Access {
     Bandwidth {
         get: fn(&Behavior) -> Bandwidth,
         set: fn(&mut Behavior, Bandwidth),
+    },
+    Text {
+        get: fn(&Behavior) -> String,
+        set: fn(&mut Behavior, &str),
     },
 }
 
@@ -243,9 +249,68 @@ pub static KEYS: [KeyDef; 14] = [
     },
 ];
 
+macro_rules! notification_flag {
+    ($name:literal, $field:ident) => {
+        KeyDef {
+            name: $name,
+            per_sync_only: false,
+            access: Access::Bool {
+                get: |behavior| behavior.notifications.$field,
+                set: |behavior, value| behavior.notifications.$field = value,
+            },
+            lowers_safety: None,
+        }
+    };
+}
+
+/// The keys that belong to the whole app, in `[notifications]` and `[app]`.
+/// They live on [`Behavior`] too, so one round carries them, but they have
+/// no per-sync value and never appear in `[defaults]`.
+pub static APP_KEYS: [KeyDef; 6] = [
+    notification_flag!("notifications.needs_action", needs_action),
+    notification_flag!("notifications.conflicts", conflicts),
+    KeyDef {
+        name: "notifications.failures_after",
+        per_sync_only: false,
+        access: Access::Int {
+            min: 0,
+            max: 100,
+            get: |behavior| i64::from(behavior.notifications.failures_after),
+            set: |behavior, value| {
+                behavior.notifications.failures_after = u8::try_from(value).unwrap_or(u8::MAX);
+            },
+        },
+        lowers_safety: None,
+    },
+    notification_flag!("notifications.success", success),
+    KeyDef {
+        name: "app.autostart",
+        per_sync_only: false,
+        access: Access::Bool {
+            get: |behavior| behavior.app.autostart,
+            set: |behavior, value| behavior.app.autostart = value,
+        },
+        lowers_safety: None,
+    },
+    KeyDef {
+        name: "app.theme",
+        per_sync_only: false,
+        access: Access::Text {
+            get: |behavior| behavior.app.theme.clone(),
+            set: |behavior, value| value.clone_into(&mut behavior.app.theme),
+        },
+        lowers_safety: None,
+    },
+];
+
 #[must_use]
 pub fn key(name: &str) -> Option<&'static KeyDef> {
     KEYS.iter().find(|def| def.name == name)
+}
+
+#[must_use]
+pub fn app_key(name: &str) -> Option<&'static KeyDef> {
+    APP_KEYS.iter().find(|def| def.name == name)
 }
 
 #[must_use]
@@ -288,6 +353,7 @@ impl KeyDef {
             Access::Int { get, .. } => Value::Int(get(behavior)),
             Access::Choice { get, .. } => Value::Choice(get(behavior)),
             Access::Bandwidth { get, .. } => Value::Bandwidth(get(behavior)),
+            Access::Text { get, .. } => Value::Text(get(behavior)),
         }
     }
 
@@ -298,6 +364,7 @@ impl KeyDef {
             (Access::Int { set, .. }, Value::Int(value)) => set(behavior, *value),
             (Access::Choice { set, .. }, Value::Choice(value)) => set(behavior, value),
             (Access::Bandwidth { set, .. }, Value::Bandwidth(value)) => set(behavior, *value),
+            (Access::Text { set, .. }, Value::Text(value)) => set(behavior, value),
             _ => {}
         }
     }
@@ -334,6 +401,7 @@ impl KeyDef {
             }
             Access::Choice { .. } => self.check_choice(text),
             Access::Bandwidth { .. } => self.check_bandwidth(text),
+            Access::Text { .. } => self.check_text(text),
         }
     }
 
@@ -363,7 +431,17 @@ impl KeyDef {
                 let text = item.as_str().ok_or_else(|| self.type_error())?;
                 self.check_bandwidth(text)
             }
+            Access::Text { .. } => {
+                let text = item.as_str().ok_or_else(|| self.type_error())?;
+                self.check_text(text)
+            }
         }
+    }
+
+    /// The name the user sees in a message: without the table of an app key.
+    #[must_use]
+    pub fn short(&self) -> &'static str {
+        self.name.rsplit('.').next().unwrap_or(self.name)
     }
 
     fn type_error(&self) -> String {
@@ -371,14 +449,23 @@ impl KeyDef {
             Access::Bool { .. } => "bool",
             Access::Duration { .. } => "a duration",
             Access::Int { .. } | Access::Choice { .. } => "a whole number",
+            Access::Text { .. } => "text",
             Access::Bandwidth { .. } => {
                 return format!(
                     "{} must be off or a speed: a whole number followed by K, M or G, for example 500K or 2M",
-                    self.name
+                    self.short()
                 );
             }
         };
-        format!("{} must be {noun}", self.name)
+        format!("{} must be {noun}", self.short())
+    }
+
+    fn check_text(&self, text: &str) -> Result<Value, String> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Err(format!("{} must not be empty", self.short()));
+        }
+        Ok(Value::Text(text.to_owned()))
     }
 
     fn check_duration(&self, duration: Duration) -> Result<Value, String> {
@@ -387,7 +474,7 @@ impl KeyDef {
         {
             return Err(format!(
                 "{} must be at least {}",
-                self.name,
+                self.short(),
                 format_duration(min)
             ));
         }
@@ -398,7 +485,7 @@ impl KeyDef {
         if let Access::Int { min, max, .. } = self.access
             && !(min..=max).contains(&number)
         {
-            return Err(format!("{} must be between {min} and {max}", self.name));
+            return Err(format!("{} must be between {min} and {max}", self.short()));
         }
         Ok(Value::Int(number))
     }
@@ -421,7 +508,7 @@ impl KeyDef {
             .ok_or_else(|| {
                 format!(
                     "unknown value \"{text}\" for {}: use {}",
-                    self.name,
+                    self.short(),
                     list_with_or(names)
                 )
             })
@@ -497,6 +584,45 @@ impl Overrides {
         overrides
     }
 
+    /// Reads the app keys from the document root, where `[notifications]` and
+    /// `[app]` live. A problem names its table.
+    pub(crate) fn read_app(root: &dyn TableLike) -> Self {
+        let mut overrides = Self::default();
+        for def in &APP_KEYS {
+            let Some((table, short)) = def.name.split_once('.') else {
+                continue;
+            };
+            let Some(item) = root
+                .get(table)
+                .and_then(Item::as_table_like)
+                .and_then(|table| table.get(short))
+            else {
+                continue;
+            };
+            match def.parse_item(item) {
+                Ok(value) => {
+                    overrides.values.insert(def.name, value);
+                }
+                Err(message) => {
+                    overrides
+                        .problem
+                        .get_or_insert(format!("[{table}]: {message}"));
+                }
+            }
+        }
+        overrides
+    }
+
+    /// This table's values on top of `other`'s.
+    pub(crate) fn merged_over(&self, other: &Self) -> Self {
+        let mut values = other.values.clone();
+        values.extend(self.values.iter().map(|(key, value)| (*key, value.clone())));
+        Self {
+            values,
+            problem: other.problem.clone().or_else(|| self.problem.clone()),
+        }
+    }
+
     #[must_use]
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.values.get(key)
@@ -513,7 +639,7 @@ impl Overrides {
     }
 
     pub fn apply_to(&self, behavior: &mut Behavior) {
-        for def in &KEYS {
+        for def in KEYS.iter().chain(&APP_KEYS) {
             if let Some(value) = self.values.get(def.name) {
                 def.apply(behavior, value);
             }
@@ -531,6 +657,7 @@ fn read_key(def: &KeyDef, item: &Item, in_defaults: bool) -> Result<Value, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::notify::Policy;
 
     fn def(name: &str) -> &'static KeyDef {
         key(name).unwrap()
@@ -719,6 +846,90 @@ mod tests {
             );
         }
         assert_eq!(text("max_delete", "100").unwrap(), "100");
+    }
+
+    fn app_text(name: &str, text: &str) -> Result<String, String> {
+        app_key(name)
+            .unwrap()
+            .parse_text(text)
+            .map(|value| value.to_string())
+    }
+
+    #[test]
+    fn the_app_keys_read_back_their_defaults() {
+        let behavior = Behavior::default();
+
+        let values: Vec<String> = APP_KEYS
+            .iter()
+            .map(|def| format!("{}={}", def.name, def.get(&behavior)))
+            .collect();
+
+        assert_eq!(
+            values,
+            [
+                "notifications.needs_action=true",
+                "notifications.conflicts=true",
+                "notifications.failures_after=3",
+                "notifications.success=false",
+                "app.autostart=false",
+                "app.theme=system",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_app_keys_apply_to_their_own_field() {
+        let mut behavior = Behavior::default();
+
+        for (name, value) in [
+            ("notifications.needs_action", "false"),
+            ("notifications.conflicts", "false"),
+            ("notifications.failures_after", "0"),
+            ("notifications.success", "true"),
+            ("app.autostart", "true"),
+            ("app.theme", "dark"),
+        ] {
+            let def = app_key(name).unwrap();
+            def.apply(&mut behavior, &def.parse_text(value).unwrap());
+        }
+
+        assert_eq!(
+            behavior.notifications,
+            Policy {
+                needs_action: false,
+                conflicts: false,
+                failures_after: 0,
+                success: true,
+            }
+        );
+        assert!(behavior.app.autostart);
+        assert_eq!(behavior.app.theme, "dark");
+    }
+
+    #[test]
+    fn failures_after_outside_0_to_100_is_refused() {
+        for bad in ["-1", "101"] {
+            assert_eq!(
+                app_text("notifications.failures_after", bad).unwrap_err(),
+                "failures_after must be between 0 and 100"
+            );
+        }
+        assert_eq!(app_text("notifications.failures_after", "0").unwrap(), "0");
+    }
+
+    #[test]
+    fn an_empty_theme_is_refused() {
+        assert_eq!(
+            app_text("app.theme", "  ").unwrap_err(),
+            "theme must not be empty"
+        );
+        assert_eq!(app_text("app.theme", " dark ").unwrap(), "dark");
+    }
+
+    #[test]
+    fn the_app_keys_are_not_sync_settings() {
+        assert!(key("app.theme").is_none());
+        assert!(key("notifications.success").is_none());
     }
 
     #[test]

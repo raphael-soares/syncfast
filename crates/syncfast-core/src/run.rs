@@ -37,8 +37,6 @@ use crate::versions;
 /// Changes kept in `state.json`: the GUI rereads it every second or two, and
 /// the full list stays in the run's log.
 pub const STORED_CHANGES: usize = 100;
-/// Failed rounds in a row that raise the "sync failing" notification.
-pub(crate) const NOTIFY_FAILURES_AFTER: u32 = 3;
 /// How long a series of transient failures may last before the user is
 /// told: retrying has not fixed it.
 const ESCALATE_AFTER: SignedDuration = SignedDuration::from_hours(6);
@@ -222,7 +220,10 @@ fn announce(
         return None;
     }
     state.notified.push(key);
-    Some(notice(pair, behavior, alert))
+    behavior
+        .notifications
+        .allows(alert)
+        .then(|| notice(pair, behavior, alert))
 }
 
 fn announce_gate(
@@ -660,7 +661,13 @@ impl Round<'_> {
         let finished = env.now().timestamp();
         let outcome = classify(exit_code, &lines, &env.paths.bisync_workdir(id));
         let mut summary = summarize(&lines);
-        let conflicts_new = summary.conflicts_new;
+        let alerts: Vec<Alert> = summary
+            .conflicts_new
+            .filter(|count| *count > 0)
+            .map(Alert::NewConflicts)
+            .into_iter()
+            .chain(Alert::synced(&summary))
+            .collect();
         summary.changes.truncate(STORED_CHANGES);
         state.last_run = Some(LastRun {
             started: started.timestamp(),
@@ -671,11 +678,11 @@ impl Round<'_> {
             auto_reviewed,
         });
         let detail = last_error_message(&lines).map(str::to_owned);
-        let notice = self
-            .apply_outcome(state, &outcome, exit_code, conflicts_new, detail, finished)
+        let notices = self
+            .apply_outcome(state, &outcome, exit_code, alerts, detail, finished)
             .await;
         state.save(env.paths, id).await?;
-        send(env, notice);
+        send(env, notices);
 
         self.prune().await;
         if !matches!(outcome, Outcome::Transient | Outcome::NeedsAttention { .. }) {
@@ -717,10 +724,10 @@ impl Round<'_> {
         state: &mut State,
         outcome: &Outcome,
         exit_code: i32,
-        conflicts_new: Option<u32>,
+        alerts: Vec<Alert>,
         detail: Option<String>,
         finished: Timestamp,
-    ) -> Option<Notice> {
+    ) -> Vec<Notice> {
         let pair = self.pair;
         if !matches!(outcome, Outcome::Transient | Outcome::NeedsAttention { .. }) {
             state.failing_since = None;
@@ -736,9 +743,11 @@ impl Round<'_> {
                     .notified
                     .retain(|key| key != NOTIFIED_FAILURES && !key.starts_with("gate:"));
                 state.conflicts_pending = self.count_conflicts(state.conflicts_pending).await;
-                return conflicts_new
-                    .filter(|count| *count > 0)
-                    .map(|count| notice(pair, self.behavior, &Alert::NewConflicts(count)));
+                return alerts
+                    .iter()
+                    .filter(|alert| self.behavior.notifications.allows(alert))
+                    .map(|alert| notice(pair, self.behavior, alert))
+                    .collect();
             }
             Outcome::TooManyDeletes => (GateKind::TooManyDeletes, String::new(), None),
             Outcome::AllFilesChanged => (GateKind::AllFilesChanged, String::new(), None),
@@ -775,21 +784,26 @@ impl Round<'_> {
                         format!("Syncing has failed for over {hours} hours: {message}"),
                         None,
                     )
-                } else if state.consecutive_failures >= NOTIFY_FAILURES_AFTER {
+                } else if state.consecutive_failures >= self.behavior.notifications.failing_after()
+                {
                     return announce(
                         pair,
                         self.behavior,
                         state,
                         NOTIFIED_FAILURES.to_owned(),
                         &Alert::Failing(message),
-                    );
+                    )
+                    .into_iter()
+                    .collect();
                 } else {
-                    return None;
+                    return Vec::new();
                 }
             }
         };
         set_gate(state, gate.0, gate.1, gate.2, finished);
         announce_gate(pair, self.behavior, state, gate.0)
+            .into_iter()
+            .collect()
     }
 
     /// Conflict files in the local tree; the previous count when the tree

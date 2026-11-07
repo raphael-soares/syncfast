@@ -2,7 +2,6 @@
 //! panes, grouped. Close, a click outside and Esc dismiss it.
 
 mod accounts;
-mod appearance;
 
 use egui::{RichText, Ui};
 
@@ -10,22 +9,33 @@ use super::widgets::{self, SidebarRow, sidebar_row};
 use super::{Action, ViewModel, options};
 use crate::gui_state::{SettingsGroup, SettingsPane};
 use crate::icons::Icon;
-use crate::theme::{self, ThemeChoice, space};
+use crate::theme::{self, space};
 
 /// What the Theme selector offers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AppearanceView {
-    pub choice: ThemeChoice,
     /// File names of the user's themes.
     pub themes: Vec<String>,
     /// Theme files that could not be used, one line each.
     pub errors: Vec<String>,
 }
 
+/// What the autostart row needs to know about where the app runs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AutostartView {
+    /// The Flatpak portal is there to ask.
+    pub in_flatpak: bool,
+    pub hyprland: bool,
+    /// The desktop refused the last request.
+    pub refused: bool,
+}
+
 fn pane_icon(pane: SettingsPane) -> Icon {
     match pane {
         SettingsPane::Accounts => Icon::User,
         SettingsPane::Defaults => Icon::Settings,
+        SettingsPane::General => Icon::Power,
+        SettingsPane::Notifications => Icon::Bell,
         SettingsPane::Appearance => Icon::Palette,
     }
 }
@@ -101,6 +111,8 @@ fn pane(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
     match vm.settings_pane {
         SettingsPane::Accounts => accounts::show(ui, vm),
         SettingsPane::Defaults => options::defaults(ui, vm),
-        SettingsPane::Appearance => appearance::show(ui, vm),
+        SettingsPane::General => options::general(ui, vm),
+        SettingsPane::Notifications => options::notifications(ui, vm),
+        SettingsPane::Appearance => options::appearance(ui, vm),
     }
 }

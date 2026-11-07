@@ -1,6 +1,7 @@
-//! Notifications for events that need the user to act. Success never
-//! notifies, and each event notifies once per transition (the caller keeps
-//! the dedupe keys in `State::notified`).
+//! Notifications for events that need the user to act, plus the opt-in
+//! success ones. Each event notifies once per transition (the caller keeps
+//! the dedupe keys in `State::notified`) and only when the [`Policy`] allows
+//! it.
 
 use std::time::Duration;
 
@@ -9,15 +10,16 @@ use fastframe_notifications::{App, Client, Event, Notification};
 
 use crate::behavior::{Behavior, ConflictLoser};
 use crate::bisync::{FAILED_TO_BISYNC, Fault, failure_msgs, fault_of};
-use crate::bisync_log::{Level, LogLine};
+use crate::bisync_log::{Level, LogLine, RunSummary};
 use crate::config::{Pair, split_remote};
-use crate::run::NOTIFY_FAILURES_AFTER;
 use crate::state::GateKind;
 
 /// Single-instance slot of the GUI: the `run` asks it to show notifications
 /// so a click can open the window. It never claims the slot.
 pub const SLOT: &str = "syncfast";
 const BISYNC_ABORTED: &str = "Bisync aborted";
+/// The `failures_after` a config that sets nothing has.
+const DEFAULT_FAILURES_AFTER: u8 = 3;
 const DELIVERY_WAIT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +27,50 @@ pub struct Notice {
     pub pair_id: String,
     pub title: String,
     pub body: String,
+}
+
+/// Which notifications a round sends, from `[notifications]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Policy {
+    pub needs_action: bool,
+    pub conflicts: bool,
+    /// Failed rounds in a row before the "sync failing" notice; 0 never sends it.
+    pub failures_after: u8,
+    pub success: bool,
+}
+
+impl Default for Policy {
+    fn default() -> Self {
+        Self {
+            needs_action: true,
+            conflicts: true,
+            failures_after: DEFAULT_FAILURES_AFTER,
+            success: false,
+        }
+    }
+}
+
+impl Policy {
+    #[must_use]
+    pub fn allows(&self, alert: &Alert) -> bool {
+        match alert {
+            Alert::Gate { .. } => self.needs_action,
+            Alert::NewConflicts(_) => self.conflicts,
+            Alert::Failing(_) => self.failures_after > 0,
+            Alert::Synced { .. } => self.success,
+        }
+    }
+
+    /// Failed rounds in a row at which a sync counts as failing: the
+    /// notification threshold, or the default when notifications for it are
+    /// off, so the status label does not depend on a notification setting.
+    #[must_use]
+    pub fn failing_after(&self) -> u32 {
+        match self.failures_after {
+            0 => u32::from(DEFAULT_FAILURES_AFTER),
+            after => u32::from(after),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +90,27 @@ pub enum Alert {
     AutoReviewed {
         deleted: u32,
     },
+    /// What a round that changed files moved.
+    Synced {
+        uploaded: u32,
+        downloaded: u32,
+        deleted: u32,
+    },
+}
+
+impl Alert {
+    /// `None` for a round that changed nothing.
+    #[must_use]
+    pub fn synced(summary: &RunSummary) -> Option<Self> {
+        let uploaded = summary.uploaded.unwrap_or(0);
+        let downloaded = summary.downloaded.unwrap_or(0);
+        let deleted = summary.deleted_local.unwrap_or(0) + summary.deleted_remote.unwrap_or(0);
+        (uploaded + downloaded + deleted > 0).then_some(Self::Synced {
+            uploaded,
+            downloaded,
+            deleted,
+        })
+    }
 }
 
 #[must_use]
@@ -113,7 +180,18 @@ pub fn notice(pair: &Pair, behavior: &Behavior, alert: &Alert) -> Notice {
         ),
         Alert::Failing(message) => (
             format!("{name}: sync failing"),
-            format!("Failed {NOTIFY_FAILURES_AFTER} times in a row. {message}"),
+            format!(
+                "Failed {} times in a row. {message}",
+                behavior.notifications.failing_after()
+            ),
+        ),
+        Alert::Synced {
+            uploaded,
+            downloaded,
+            deleted,
+        } => (
+            format!("{name}: synced"),
+            synced_body(*uploaded, *downloaded, *deleted),
         ),
         Alert::AutoReviewed { deleted } => (
             format!("{name}: reviewed automatically"),
@@ -128,6 +206,19 @@ pub fn notice(pair: &Pair, behavior: &Behavior, alert: &Alert) -> Notice {
         title,
         body,
     }
+}
+
+fn synced_body(uploaded: u32, downloaded: u32, deleted: u32) -> String {
+    [
+        (uploaded, "uploaded"),
+        (downloaded, "downloaded"),
+        (deleted, "deleted"),
+    ]
+    .into_iter()
+    .filter(|(count, _)| *count > 0)
+    .map(|(count, what)| format!("{count} {what}"))
+    .collect::<Vec<_>>()
+    .join(", ")
 }
 
 /// What a `needs_attention` gate tells the user. Gates saved before they
@@ -636,5 +727,79 @@ mod tests {
         notifier.notify(&some_notice());
 
         assert_eq!(recorder.0.lock().unwrap().len(), 1);
+    }
+
+    fn summary(
+        uploaded: u32,
+        downloaded: u32,
+        deleted_local: u32,
+        deleted_remote: u32,
+    ) -> RunSummary {
+        RunSummary {
+            uploaded: Some(uploaded),
+            downloaded: Some(downloaded),
+            deleted_local: Some(deleted_local),
+            deleted_remote: Some(deleted_remote),
+            ..RunSummary::default()
+        }
+    }
+
+    #[test]
+    fn a_round_that_changed_files_says_what_moved() {
+        let alert = Alert::synced(&summary(3, 1, 1, 1)).unwrap();
+
+        assert_eq!(
+            text(&alert),
+            (
+                "Documents: synced".to_owned(),
+                "3 uploaded, 1 downloaded, 2 deleted".to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn a_round_that_changed_nothing_has_no_synced_alert() {
+        assert_eq!(Alert::synced(&summary(0, 0, 0, 0)), None);
+        assert_eq!(Alert::synced(&RunSummary::default()), None);
+    }
+
+    #[test]
+    fn the_default_policy_keeps_the_notices_that_existed_before_the_settings() {
+        let policy = Policy::default();
+
+        assert!(policy.allows(&gate(GateKind::TooManyDeletes, "")));
+        assert!(policy.allows(&Alert::NewConflicts(1)));
+        assert!(policy.allows(&Alert::Failing("x".into())));
+        assert!(!policy.allows(&Alert::synced(&summary(1, 0, 0, 0)).unwrap()));
+    }
+
+    #[test]
+    fn each_policy_flag_silences_only_its_own_alert() {
+        let off = Policy {
+            needs_action: false,
+            conflicts: false,
+            failures_after: 0,
+            success: true,
+        };
+
+        assert!(!off.allows(&gate(GateKind::TooManyDeletes, "")));
+        assert!(!off.allows(&Alert::NewConflicts(1)));
+        assert!(!off.allows(&Alert::Failing("x".into())));
+        assert!(off.allows(&Alert::synced(&summary(1, 0, 0, 0)).unwrap()));
+    }
+
+    #[test]
+    fn failures_after_zero_keeps_the_failing_label_at_the_default_threshold() {
+        let off = Policy {
+            failures_after: 0,
+            ..Policy::default()
+        };
+        let five = Policy {
+            failures_after: 5,
+            ..Policy::default()
+        };
+
+        assert_eq!(off.failing_after(), 3);
+        assert_eq!(five.failing_after(), 5);
     }
 }

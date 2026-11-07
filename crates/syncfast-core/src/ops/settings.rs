@@ -7,7 +7,7 @@ use serde::Serialize;
 use super::{OpError, Ops};
 use crate::behavior::Behavior;
 use crate::config::{Config, SettingScope};
-use crate::settings::{KEYS, Origin, lowered_safety};
+use crate::settings::{APP_KEYS, KEYS, Origin, lowered_safety};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SettingView {
@@ -150,6 +150,7 @@ fn defaults_view(config: &Config) -> SettingsView {
         settings: KEYS
             .iter()
             .filter(|def| !def.per_sync_only)
+            .chain(&APP_KEYS)
             .map(|def| {
                 let origin = if config.defaults_overrides().contains(def.name) {
                     Origin::Defaults
