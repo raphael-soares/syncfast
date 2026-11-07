@@ -518,6 +518,13 @@ impl Sheets {
                 let view = ReviewView {
                     name: &session.name,
                     remote: &session.remote,
+                    kept_days: pairs
+                        .iter()
+                        .find(|pair| pair.id == session.pair_id)
+                        .and_then(|pair| {
+                            let behavior = &pair.effective.behavior;
+                            behavior.versions.then_some(behavior.versions_keep_days)
+                        }),
                     gate: session.gate,
                     phase: &session.phase,
                 };

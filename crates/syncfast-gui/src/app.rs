@@ -188,6 +188,8 @@ impl App {
             removing: None,
             account_status: BTreeMap::new(),
             removing_account: None,
+            defaults: self.snapshot.defaults.clone(),
+            defaults_overrides: self.snapshot.defaults_overrides.clone(),
         };
         self.screens.fill(&mut vm);
         vm
@@ -586,6 +588,8 @@ impl App {
             | Action::ResolveConflict { .. }
             | Action::TestFilters { .. }
             | Action::SaveFilters { .. }
+            | Action::SetSetting { .. }
+            | Action::ResetSetting { .. }
             | Action::DismissFiltersSaved(_)) => {
                 if let Some(command) = self.screens.act(action) {
                     self.error = None;
@@ -855,6 +859,7 @@ mod tests {
                 enabled: true,
                 presets: Vec::new(),
                 filters: Vec::new(),
+                overrides: syncfast_core::settings::Overrides::default(),
             },
             state: State {
                 gate: gate.map(|kind| Gate {
@@ -869,6 +874,7 @@ mod tests {
             status: DisplayStatus::UpToDate,
             progress: None,
             realtime_off: false,
+            effective: syncfast_core::settings::Effective::default(),
         }
     }
 
@@ -949,6 +955,7 @@ mod tests {
         app.handle_event(Event::Snapshot(Snapshot {
             config_error: None,
             pairs: vec![failed],
+            ..Snapshot::default()
         }));
         assert!(!app.gui.welcome_done);
         assert!(app.gui_dirty_since.is_none());
@@ -956,6 +963,7 @@ mod tests {
         app.handle_event(Event::Snapshot(Snapshot {
             config_error: None,
             pairs: vec![fine],
+            ..Snapshot::default()
         }));
         assert!(app.gui.welcome_done);
         assert!(app.gui_dirty_since.is_some());

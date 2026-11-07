@@ -15,6 +15,27 @@ pub fn secret_field(ui: &mut Ui, label: &str, value: &mut String) -> egui::Respo
     field(ui, label, value, "", true)
 }
 
+const PADDING: i8 = 8;
+
+/// A single-line field `width` wide with no visible label, for a row that
+/// draws its own (a `setting_row`). `label` is the accessible name.
+pub fn inline_field(ui: &mut Ui, label: &str, value: &mut String, width: f32) -> egui::Response {
+    let outer = egui::vec2(width + 2.0 * f32::from(PADDING) + 2.0, size::CONTROL_HEIGHT);
+    let response = ui
+        .allocate_ui_with_layout(
+            outer,
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| edit_box(ui, value, "", false, width),
+        )
+        .inner;
+    response.widget_info(|| {
+        let mut info = egui::WidgetInfo::text_edit(ui.is_enabled(), "", value.as_str(), "");
+        info.label = Some(label.to_owned());
+        info
+    });
+    response
+}
+
 fn field(ui: &mut Ui, label: &str, value: &mut String, hint: &str, secret: bool) -> egui::Response {
     let palette = palette_of(ui);
     ui.vertical(|ui| {
@@ -26,28 +47,39 @@ fn field(ui: &mut Ui, label: &str, value: &mut String, hint: &str, secret: bool)
                     .color(palette.text),
             )
             .id;
-        let mut frame = egui::Frame::new()
-            .fill(palette.surface)
-            .corner_radius(radius::CONTROL)
-            .inner_margin(egui::Margin::symmetric(8, 0))
-            .begin(ui);
-        frame.content_ui.set_min_height(size::CONTROL_HEIGHT - 2.0);
-        let response = frame.content_ui.add(
-            TextEdit::singleline(value)
-                .hint_text(hint)
-                .password(secret)
-                .frame(egui::Frame::NONE)
-                .vertical_align(egui::Align::Center)
-                .desired_width(f32::INFINITY),
-        );
-        let stroke = if response.has_focus() {
-            palette.accent
-        } else {
-            palette.outline
-        };
-        frame.frame.stroke = egui::Stroke::new(1.0, stroke);
-        frame.end(ui);
-        response.labelled_by(label_id)
+        edit_box(ui, value, hint, secret, f32::INFINITY).labelled_by(label_id)
     })
     .inner
+}
+
+fn edit_box(
+    ui: &mut Ui,
+    value: &mut String,
+    hint: &str,
+    secret: bool,
+    width: f32,
+) -> egui::Response {
+    let palette = palette_of(ui);
+    let mut frame = egui::Frame::new()
+        .fill(palette.surface)
+        .corner_radius(radius::CONTROL)
+        .inner_margin(egui::Margin::symmetric(PADDING, 0))
+        .begin(ui);
+    frame.content_ui.set_min_height(size::CONTROL_HEIGHT - 2.0);
+    let response = frame.content_ui.add(
+        TextEdit::singleline(value)
+            .hint_text(hint)
+            .password(secret)
+            .frame(egui::Frame::NONE)
+            .vertical_align(egui::Align::Center)
+            .desired_width(width),
+    );
+    let stroke = if response.has_focus() {
+        palette.accent
+    } else {
+        palette.outline
+    };
+    frame.frame.stroke = egui::Stroke::new(1.0, stroke);
+    frame.end(ui);
+    response
 }

@@ -29,6 +29,7 @@ fn row(id: &str, name: &str, status: DisplayStatus) -> PairRow {
         realtime_off: false,
         presets: Vec::new(),
         filters: Vec::new(),
+        effective: syncfast_core::settings::Effective::default(),
     }
 }
 

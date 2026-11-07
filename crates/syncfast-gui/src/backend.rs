@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use fastframe_shell::Waker;
 use syncfast_core::bisync::ReviewKind;
-use syncfast_core::config::Config;
+use syncfast_core::config::{Config, SettingScope};
 use syncfast_core::conflicts::{Conflict, Resolution};
 use syncfast_core::filters::ExclusionSummary;
 use syncfast_core::flatpak;
@@ -88,6 +88,13 @@ pub enum Command {
         id: String,
         presets: Vec<String>,
         rules: Vec<String>,
+    },
+    /// Set a setting of a sync or of `[defaults]` (`value`), or remove it
+    /// (`None`), and `apply`.
+    WriteSetting {
+        scope: SettingScope,
+        key: String,
+        value: Option<String>,
     },
     /// Take a sync out of the config and `apply`, deleting its saved
     /// versions when asked.
@@ -443,6 +450,9 @@ async fn run(
                     Command::SaveFilters { id, presets, rules } => {
                         spawn_save_filters(&context, id, presets, rules);
                     }
+                    Command::WriteSetting { scope, key, value } => {
+                        spawn_write_setting(&context, scope, key, value);
+                    }
                     Command::RemoveSync {
                         id,
                         delete_versions,
@@ -644,6 +654,24 @@ fn spawn_save_filters(
                 }
             }
             Err(text) => fail(&context, text),
+        }
+        context.refresh.notify_one();
+    });
+}
+
+fn spawn_write_setting(
+    context: &Arc<Context>,
+    scope: SettingScope,
+    key: String,
+    value: Option<String>,
+) {
+    let context = Arc::clone(context);
+    guarded(context.emitter.clone(), "saving the setting", async move {
+        let written = pair_tools::write_setting(&context.paths, &scope, &key, value.as_deref());
+        if let Err(text) = written.await {
+            fail(&context, text);
+        } else if let Err(text) = apply_config(&context.paths).await {
+            fail(&context, text);
         }
         context.refresh.notify_one();
     });

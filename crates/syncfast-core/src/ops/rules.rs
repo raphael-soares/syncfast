@@ -211,6 +211,7 @@ impl Ops {
             enabled: true,
             presets,
             filters: rules,
+            overrides: crate::settings::Overrides::default(),
         })
         .await;
         let dir = self.paths.state_dir().join("filters");

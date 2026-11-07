@@ -5,7 +5,6 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 
-use crate::behavior::Behavior;
 use crate::bisync::{Mode, ReviewKind, bisync_args, log_file};
 use crate::bisync_log::{Change, ChangeKind, RunSummary, summarize};
 use crate::filters;
@@ -131,9 +130,11 @@ pub async fn preview(
     pair_id: &str,
     kind: ReviewKind,
 ) -> Result<Preview, PreviewError> {
-    let pair = match lookup_pair(env, pair_id).await? {
-        PairLookup::Valid(pair) => pair,
-        PairLookup::Invalid(_, error) => return Err(PreviewError::InvalidPair(error.message)),
+    let (pair, behavior) = match lookup_pair(env, pair_id).await? {
+        PairLookup::Valid(pair, behavior) => (pair, behavior),
+        PairLookup::Invalid(_, error, _) => {
+            return Err(PreviewError::InvalidPair(error.message));
+        }
     };
     let Some(_lock) = try_lock_pair(env.paths, pair_id).map_err(RunError::from)? else {
         return Err(PreviewError::Busy);
@@ -150,7 +151,7 @@ pub async fn preview(
     let mode = Mode::DryRun(kind);
     let now = fresh_start(env.paths, pair_id, mode, env.now());
     let log_path = log_file(env.paths, pair_id, mode, &now);
-    let args = bisync_args(&pair, &Behavior::for_pair(&pair), env.paths, mode, &now);
+    let args = bisync_args(&pair, &behavior, env.paths, mode, &now);
     let log = PreviewLog(log_path);
     let exit_code = execute(env.rclone, args, env.forward_signals).await?;
     let lines = read_log_or_empty(&log.0).await;

@@ -29,15 +29,16 @@ Pick folders that are not inside each other: two syncs cannot overlap, and a syn
 
 A new sync is held until you review it. **Review changes** shows, from a dry run, what would be uploaded, downloaded, replaced or deleted on each side. Nothing is copied before you press **Sync**. When the review would delete files, the button reads **Delete and Sync**; read that list first.
 
-Afterwards the status reads **Up to date** and syncfast runs a round every 5 minutes and about 30 seconds after files change on this computer. **Sync Now** runs one immediately.
+Afterwards the status reads **Up to date** and syncfast runs a round on a schedule: by default every 5 minutes, and about 30 seconds after files change on this computer. **Sync Now** runs one immediately. Change these in the **Options** tab of a sync, or for all syncs in **Settings › Defaults**.
 
 ## Day to day
 
 - **Activity** lists every round with its counts. Expand one for the file list.
 - **Conflicts** appears when a file changed on both sides. Choose **Keep Current**, **Keep Conflicted Copy** or **Keep Both**.
 - **Filters** keeps files out of the sync: presets for system junk, developer folders and Git repositories (every folder with a `.git` inside, including repos created later; **Test Filters** and the review list them), and custom rules, one per line (`- *.bak` excludes, `+ ` includes). **Test Filters** says how many files a rule leaves out. Saving new filters holds the sync for a new review.
+- **Options** sets how this sync behaves: when it runs, what wins in a conflict, how long replaced files are kept, and when it stops a mass delete. Each row says which default it follows; **Reset to Default** goes back to it. **Settings › Defaults** holds the defaults every sync follows. A sync that is less safe than the built-in values shows **Safety lowered**.
 - **Pause** stops a sync until you resume it. **Remove Sync…** leaves the files on both sides.
-- Files replaced on this computer by a download are kept for 30 days: **Open Versions Folder** in the **…** menu.
+- By default, files replaced on this computer by a download are kept for 30 days (**Keep replaced files** and **Keep for** in the **Options** tab, or in **Settings › Defaults**): **Open Versions Folder** in the **…** menu.
 
 ## Command line
 

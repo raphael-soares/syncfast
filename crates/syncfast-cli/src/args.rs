@@ -151,6 +151,14 @@ pub enum Operation {
         /// `system`, `light`, `dark` or a file of the themes folder
         name: Option<String>,
     },
+    /// Show or change how syncs behave: for one sync, or the defaults
+    Settings {
+        #[command(subcommand)]
+        command: Option<SettingsCommand>,
+        /// The sync to read or change; without it, the defaults every sync inherits
+        #[arg(long, global = true, value_name = "ID")]
+        sync: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -306,6 +314,22 @@ pub enum ConflictsCommand {
         path: PathBuf,
         #[arg(long, value_enum)]
         keep: Choice,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SettingsCommand {
+    /// Set a setting; settings that lower safety are for the user to change
+    Set {
+        /// A setting name, as `settings` lists it
+        key: String,
+        /// `true` or `false`, a whole number, or text such as `30s` or `newer`
+        value: String,
+    },
+    /// Remove the sync's own value, or the changed default, so it falls back
+    Reset {
+        /// A setting name, as `settings` lists it
+        key: String,
     },
 }
 

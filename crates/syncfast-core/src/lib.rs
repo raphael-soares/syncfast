@@ -14,6 +14,7 @@ pub mod rclone;
 pub mod run;
 pub mod run_decision;
 pub mod runs;
+pub mod settings;
 pub mod state;
 pub mod status;
 pub mod units;

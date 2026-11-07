@@ -7,7 +7,7 @@ mod appearance;
 use egui::{RichText, Ui};
 
 use super::widgets::{self, SidebarRow, sidebar_row};
-use super::{Action, ViewModel};
+use super::{Action, ViewModel, options};
 use crate::gui_state::{SettingsGroup, SettingsPane};
 use crate::icons::Icon;
 use crate::theme::{self, ThemeChoice, space};
@@ -25,6 +25,7 @@ pub struct AppearanceView {
 fn pane_icon(pane: SettingsPane) -> Icon {
     match pane {
         SettingsPane::Accounts => Icon::User,
+        SettingsPane::Defaults => Icon::Settings,
         SettingsPane::Appearance => Icon::Palette,
     }
 }
@@ -99,6 +100,7 @@ fn pane(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
     );
     match vm.settings_pane {
         SettingsPane::Accounts => accounts::show(ui, vm),
+        SettingsPane::Defaults => options::defaults(ui, vm),
         SettingsPane::Appearance => appearance::show(ui, vm),
     }
 }

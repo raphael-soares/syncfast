@@ -13,9 +13,9 @@ use super::widgets::{
     BadgeSize, ButtonKind, button_with_icon, icon_button, inline_error, primary_button,
     progress_bar, segmented, status_badge, toolbar,
 };
-use super::{Action, PairRow, ViewModel, activity, conflicts, filters};
+use super::{Action, PairRow, ViewModel, activity, conflicts, filters, options};
 use crate::icons::Icon;
-use crate::theme::{self, Palette, radius, space};
+use crate::theme::{self, Palette, radius, size, space};
 
 /// The side margin of everything under the toolbar, which has its own.
 const SIDE: i8 = 20;
@@ -27,10 +27,16 @@ pub enum DetailTab {
     Activity,
     Conflicts,
     Filters,
+    Options,
 }
 
 impl DetailTab {
-    pub const ALL: [Self; 3] = [Self::Activity, Self::Conflicts, Self::Filters];
+    pub const ALL: [Self; 4] = [
+        Self::Activity,
+        Self::Conflicts,
+        Self::Filters,
+        Self::Options,
+    ];
 
     #[must_use]
     pub fn label(self) -> &'static str {
@@ -38,6 +44,7 @@ impl DetailTab {
             Self::Activity => "Activity",
             Self::Conflicts => "Conflicts",
             Self::Filters => "Filters",
+            Self::Options => "Options",
         }
     }
 }
@@ -111,6 +118,7 @@ fn pair_detail(ui: &mut Ui, vm: &ViewModel, pair: &PairRow, palette: &Palette) -
                 DetailTab::Activity => actions.extend(activity::show(ui, vm)),
                 DetailTab::Conflicts => actions.extend(conflicts::show(ui, vm)),
                 DetailTab::Filters => actions.extend(filters::show(ui, vm)),
+                DetailTab::Options => actions.extend(options::sync(ui, vm)),
             });
     });
     actions
@@ -239,6 +247,7 @@ fn status_card(
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = space::S;
             status_badge(ui, pair.status, BadgeSize::Large);
+            safety_notice(ui, pair, palette);
             if pair.status == DisplayStatus::Syncing {
                 progress_block(ui, pair.progress.as_ref(), palette);
                 return;
@@ -277,6 +286,31 @@ fn status_card(
                 actions.push(action);
             }
         });
+}
+
+/// Shown when a setting of the sync makes it less safe than the built-in
+/// values; the tooltip names the settings.
+fn safety_notice(ui: &mut Ui, pair: &PairRow, palette: &Palette) {
+    let lowered = pair.lowered_safety();
+    if lowered.is_empty() {
+        return;
+    }
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = space::XS;
+        ui.add(Icon::CircleAlert.image(palette.warning, size::ICON));
+        ui.add(
+            egui::Label::new(
+                RichText::new("Safety lowered")
+                    .font(theme::callout())
+                    .color(palette.warning),
+            )
+            .sense(egui::Sense::hover()),
+        )
+        .on_hover_text(format!(
+            "Less safe than the built-in values: {}",
+            lowered.join(", ")
+        ));
+    });
 }
 
 fn progress_block(ui: &mut Ui, progress: Option<&Progress>, palette: &Palette) {

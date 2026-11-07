@@ -6,16 +6,21 @@ use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
 use serde::Deserialize;
-use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, Value};
+use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, TableLike, Value};
 
+use crate::behavior::Behavior;
 use crate::filters;
 use crate::paths::Paths;
+use crate::settings::{self, Effective, Origin, Overrides};
 
-const SUPPORTED_VERSION: i64 = 1;
-const TOP_LEVEL_KEYS: [&str; 2] = ["version", "pair"];
+const SUPPORTED_VERSION: i64 = 2;
+const FIRST_VERSION: i64 = 1;
+const V1_TOP_LEVEL_KEYS: [&str; 2] = ["version", "pair"];
+const TOP_LEVEL_KEYS: [&str; 3] = ["version", "defaults", "pair"];
 const PAIR_KEYS: [&str; 7] = [
     "id", "name", "local", "remote", "enabled", "presets", "filters",
 ];
+const V1_BACKUP: &str = "config.toml.v1";
 
 /// Problems that stop the whole file from loading.
 #[derive(Debug, thiserror::Error)]
@@ -28,6 +33,8 @@ pub enum GlobalConfigError {
     UnknownKey(String),
     #[error("unsupported config version {0}")]
     UnsupportedVersion(i64),
+    #[error("config.toml: [defaults]: {0}")]
+    Defaults(String),
 }
 
 /// Why one pair cannot run; the other pairs are unaffected.
@@ -70,8 +77,24 @@ pub enum ConfigEditError {
     NonUtf8Path,
 }
 
+/// Where a setting is written: `[defaults]` or one sync's table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SettingScope {
+    Defaults,
+    Sync(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SettingError {
+    #[error("unknown setting \"{0}\"")]
+    UnknownKey(String),
+    #[error("no sync with id \"{0}\"")]
+    UnknownSync(String),
+    #[error("{0}")]
+    Invalid(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Pair {
     pub id: String,
     pub name: String,
@@ -85,6 +108,9 @@ pub struct Pair {
     pub presets: Vec<String>,
     #[serde(default)]
     pub filters: Vec<String>,
+    /// The behavior keys this sync's own table sets.
+    #[serde(skip)]
+    pub overrides: Overrides,
 }
 
 fn default_enabled() -> bool {
@@ -108,7 +134,6 @@ pub fn split_remote(remote: &str) -> Option<(&str, &str)> {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Raw {
     #[serde(rename = "version")]
     _version: i64,
@@ -122,6 +147,7 @@ struct Raw {
 pub struct Config {
     document: DocumentMut,
     pairs: Vec<Pair>,
+    defaults: Overrides,
 }
 
 /// Result of [`Config::validate`].
@@ -139,6 +165,7 @@ impl Config {
         Self {
             document,
             pairs: Vec::new(),
+            defaults: Overrides::default(),
         }
     }
 
@@ -162,22 +189,102 @@ impl Config {
         let mut document: DocumentMut = text
             .parse()
             .map_err(|err: toml_edit::TomlError| GlobalConfigError::Toml(err.to_string()))?;
-        if let Some(version) = document.get("version").and_then(Item::as_integer)
+        let version = document.get("version").and_then(Item::as_integer);
+        if let Some(version) = version
+            && version != FIRST_VERSION
             && version != SUPPORTED_VERSION
         {
             return Err(GlobalConfigError::UnsupportedVersion(version));
         }
         normalize_pair_array(&mut document);
-        reject_unknown_keys(&document)?;
+        reject_unknown_keys(&document, version.unwrap_or(SUPPORTED_VERSION))?;
+        let defaults = read_defaults(&document)?;
         let mut raw: Raw =
             toml::from_str(text).map_err(|err| GlobalConfigError::Toml(err.to_string()))?;
         for pair in &mut raw.pair {
             pair.local = expand_tilde(&pair.local, home);
         }
-        Ok(Self {
+        let mut config = Self {
             document,
             pairs: raw.pair,
-        })
+            defaults,
+        };
+        config.refresh_overrides();
+        Ok(config)
+    }
+
+    /// The version the file was written with when it is older than the
+    /// current one: it migrates on the next save.
+    #[must_use]
+    pub fn migrated_from(&self) -> Option<i64> {
+        self.document
+            .get("version")
+            .and_then(Item::as_integer)
+            .filter(|&version| version < SUPPORTED_VERSION)
+    }
+
+    /// Rewrites an older `config.toml` as the current version, keeping the
+    /// original beside it as `config.toml.v1`. Does nothing for a file that
+    /// is current, absent or does not load. Returns whether it migrated.
+    ///
+    /// # Errors
+    /// The lock, the copy or the save fails.
+    pub async fn migrate(paths: &Paths) -> Result<bool, ConfigUpdateError> {
+        let _lock = lock_config(paths).await?;
+        let Ok(config) = Self::load(paths).await else {
+            return Ok(false);
+        };
+        if config.migrated_from().is_none() {
+            return Ok(false);
+        }
+        let target = real_config_file(paths).await?;
+        let backup = target.with_file_name(V1_BACKUP);
+        if !tokio::fs::try_exists(&backup).await.unwrap_or(false) {
+            tokio::fs::copy(&target, &backup)
+                .await
+                .map_err(|source| ConfigSaveError::Write {
+                    path: backup,
+                    source,
+                })?;
+        }
+        config.save(paths).await?;
+        Ok(true)
+    }
+
+    /// The built-in values with `[defaults]` on top.
+    #[must_use]
+    pub fn defaults(&self) -> Behavior {
+        let mut behavior = Behavior::default();
+        self.defaults.apply_to(&mut behavior);
+        behavior
+    }
+
+    /// The keys `[defaults]` sets.
+    #[must_use]
+    pub fn defaults_overrides(&self) -> &Overrides {
+        &self.defaults
+    }
+
+    /// What a sync runs with and where each value comes from.
+    #[must_use]
+    pub fn effective(&self, pair: &Pair) -> Effective {
+        let origins = settings::KEYS
+            .iter()
+            .map(|def| {
+                let origin = if pair.overrides.contains(def.name) {
+                    Origin::Sync
+                } else if self.defaults.contains(def.name) {
+                    Origin::Defaults
+                } else {
+                    Origin::Builtin
+                };
+                (def.name, origin)
+            })
+            .collect();
+        Effective {
+            behavior: Behavior::for_pair(&self.defaults(), pair),
+            origins,
+        }
     }
 
     #[must_use]
@@ -199,12 +306,13 @@ impl Config {
             *id_counts.entry(pair.id.as_str()).or_default() += 1;
         }
         let data_dir = resolve(&paths.data_dir());
+        let defaults = self.defaults();
         let mut messages: Vec<Option<String>> = self
             .pairs
             .iter()
             .map(|pair| {
                 let duplicate = id_counts.get(pair.id.as_str()).copied().unwrap_or(0) > 1;
-                problem_before_overlap(pair, duplicate, &data_dir)
+                problem_before_overlap(pair, duplicate, &data_dir, &defaults)
             })
             .collect();
         let candidates: Vec<bool> = messages.iter().map(Option::is_none).collect();
@@ -379,18 +487,8 @@ impl Config {
     /// The file cannot be written, or is a link to a file that does not
     /// exist (writing would replace the link).
     pub async fn save(&self, paths: &Paths) -> Result<(), ConfigSaveError> {
-        let file = paths.config_file();
-        let target = if let Ok(target) = tokio::fs::canonicalize(&file).await {
-            target
-        } else if let Ok(meta) = tokio::fs::symlink_metadata(&file).await
-            && meta.is_symlink()
-        {
-            let target = tokio::fs::read_link(&file).await.unwrap_or(file);
-            return Err(ConfigSaveError::DanglingLink { target });
-        } else {
-            file
-        };
-        let contents = self.to_toml();
+        let target = real_config_file(paths).await?;
+        let contents = self.saved_text();
         let written = target.clone();
         let outcome =
             tokio::task::spawn_blocking(move || fastframe_file::write(&written, contents))
@@ -400,6 +498,156 @@ impl Config {
             path: target,
             source,
         })
+    }
+
+    /// What `save` writes: the document, with the version line brought up to
+    /// date and nothing else touched.
+    fn saved_text(&self) -> String {
+        if self.migrated_from().is_none() {
+            return self.to_toml();
+        }
+        let mut document = self.document.clone();
+        replace_value(
+            document.as_table_mut(),
+            "version",
+            Value::from(SUPPORTED_VERSION),
+        );
+        document.to_string()
+    }
+
+    /// Sets `key` in `scope` to the value `text` spells, after checking it
+    /// as a whole: nothing changes when the value or the combination it makes
+    /// is not valid.
+    ///
+    /// # Errors
+    /// The key or the sync does not exist, or the value is not valid.
+    pub fn set_setting(
+        &mut self,
+        scope: &SettingScope,
+        key: &str,
+        text: &str,
+    ) -> Result<(), SettingError> {
+        let def = settings::key(key).ok_or_else(|| SettingError::UnknownKey(key.to_owned()))?;
+        if *scope == SettingScope::Defaults && def.per_sync_only {
+            return Err(SettingError::Invalid(settings::per_sync_only_message(key)));
+        }
+        let value = def.parse_text(text).map_err(SettingError::Invalid)?;
+        self.change_setting(scope, def, Some(&value))
+    }
+
+    /// Removes `key` from `scope`, so the value comes from further up.
+    ///
+    /// # Errors
+    /// The key or the sync does not exist, or the value it falls back to
+    /// makes an invalid combination.
+    pub fn reset_setting(&mut self, scope: &SettingScope, key: &str) -> Result<(), SettingError> {
+        let def = settings::key(key).ok_or_else(|| SettingError::UnknownKey(key.to_owned()))?;
+        self.change_setting(scope, def, None)
+    }
+
+    fn change_setting(
+        &mut self,
+        scope: &SettingScope,
+        def: &settings::KeyDef,
+        value: Option<&settings::Value>,
+    ) -> Result<(), SettingError> {
+        let mut next = self.clone();
+        next.write_setting(scope, def, value)?;
+        if let Some(problem) = next.new_relation_problem(self) {
+            return Err(SettingError::Invalid(problem));
+        }
+        *self = next;
+        Ok(())
+    }
+
+    fn write_setting(
+        &mut self,
+        scope: &SettingScope,
+        def: &settings::KeyDef,
+        value: Option<&settings::Value>,
+    ) -> Result<(), SettingError> {
+        match scope {
+            SettingScope::Defaults => {
+                let table = match value {
+                    Some(_) => self.defaults_table_mut(),
+                    None => self
+                        .document
+                        .get_mut("defaults")
+                        .and_then(Item::as_table_like_mut),
+                };
+                if let Some(table) = table {
+                    write_or_remove(table, def, value);
+                }
+            }
+            SettingScope::Sync(id) => {
+                if !self.pairs.iter().any(|pair| pair.id == *id) {
+                    return Err(SettingError::UnknownSync(id.clone()));
+                }
+                if let Some(tables) = self
+                    .document
+                    .get_mut("pair")
+                    .and_then(Item::as_array_of_tables_mut)
+                {
+                    for table in tables.iter_mut().filter(|t| table_id(t) == Some(id)) {
+                        write_or_remove(table, def, value);
+                    }
+                }
+            }
+        }
+        self.refresh_overrides();
+        Ok(())
+    }
+
+    /// `[defaults]` goes right after `version`, ahead of the syncs.
+    fn defaults_table_mut(&mut self) -> Option<&mut dyn TableLike> {
+        self.document
+            .entry("defaults")
+            .or_insert_with(|| {
+                let mut table = Table::new();
+                table.decor_mut().set_prefix("\n");
+                table.set_position(0);
+                Item::Table(table)
+            })
+            .as_table_like_mut()
+    }
+
+    /// Reads the behavior keys again from the document, the one place they
+    /// are kept.
+    fn refresh_overrides(&mut self) {
+        self.defaults = self
+            .document
+            .get("defaults")
+            .and_then(Item::as_table_like)
+            .map_or_else(Overrides::default, |table| Overrides::read(table, true));
+        if let Some(tables) = self.document.get("pair").and_then(Item::as_array_of_tables) {
+            for (pair, table) in self.pairs.iter_mut().zip(tables) {
+                pair.overrides = Overrides::read(table, false);
+            }
+        }
+    }
+
+    fn relation_problems(&self) -> Vec<(Option<String>, String)> {
+        let defaults = self.defaults();
+        let mut found = Vec::new();
+        if let Some(message) = settings::relation_problem(&defaults) {
+            found.push((None, message));
+        }
+        for pair in &self.pairs {
+            if let Some(message) = settings::relation_problem(&Behavior::for_pair(&defaults, pair))
+            {
+                found.push((Some(pair.id.clone()), message));
+            }
+        }
+        found
+    }
+
+    /// A relation problem this config has and `before` did not.
+    fn new_relation_problem(&self, before: &Self) -> Option<String> {
+        let old = before.relation_problems();
+        self.relation_problems()
+            .into_iter()
+            .find(|problem| !old.contains(problem))
+            .map(|(_, message)| message)
     }
 
     fn edit_pair(
@@ -458,7 +706,7 @@ fn string_array(items: &[String]) -> Value {
 
 /// Swaps a value in place, keeping the key's comments and the value's
 /// trailing comment.
-fn replace_value(table: &mut Table, key: &str, mut new: Value) {
+fn replace_value(table: &mut dyn TableLike, key: &str, mut new: Value) {
     match table.get_mut(key) {
         Some(item) => {
             if let Some(old) = item.as_value() {
@@ -467,7 +715,7 @@ fn replace_value(table: &mut Table, key: &str, mut new: Value) {
             *item = Item::Value(new);
         }
         None => {
-            table[key] = Item::Value(new);
+            table.insert(key, Item::Value(new));
         }
     }
 }
@@ -485,20 +733,76 @@ fn normalize_pair_array(document: &mut DocumentMut) {
     }
 }
 
-fn reject_unknown_keys(document: &DocumentMut) -> Result<(), GlobalConfigError> {
-    let unknown = |table: &Table, allowed: &[&str]| {
+fn read_defaults(document: &DocumentMut) -> Result<Overrides, GlobalConfigError> {
+    let Some(item) = document.get("defaults") else {
+        return Ok(Overrides::default());
+    };
+    let table = item
+        .as_table_like()
+        .ok_or_else(|| GlobalConfigError::Toml("[defaults] must be a table".to_owned()))?;
+    let overrides = Overrides::read(table, true);
+    match overrides.problem() {
+        Some(message) => Err(GlobalConfigError::Defaults(message.to_owned())),
+        None => Ok(overrides),
+    }
+}
+
+fn write_or_remove(
+    table: &mut dyn TableLike,
+    def: &settings::KeyDef,
+    value: Option<&settings::Value>,
+) {
+    match value {
+        Some(value) => replace_value(table, def.name, value.to_toml()),
+        None => {
+            table.remove(def.name);
+        }
+    }
+}
+
+/// The path `config.toml` really is: a symlink (GNU stow) is followed, so the
+/// link survives writes.
+async fn real_config_file(paths: &Paths) -> Result<PathBuf, ConfigSaveError> {
+    let file = paths.config_file();
+    if let Ok(target) = tokio::fs::canonicalize(&file).await {
+        Ok(target)
+    } else if let Ok(meta) = tokio::fs::symlink_metadata(&file).await
+        && meta.is_symlink()
+    {
+        let target = tokio::fs::read_link(&file).await.unwrap_or(file);
+        Err(ConfigSaveError::DanglingLink { target })
+    } else {
+        Ok(file)
+    }
+}
+
+fn reject_unknown_keys(document: &DocumentMut, version: i64) -> Result<(), GlobalConfigError> {
+    let has_behavior_keys = version != FIRST_VERSION;
+    let top_level: &[&str] = if has_behavior_keys {
+        &TOP_LEVEL_KEYS
+    } else {
+        &V1_TOP_LEVEL_KEYS
+    };
+    let unknown = |table: &dyn TableLike, allowed: &dyn Fn(&str) -> bool, prefix: &str| {
         table
             .iter()
             .map(|(key, _)| key)
-            .find(|key| !allowed.contains(key))
-            .map(|key| GlobalConfigError::UnknownKey(key.to_owned()))
+            .find(|key| !allowed(key))
+            .map(|key| GlobalConfigError::UnknownKey(format!("{prefix}{key}")))
     };
-    if let Some(err) = unknown(document.as_table(), &TOP_LEVEL_KEYS) {
+    if let Some(err) = unknown(document.as_table(), &|key| top_level.contains(&key), "") {
         return Err(err);
     }
+    if let Some(table) = document.get("defaults").and_then(Item::as_table_like)
+        && let Some(err) = unknown(table, &|key| settings::key(key).is_some(), "defaults.")
+    {
+        return Err(err);
+    }
+    let pair_key =
+        |key: &str| PAIR_KEYS.contains(&key) || (has_behavior_keys && settings::key(key).is_some());
     if let Some(tables) = document.get("pair").and_then(Item::as_array_of_tables) {
         for table in tables {
-            if let Some(err) = unknown(table, &PAIR_KEYS) {
+            if let Some(err) = unknown(table, &pair_key, "") {
                 return Err(err);
             }
         }
@@ -580,7 +884,12 @@ pub fn valid_id(id: &str) -> bool {
 }
 
 /// Checks that run before the cross-pair overlap checks, in spec order.
-fn problem_before_overlap(pair: &Pair, duplicate_id: bool, data_dir: &Path) -> Option<String> {
+fn problem_before_overlap(
+    pair: &Pair,
+    duplicate_id: bool,
+    data_dir: &Path,
+    defaults: &Behavior,
+) -> Option<String> {
     if !valid_id(&pair.id) {
         return Some(format!(
             "sync id \"{}\" must use a-z, 0-9 and \"-\", up to 32 characters",
@@ -605,7 +914,10 @@ fn problem_before_overlap(pair: &Pair, duplicate_id: bool, data_dir: &Path) -> O
     if split_remote(&pair.remote).is_none() {
         return Some("remote folder must look like \"account:folder\"".to_owned());
     }
-    None
+    if let Some(problem) = pair.overrides.problem() {
+        return Some(problem.to_owned());
+    }
+    settings::relation_problem(&Behavior::for_pair(defaults, pair))
 }
 
 /// Checks that run after the overlap checks, in spec order.
@@ -708,6 +1020,7 @@ pub(crate) fn lexical_clean(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     const HOME: &str = "/home/ada";
 
@@ -728,7 +1041,7 @@ mod tests {
     }
 
     fn config(blocks: &[String]) -> Config {
-        let text = format!("version = 1\n\n{}", blocks.join("\n"));
+        let text = format!("version = 2\n\n{}", blocks.join("\n"));
         Config::parse(&text, Path::new(HOME)).unwrap()
     }
 
@@ -842,10 +1155,10 @@ mod tests {
     }
 
     #[test]
-    fn version_other_than_one_is_rejected_even_with_unknown_keys() {
-        let err = Config::parse("version = 2\nfuture = true\n", Path::new(HOME)).unwrap_err();
+    fn version_3_is_unsupported() {
+        let err = Config::parse("version = 3\nfuture = true\n", Path::new(HOME)).unwrap_err();
 
-        assert_eq!(err.to_string(), "unsupported config version 2");
+        assert_eq!(err.to_string(), "unsupported config version 3");
     }
 
     #[test]
@@ -862,7 +1175,7 @@ mod tests {
         let config = Config::load(&paths_in(root.path())).await.unwrap();
 
         assert!(config.pairs().is_empty());
-        assert_eq!(config.to_toml(), "version = 1\n");
+        assert_eq!(config.to_toml(), "version = 2\n");
     }
 
     #[tokio::test]
@@ -1286,6 +1599,7 @@ mod tests {
             enabled: false,
             presets: vec!["dev_dirs".into()],
             filters: vec!["- *.bak".into()],
+            overrides: Overrides::default(),
         };
 
         config.add_pair(added.clone()).unwrap();
@@ -1309,6 +1623,7 @@ mod tests {
                 enabled: true,
                 presets: vec![],
                 filters: vec![],
+                overrides: Overrides::default(),
             })
             .unwrap();
 
@@ -1354,6 +1669,7 @@ mod tests {
                 enabled: true,
                 presets: vec![],
                 filters: vec![],
+                overrides: Overrides::default(),
             })
             .unwrap();
 
@@ -1383,6 +1699,7 @@ mod tests {
                 enabled: true,
                 presets: vec![],
                 filters: vec![],
+                overrides: Overrides::default(),
             })
             .unwrap();
 
@@ -1394,7 +1711,7 @@ mod tests {
                 .is_symlink()
         );
         let stowed = std::fs::read_to_string(&target).unwrap();
-        assert!(stowed.starts_with("# stowed\nversion = 1\n"));
+        assert!(stowed.starts_with("# stowed\nversion = 2\n"));
         assert!(stowed.contains("id = \"a\""));
     }
 
@@ -1407,6 +1724,7 @@ mod tests {
             enabled: true,
             presets: vec![],
             filters: vec![],
+            overrides: Overrides::default(),
         }
     }
 
@@ -1553,5 +1871,369 @@ mod tests {
             filter_line_problem(3, "a.tmp").as_deref(),
             Some("filter line 3 must start with \"+ \" or \"- \"")
         );
+    }
+
+    const V1_FILE: &str = "# mine\nversion = 1\n\n[[pair]]\nid = \"a\"\nname = \"A\"\nlocal = \"/a\"\nremote = \"gdrive:a\"\n";
+
+    fn write_config_file(paths: &Paths, text: &str) {
+        let file = paths.config_file();
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, text).unwrap();
+    }
+
+    fn parse(text: &str) -> Config {
+        Config::parse(text, Path::new(HOME)).unwrap()
+    }
+
+    fn global_error(text: &str) -> String {
+        Config::parse(text, Path::new(HOME))
+            .unwrap_err()
+            .to_string()
+    }
+
+    #[test]
+    fn a_v1_config_loads_and_reports_it_was_migrated_from_1() {
+        let old = parse(V1_FILE);
+        let current = parse("version = 2\n");
+
+        assert_eq!(old.migrated_from(), Some(1));
+        assert_eq!(old.pairs()[0].id, "a");
+        assert_eq!(current.migrated_from(), None);
+    }
+
+    #[tokio::test]
+    async fn the_first_save_of_a_v1_config_writes_version_2_and_keeps_comments() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths_in(root.path());
+        write_config_file(&paths, V1_FILE);
+
+        Config::edit(&paths, |config| config.set_enabled("a", false))
+            .await
+            .unwrap();
+
+        let saved = std::fs::read_to_string(paths.config_file()).unwrap();
+        assert!(saved.starts_with("# mine\nversion = 2\n"), "{saved}");
+        assert!(saved.contains("enabled = false"), "{saved}");
+        assert_eq!(Config::load(&paths).await.unwrap().migrated_from(), None);
+    }
+
+    #[tokio::test]
+    async fn an_edit_that_changes_nothing_leaves_a_v1_file_as_it_was() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths_in(root.path());
+        write_config_file(&paths, V1_FILE);
+
+        Config::edit(&paths, |_| ()).await.unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(paths.config_file()).unwrap(),
+            V1_FILE
+        );
+    }
+
+    #[tokio::test]
+    async fn migrate_copies_a_v1_file_to_config_toml_v1_once_and_leaves_a_v2_file_alone() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths_in(root.path());
+        let backup = paths.config_file().with_file_name("config.toml.v1");
+        write_config_file(&paths, V1_FILE);
+
+        let first = Config::migrate(&paths).await.unwrap();
+        let migrated = std::fs::read_to_string(paths.config_file()).unwrap();
+        let second = Config::migrate(&paths).await.unwrap();
+        write_config_file(&paths, "version = 1\n# edited again\n");
+        let third = Config::migrate(&paths).await.unwrap();
+
+        assert!(first);
+        assert!(migrated.starts_with("# mine\nversion = 2\n"), "{migrated}");
+        assert!(!second);
+        assert!(third);
+        assert_eq!(std::fs::read_to_string(backup).unwrap(), V1_FILE);
+    }
+
+    #[tokio::test]
+    async fn migrate_does_nothing_without_a_config_file() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths_in(root.path());
+
+        let migrated = Config::migrate(&paths).await.unwrap();
+
+        assert!(!migrated);
+        assert!(!paths.config_file().exists());
+    }
+
+    #[test]
+    fn a_v1_config_with_a_defaults_table_is_an_unknown_key_error() {
+        assert_eq!(
+            global_error("version = 1\n[defaults]\ndebounce = \"10s\"\n"),
+            "unknown key \"defaults\": not supported by this syncfast version"
+        );
+    }
+
+    #[test]
+    fn a_v1_pair_with_a_behavior_key_is_an_unknown_key_error() {
+        assert_eq!(
+            global_error(&format!(
+                "version = 1\n{}debounce = \"10s\"\n",
+                pair_block("a", "A", "/a", "gdrive:")
+            )),
+            "unknown key \"debounce\": not supported by this syncfast version"
+        );
+    }
+
+    #[test]
+    fn an_unknown_key_in_defaults_is_named_with_its_table() {
+        assert_eq!(
+            global_error("version = 2\n[defaults]\nfuture = 1\n"),
+            "unknown key \"defaults.future\": not supported by this syncfast version"
+        );
+    }
+
+    #[test]
+    fn an_invalid_defaults_value_is_a_global_error_with_the_key_message() {
+        assert_eq!(
+            global_error("version = 2\n[defaults]\ndebounce = \"2s\"\n"),
+            "config.toml: [defaults]: debounce must be at least 5s"
+        );
+        assert_eq!(
+            global_error("version = 2\n[defaults]\nwatch = \"yes\"\n"),
+            "config.toml: [defaults]: watch must be bool"
+        );
+    }
+
+    #[test]
+    fn a_defaults_table_reads_into_the_defaults_behavior() {
+        let config = parse("version = 2\n[defaults]\ndebounce = \"10s\"\nmax_delete = 20\n");
+
+        let defaults = config.defaults();
+
+        assert_eq!(defaults.debounce, Duration::from_secs(10));
+        assert_eq!(defaults.max_delete, 20);
+        assert_eq!(defaults.interval, Behavior::default().interval);
+    }
+
+    #[test]
+    fn a_pair_debounce_below_the_minimum_is_a_pair_error() {
+        assert_eq!(
+            single_problem("debounce = \"2s\"\n"),
+            ["debounce must be at least 5s"]
+        );
+    }
+
+    #[test]
+    fn a_pair_max_wait_below_its_debounce_is_a_pair_error() {
+        assert_eq!(
+            single_problem("debounce = \"1m\"\nmax_wait = \"30s\"\n"),
+            ["max_wait must be at least debounce"]
+        );
+    }
+
+    #[test]
+    fn a_pair_interval_below_one_minute_is_a_pair_error() {
+        assert_eq!(
+            single_problem("interval = \"30s\"\n"),
+            ["interval must be at least 1m"]
+        );
+    }
+
+    #[test]
+    fn a_pair_versions_keep_days_outside_the_range_is_a_pair_error() {
+        for days in ["0", "3651"] {
+            assert_eq!(
+                single_problem(&format!("versions_keep_days = {days}\n")),
+                ["versions_keep_days must be between 1 and 3650"]
+            );
+        }
+    }
+
+    #[test]
+    fn a_pair_max_delete_outside_the_range_is_a_pair_error() {
+        for percent in ["0", "101"] {
+            assert_eq!(
+                single_problem(&format!("max_delete = {percent}\n")),
+                ["max_delete must be between 1 and 100"]
+            );
+        }
+    }
+
+    #[test]
+    fn a_pair_value_that_is_not_in_the_list_names_the_values_that_work() {
+        assert_eq!(
+            single_problem("conflict_loser = \"x\"\n"),
+            ["unknown value \"x\" for conflict_loser: use num, pathname or delete"]
+        );
+    }
+
+    #[test]
+    fn a_pair_value_of_the_wrong_type_names_the_type() {
+        assert_eq!(single_problem("watch = \"yes\"\n"), ["watch must be bool"]);
+        assert_eq!(
+            single_problem("debounce = 30\n"),
+            ["debounce must be a duration"]
+        );
+        assert_eq!(
+            single_problem("max_delete = \"many\"\n"),
+            ["max_delete must be a whole number"]
+        );
+    }
+
+    #[test]
+    fn a_pair_that_deletes_the_conflict_loser_without_a_winner_is_a_pair_error() {
+        assert_eq!(
+            single_problem("conflict_resolve = \"none\"\nconflict_loser = \"delete\"\n"),
+            ["conflict_loser \"delete\" needs a conflict_resolve that picks a winner"]
+        );
+    }
+
+    #[test]
+    fn a_defaults_value_that_breaks_a_pairs_relation_invalidates_only_that_pair() {
+        let config = parse(&format!(
+            "version = 2\n[defaults]\ndebounce = \"10m\"\n\n{}\n{}max_wait = \"20m\"\n",
+            pair_block("inherits", "Inherits", "/data/a", "gdrive:a"),
+            pair_block("sets-its-own", "Own", "/data/b", "gdrive:b"),
+        ));
+
+        let validation = validate(&config);
+
+        let errors: Vec<_> = validation
+            .errors
+            .iter()
+            .map(|error| (error.pair_id.as_str(), error.message.as_str()))
+            .collect();
+        assert_eq!(errors, [("inherits", "max_wait must be at least debounce")]);
+        assert_eq!(validation.pairs.len(), 1);
+        assert_eq!(validation.pairs[0].id, "sets-its-own");
+    }
+
+    #[test]
+    fn effective_names_where_each_value_came_from() {
+        let config = parse(&format!(
+            "version = 2\n[defaults]\ndebounce = \"10s\"\nmax_delete = 20\n\n{}max_delete = 30\n",
+            pair_block("a", "A", "/a", "gdrive:a"),
+        ));
+
+        let effective = config.effective(&config.pairs()[0]);
+
+        assert_eq!(effective.behavior.debounce, Duration::from_secs(10));
+        assert_eq!(effective.behavior.max_delete, 30);
+        assert_eq!(effective.origin("max_delete"), Origin::Sync);
+        assert_eq!(effective.origin("debounce"), Origin::Defaults);
+        assert_eq!(effective.origin("interval"), Origin::Builtin);
+    }
+
+    #[test]
+    fn set_setting_creates_defaults_right_after_version() {
+        let mut config = parse(&format!(
+            "# top\nversion = 2\n\n{}",
+            pair_block("a", "A", "/a", "gdrive:a")
+        ));
+
+        config
+            .set_setting(&SettingScope::Defaults, "debounce", "10s")
+            .unwrap();
+
+        assert_eq!(
+            config.to_toml(),
+            format!(
+                "# top\nversion = 2\n\n[defaults]\ndebounce = \"10s\"\n\n{}",
+                pair_block("a", "A", "/a", "gdrive:a")
+            )
+        );
+        assert_eq!(config.defaults().debounce, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn set_setting_on_a_sync_writes_the_key_into_its_table() {
+        let mut config = config(&[
+            pair_block("a", "A", "/a", "gdrive:a"),
+            pair_block("b", "B", "/b", "gdrive:b"),
+        ]);
+
+        config
+            .set_setting(&SettingScope::Sync("b".into()), "max_delete", "20")
+            .unwrap();
+
+        let reloaded = parse(&config.to_toml());
+        assert_eq!(
+            reloaded.effective(&reloaded.pairs()[0]).behavior.max_delete,
+            50
+        );
+        assert_eq!(
+            reloaded.effective(&reloaded.pairs()[1]).behavior.max_delete,
+            20
+        );
+    }
+
+    #[test]
+    fn a_value_equal_to_the_inherited_one_still_creates_the_override() {
+        let mut config = config(&[pair_block("a", "A", "/a", "gdrive:a")]);
+
+        config
+            .set_setting(&SettingScope::Sync("a".into()), "max_delete", "50")
+            .unwrap();
+
+        let effective = config.effective(&config.pairs()[0]);
+        assert_eq!(effective.origin("max_delete"), Origin::Sync);
+    }
+
+    #[test]
+    fn reset_setting_removes_the_key_and_keeps_other_comments() {
+        let mut config = parse(&format!(
+            "version = 2\n\n[defaults]\ndebounce = \"10s\"\n# keep me\nversions = false\n\n{}",
+            pair_block("a", "A", "/a", "gdrive:a")
+        ));
+
+        config
+            .reset_setting(&SettingScope::Defaults, "debounce")
+            .unwrap();
+
+        assert_eq!(
+            config.to_toml(),
+            format!(
+                "version = 2\n\n[defaults]\n# keep me\nversions = false\n\n{}",
+                pair_block("a", "A", "/a", "gdrive:a")
+            )
+        );
+    }
+
+    #[test]
+    fn reset_setting_on_a_sync_falls_back_to_the_defaults() {
+        let mut config = parse(&format!(
+            "version = 2\n[defaults]\nmax_delete = 20\n\n{}max_delete = 30\n",
+            pair_block("a", "A", "/a", "gdrive:a")
+        ));
+
+        config
+            .reset_setting(&SettingScope::Sync("a".into()), "max_delete")
+            .unwrap();
+
+        let effective = config.effective(&config.pairs()[0]);
+        assert_eq!(effective.behavior.max_delete, 20);
+        assert_eq!(effective.origin("max_delete"), Origin::Defaults);
+    }
+
+    #[test]
+    fn set_setting_refuses_what_the_file_would_refuse_and_changes_nothing() {
+        let mut config = config(&[pair_block("a", "A", "/a", "gdrive:a")]);
+        let before = config.to_toml();
+        let defaults = SettingScope::Defaults;
+
+        let errors = [
+            config.set_setting(&defaults, "debounce", "2s"),
+            config.set_setting(&defaults, "nope", "1"),
+            config.set_setting(&SettingScope::Sync("zzz".into()), "debounce", "10s"),
+            config.set_setting(&defaults, "max_wait", "1s"),
+        ];
+
+        assert_eq!(
+            errors.map(|error| error.unwrap_err().to_string()),
+            [
+                "debounce must be at least 5s",
+                "unknown setting \"nope\"",
+                "no sync with id \"zzz\"",
+                "max_wait must be at least debounce",
+            ]
+        );
+        assert_eq!(config.to_toml(), before);
     }
 }

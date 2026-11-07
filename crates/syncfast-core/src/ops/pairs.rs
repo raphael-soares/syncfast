@@ -132,6 +132,7 @@ impl Ops {
             enabled: true,
             presets,
             filters: new.filters,
+            overrides: crate::settings::Overrides::default(),
         };
         config.add_pair(pair.clone())?;
         let accounts = self.rclone.listremotes().await?;

@@ -2,6 +2,7 @@
 //! (`notify <id>`), so a click can open the window on that sync.
 
 use fastframe_notifications::{App, Client, Event, Notification};
+use syncfast_core::behavior::Behavior;
 use syncfast_core::bisync_log::read_log;
 use syncfast_core::config::Config;
 use syncfast_core::notify::{Alert, Notice, last_error_message, notice};
@@ -53,7 +54,8 @@ pub async fn notice_for(paths: &Paths, pair_id: &str) -> Option<Notice> {
             .and_then(last_error_message)
             .map(str::trim),
     )?;
-    Some(notice(pair, &alert))
+    let behavior = Behavior::for_pair(&config.defaults(), pair);
+    Some(notice(pair, &behavior, &alert))
 }
 
 /// Shows notices through the desktop's notification service. A click puts

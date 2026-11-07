@@ -5,9 +5,11 @@
 use std::path::{Path, PathBuf};
 
 use jiff::Timestamp;
+use syncfast_core::behavior::Behavior;
 use syncfast_core::bisync_log::{Progress, last_stats, parse_log};
 use syncfast_core::config::{Config, Pair};
 use syncfast_core::paths::Paths;
+use syncfast_core::settings::{Effective, Overrides};
 use syncfast_core::state::{DisplayStatus, Gate, GateKind, State, display_status, is_running};
 use syncfast_core::watch::limited_pairs;
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
@@ -24,6 +26,8 @@ pub struct PairSnapshot {
     pub progress: Option<Progress>,
     /// The watcher ran out of inotify watches for this sync.
     pub realtime_off: bool,
+    /// What the sync runs with and where each value comes from.
+    pub effective: Effective,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -31,6 +35,10 @@ pub struct Snapshot {
     /// The config has a global problem: no sync can be listed.
     pub config_error: Option<String>,
     pub pairs: Vec<PairSnapshot>,
+    /// The built-in values with `[defaults]` on top.
+    pub defaults: Behavior,
+    /// The keys `[defaults]` sets.
+    pub defaults_overrides: Overrides,
 }
 
 impl Snapshot {
@@ -47,6 +55,7 @@ pub async fn load(paths: &Paths) -> Snapshot {
             return Snapshot {
                 config_error: Some(err.to_string()),
                 pairs: Vec::new(),
+                ..Snapshot::default()
             };
         }
     };
@@ -54,15 +63,22 @@ pub async fn load(paths: &Paths) -> Snapshot {
     let mut pairs = Vec::with_capacity(config.pairs().len());
     for pair in config.pairs() {
         let realtime_off = limited.contains(&pair.id);
-        pairs.push(load_pair(paths, pair, realtime_off).await);
+        pairs.push(load_pair(paths, &config, pair, realtime_off).await);
     }
     Snapshot {
         config_error: None,
         pairs,
+        defaults: config.defaults(),
+        defaults_overrides: config.defaults_overrides().clone(),
     }
 }
 
-async fn load_pair(paths: &Paths, pair: &Pair, realtime_off: bool) -> PairSnapshot {
+async fn load_pair(
+    paths: &Paths,
+    config: &Config,
+    pair: &Pair,
+    realtime_off: bool,
+) -> PairSnapshot {
     let state = match State::load(paths, &pair.id).await {
         Ok(state) => state,
         Err(err) => {
@@ -83,6 +99,7 @@ async fn load_pair(paths: &Paths, pair: &Pair, realtime_off: bool) -> PairSnapsh
         running,
         progress,
         realtime_off,
+        effective: config.effective(pair),
     }
 }
 
@@ -179,13 +196,13 @@ mod tests {
     async fn config_with_a_global_error_reports_it_and_lists_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let paths = paths(dir.path());
-        write_config(&paths, "version = 2\n");
+        write_config(&paths, "version = 3\n");
 
         let snapshot = load(&paths).await;
 
         assert_eq!(
             snapshot.config_error.as_deref(),
-            Some("unsupported config version 2")
+            Some("unsupported config version 3")
         );
         assert!(snapshot.pairs.is_empty());
     }

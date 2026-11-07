@@ -404,6 +404,9 @@ pub async fn apply(env: &ApplyEnv<'_>, delete_versions: &[String]) -> ApplyRepor
         report: ApplyReport::default(),
         units_changed: false,
     };
+    if let Err(err) = Config::migrate(env.paths).await {
+        applier.fail(None, "migrate config.toml", err.to_string());
+    }
     let _apply_lock = match lock_apply(env.paths).await {
         Ok(lock) => lock,
         Err(err) => {
@@ -552,7 +555,8 @@ impl Applier<'_, '_> {
             }
         }
 
-        self.write_units(&validation.pairs, &launcher).await;
+        self.write_units(&validation.pairs, &config.defaults(), &launcher)
+            .await;
         self.reload_if_needed().await;
         for pair in &validation.pairs {
             let timer = timer_name(&pair.id);
@@ -666,11 +670,11 @@ impl Applier<'_, '_> {
         }
     }
 
-    async fn write_units(&mut self, pairs: &[Pair], launcher: &Launcher) {
+    async fn write_units(&mut self, pairs: &[Pair], defaults: &Behavior, launcher: &Launcher) {
         let mut units = vec![(watch_service_name(), watch_service(launcher))];
         for pair in pairs {
             units.push((service_name(&pair.id), pair_service(pair, launcher)));
-            let behavior = Behavior::for_pair(pair);
+            let behavior = Behavior::for_pair(defaults, pair);
             units.push((timer_name(&pair.id), pair_timer(pair, &behavior)));
         }
         for (name, contents) in units {
@@ -783,6 +787,7 @@ mod tests {
             enabled: true,
             presets: Vec::new(),
             filters: Vec::new(),
+            overrides: crate::settings::Overrides::default(),
         }
     }
 

@@ -7,10 +7,12 @@ use jiff::Timestamp;
 use serde::Serialize;
 
 use super::{OpError, Ops};
+use crate::behavior::Behavior;
 use crate::bisync::ReviewKind;
 use crate::config::Pair;
 use crate::filters;
 use crate::notify::attention_body;
+use crate::settings::lowered_safety;
 use crate::state::{Gate, GateKind, LastOutcome, State, display_status, is_running};
 use crate::watch::{WATCH_LIMIT_NOTICE, limited_pairs};
 
@@ -45,6 +47,9 @@ pub struct PairView {
     pub notice: Option<&'static str>,
     /// Why the config rejects this sync, when it does.
     pub config_error: Option<String>,
+    /// The settings of this sync that are less safe than the built-in
+    /// default, by key.
+    pub lowered_safety: Vec<&'static str>,
 }
 
 /// Why normal rounds of a sync are blocked.
@@ -94,7 +99,7 @@ pub(crate) fn review_kind(gate: GateKind) -> Option<ReviewKind> {
     }
 }
 
-fn explanation(gate: &Gate) -> String {
+fn explanation(gate: &Gate, behavior: &Behavior) -> String {
     match gate.kind {
         GateKind::NeedsReviewFirstRun => {
             "First sync: review what will change before syncing starts.".to_owned()
@@ -105,9 +110,10 @@ fn explanation(gate: &Gate) -> String {
         GateKind::NeedsReviewCriticalError => {
             "Sync stopped after an error: review to resume.".to_owned()
         }
-        GateKind::TooManyDeletes => {
-            "More than half of the files would be deleted: review before continuing.".to_owned()
-        }
+        GateKind::TooManyDeletes => format!(
+            "More than {}% of the files would be deleted: review before continuing.",
+            behavior.max_delete
+        ),
         GateKind::AllFilesChanged => {
             "Every file changed at once: review before continuing.".to_owned()
         }
@@ -127,12 +133,12 @@ fn explanation(gate: &Gate) -> String {
 }
 
 impl GateView {
-    fn of(gate: &Gate) -> Self {
+    fn of(gate: &Gate, behavior: &Behavior) -> Self {
         Self {
             kind: gate.kind,
             since: gate.since,
             detail: gate.detail.clone(),
-            explanation: explanation(gate),
+            explanation: explanation(gate, behavior),
         }
     }
 }
@@ -140,6 +146,7 @@ impl GateView {
 impl PairView {
     pub(crate) fn of(
         pair: &Pair,
+        behavior: &Behavior,
         state: &State,
         running: bool,
         config_error: Option<String>,
@@ -157,7 +164,7 @@ impl PairView {
             status: status.name(),
             status_text: status.text(),
             running,
-            gate: state.gate.as_ref().map(GateView::of),
+            gate: state.gate.as_ref().map(|gate| GateView::of(gate, behavior)),
             review: state.gate.as_ref().and_then(|gate| review_kind(gate.kind)),
             last_success: state.last_success,
             last_attempt: state.last_attempt,
@@ -167,6 +174,7 @@ impl PairView {
             offline: state.offline,
             notice: realtime_off.then_some(WATCH_LIMIT_NOTICE),
             config_error,
+            lowered_safety: lowered_safety(behavior),
         }
     }
 }
@@ -204,6 +212,7 @@ impl Ops {
         let accounts = self.rclone.listremotes().await?;
         let validation = config.validate(&self.paths, &accounts);
         let limited = limited_pairs(&self.paths);
+        let defaults = config.defaults();
         let mut views = Vec::with_capacity(config.pairs().len());
         for pair in config.pairs() {
             let problem = validation
@@ -212,7 +221,8 @@ impl Ops {
                 .find(|error| error.pair_id == pair.id)
                 .map(|error| error.message.clone());
             let realtime_off = limited.contains(&pair.id);
-            views.push(self.view_of(pair, problem, realtime_off).await);
+            let behavior = Behavior::for_pair(&defaults, pair);
+            views.push(self.view_of(pair, &behavior, problem, realtime_off).await);
         }
         Ok(views)
     }
@@ -220,12 +230,13 @@ impl Ops {
     async fn view_of(
         &self,
         pair: &Pair,
+        behavior: &Behavior,
         config_error: Option<String>,
         realtime_off: bool,
     ) -> PairView {
         let state = load_state(self, &pair.id).await;
         let running = is_running(&self.paths, &pair.id);
-        PairView::of(pair, &state, running, config_error, realtime_off)
+        PairView::of(pair, behavior, &state, running, config_error, realtime_off)
     }
 
     /// One sync, as `status` shows it, read again from disk.

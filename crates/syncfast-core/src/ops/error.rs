@@ -1,4 +1,6 @@
-use crate::config::{ConfigEditError, ConfigSaveError, ConfigUpdateError, GlobalConfigError};
+use crate::config::{
+    ConfigEditError, ConfigSaveError, ConfigUpdateError, GlobalConfigError, SettingError,
+};
 use crate::preview::PreviewError;
 use crate::rclone::RcloneError;
 use crate::run::RunError;
@@ -21,6 +23,10 @@ pub enum OpError {
     /// the user can confirm.
     #[error("This review deletes files. Confirm it in syncfast.")]
     DeletesNeedUser,
+    /// The change lowers a safety setting, which only the user can do.
+    /// Holds the keys, comma separated.
+    #[error("This setting lowers safety ({0}). Change it in syncfast.")]
+    NeedsUser(String),
     /// There is no review shown to the agent that matches the current
     /// state of the sync.
     #[error("{0}")]
@@ -38,7 +44,7 @@ impl OpError {
         match self {
             Self::Invalid(_) | Self::NotFound(_) => 2,
             Self::Busy => 3,
-            Self::DeletesNeedUser => 4,
+            Self::DeletesNeedUser | Self::NeedsUser(_) => 4,
             Self::ReviewNotShown(_) => 5,
             Self::Failed(_) => 1,
         }
@@ -52,6 +58,7 @@ impl OpError {
             Self::NotFound(_) => "not_found",
             Self::Busy => "busy",
             Self::DeletesNeedUser => "deletes_need_user",
+            Self::NeedsUser(_) => "needs_user",
             Self::ReviewNotShown(_) => "review_not_shown",
             Self::Failed(_) => "failed",
         }
@@ -61,6 +68,15 @@ impl OpError {
 impl From<GlobalConfigError> for OpError {
     fn from(err: GlobalConfigError) -> Self {
         Self::Invalid(err.to_string())
+    }
+}
+
+impl From<SettingError> for OpError {
+    fn from(err: SettingError) -> Self {
+        match err {
+            SettingError::UnknownSync(id) => Self::NotFound(id),
+            other => Self::Invalid(other.to_string()),
+        }
     }
 }
 
