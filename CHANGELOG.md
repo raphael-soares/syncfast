@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.1](https://github.com/raphael-soares/syncfast/compare/v0.11.0...v0.11.1) (2026-11-07)
+
+
+### Bug fixes
+
+* phase 2 review fixes and the toolbar overlap ([#78](https://github.com/raphael-soares/syncfast/issues/78)) ([b2fd898](https://github.com/raphael-soares/syncfast/commit/b2fd8981beab3419426b452d6f31743ee1c2dbb2))
+
 ## [0.11.0](https://github.com/raphael-soares/syncfast/compare/v0.10.0...v0.11.0) (2026-11-07)
 
 
