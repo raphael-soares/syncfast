@@ -1184,7 +1184,10 @@ mod tests {
         };
         assert!(lowered_safety(&upload).is_empty());
         assert_eq!(lowered_safety(&download), ["versions"]);
-        assert_eq!(lowered_safety(&mirror_down), ["versions", "max_delete"]);
+        assert_eq!(
+            lowered_safety(&mirror_down),
+            ["versions", "max_delete", "mode"]
+        );
         assert!(relation_problem(&stored).is_some());
     }
 

@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use jiff::Zoned;
 use serde_json::json;
-use syncfast_core::behavior::ReviewLevel;
+use syncfast_core::behavior::{ReviewLevel, SyncMode};
 use syncfast_core::config::{Config, SettingScope};
 use syncfast_core::network::{BoxFuture, Network};
 use syncfast_core::notify::{Notice, Notifier};
@@ -218,6 +218,17 @@ async fn adding_a_sync_saves_it_held_for_its_first_review_and_copies_nothing() {
     assert!(!bed.remote().join("a.txt").exists());
     let config = fs::read_to_string(bed.ops.paths.config_file()).unwrap();
     assert!(config.contains("id = \"docs\""), "{config}");
+}
+
+#[tokio::test]
+async fn adding_a_sync_always_makes_it_two_way_and_writes_no_mode() {
+    let Some(bed) = bed() else { return };
+
+    let added = bed.ops.add(bed.new_sync()).await.unwrap();
+
+    assert_eq!(added.sync.mode, SyncMode::Bisync);
+    let config = fs::read_to_string(bed.ops.paths.config_file()).unwrap();
+    assert!(!config.contains("mode"), "{config}");
 }
 
 #[tokio::test]
