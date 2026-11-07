@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/raphael-soares/syncfast/compare/v0.9.0...v0.10.0) (2026-11-07)
+
+
+### Features
+
+* review levels that confirm safe changes by themselves ([#74](https://github.com/raphael-soares/syncfast/issues/74)) ([6eebaa9](https://github.com/raphael-soares/syncfast/commit/6eebaa99cf0991dddca780e21ab8f8948f73dd92))
+
 ## [0.9.0](https://github.com/raphael-soares/syncfast/compare/v0.8.0...v0.9.0) (2026-11-07)
 
 
