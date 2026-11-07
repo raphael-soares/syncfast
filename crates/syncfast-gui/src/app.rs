@@ -468,11 +468,8 @@ impl App {
     pub fn frame_ui(&mut self, ui: &mut egui::Ui) {
         let vm = self.view_model();
         let ctx = ui.ctx().clone();
-        let settings = self.screens.settings_open;
-        let welcome = self.welcome_visible() && !settings;
-        let title = if settings {
-            vm.settings_pane.title().to_owned()
-        } else if welcome {
+        let welcome = self.welcome_visible();
+        let title = if welcome {
             welcome::TITLE.to_owned()
         } else {
             vm.title()
@@ -481,22 +478,25 @@ impl App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title = Some(title);
         }
+        let sheet_open = self.sheets.is_open();
         let mut actions = Vec::new();
         actions.extend(modal_shortcuts(
             ui::shortcuts(&ctx, &vm),
-            self.sheets.is_open(),
+            sheet_open || self.screens.settings_open,
         ));
         // Before the screen: an open sheet takes the first Esc.
         let sheet_actions = self.sheets.show(&ctx, &vm.pairs, vm.filter_test.as_ref());
-        if settings {
-            actions.extend(ui::settings::content(ui, &vm));
-        } else if welcome {
+        if welcome {
             let view = WelcomeView {
                 has_remote: !vm.remotes.is_empty(),
             };
             actions.extend(welcome::show(ui, &view));
         } else {
             actions.extend(ui::root(ui, &vm));
+        }
+        if self.screens.settings_open {
+            let modal_above = sheet_open || vm.removing.is_some() || vm.removing_account.is_some();
+            actions.extend(ui::settings::dialog(&ctx, &vm, modal_above));
         }
         actions.extend(sheet_actions);
         actions.extend(ui::remove::show(&ctx, &vm));
@@ -1105,6 +1105,29 @@ mod tests {
 
         assert!(app.screens.settings_open);
         assert!(app.wants_show);
+    }
+
+    #[test]
+    fn with_settings_open_the_window_title_stays_the_title_of_the_screen_below() {
+        let (_dir, mut app) = app();
+        app.gui.welcome_done = true;
+        app.screens.settings_open = true;
+        app.gui.settings_pane = SettingsPane::Appearance;
+        let ctx = egui::Context::default();
+        crate::theme::install_with(
+            &ctx,
+            &crate::theme::Palette::dark(),
+            fastframe_text::TextRendering::platform_default(),
+        );
+        ctx.run_ui(egui::RawInput::default(), |_| {})
+            .textures_delta
+            .clear();
+
+        ctx.run_ui(egui::RawInput::default(), |ui| app.frame_ui(ui))
+            .textures_delta
+            .clear();
+
+        assert_eq!(app.title, Some(app.view_model().title()));
     }
 
     #[test]

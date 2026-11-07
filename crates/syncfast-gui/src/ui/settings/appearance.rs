@@ -1,9 +1,9 @@
 //! Settings > Appearance: which palette the window uses.
 
-use egui::{RichText, Ui};
+use egui::Ui;
 
-use crate::theme::{self, ThemeChoice, display_name, space};
-use crate::ui::widgets::inline_error;
+use crate::theme::{ThemeChoice, display_name};
+use crate::ui::widgets::{inline_error, setting_row};
 use crate::ui::{Action, ViewModel};
 
 fn label(choice: &ThemeChoice) -> String {
@@ -23,15 +23,8 @@ fn choices(vm: &ViewModel) -> Vec<ThemeChoice> {
 }
 
 pub fn show(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
-    let palette = theme::palette(ui.ctx());
     let mut actions = Vec::new();
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = space::M;
-        ui.label(
-            RichText::new("Theme")
-                .font(theme::headline())
-                .color(palette.text),
-        );
+    setting_row(ui, "Theme", None, |ui| {
         egui::ComboBox::from_id_salt("settings-theme")
             .selected_text(label(&vm.appearance.choice))
             .show_ui(ui, |ui| {

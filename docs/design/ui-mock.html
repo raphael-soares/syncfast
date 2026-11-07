@@ -76,7 +76,13 @@ h1.caption{font-size:15px;font-weight:600;color:var(--secondary);margin:0 0 -28p
 .wstep{display:flex;gap:12px;align-items:center}
 .num{width:24px;height:24px;border-radius:12px;display:grid;place-items:center;font-weight:700;background:var(--surface);color:var(--secondary)}
 .num.cur{background:var(--accent);color:var(--on-accent)}
-.settings .sidebar{width:200px}
+.dlg-scrim{position:absolute;inset:0;background:var(--shadow);display:grid;place-items:center}
+.dialog{width:880px;height:600px;background:var(--window);border:1px solid var(--outline);border-radius:10px;box-shadow:0 6px 24px var(--shadow);display:flex;flex-direction:column;overflow:hidden}
+.dlg-head{height:44px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 16px;border-bottom:1px solid var(--outline);font-weight:600}
+.dlg-body{flex:1;display:flex;min-height:0}
+.dlg-side{width:200px;flex:none;background:var(--panel);border-right:1px solid var(--outline);padding:12px;display:flex;flex-direction:column;gap:2px}
+.dlg-group{font-size:11px;line-height:14px;color:var(--secondary);padding:0 8px;margin-top:12px}
+.dlg-main{flex:1;min-width:0;padding:20px;display:flex;flex-direction:column;gap:12px;overflow:auto}
 .warn-row{display:flex;gap:10px;align-items:flex-start;background:#F2B85C14;border:1px solid #F2B85C40;border-radius:8px;padding:10px 12px}
 .tray{position:absolute;right:24px;top:52px;width:250px;background:var(--overlay);border:1px solid var(--outline);border-radius:8px;box-shadow:0 4px 16px var(--shadow);padding:6px}
 .tray .mi{padding:6px 10px;border-radius:6px}
@@ -103,6 +109,7 @@ h1.caption{font-size:15px;font-weight:600;color:var(--secondary);margin:0 0 -28p
   <symbol id="user" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></symbol>
   <symbol id="palette" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="8" cy="10" r="1"/><circle cx="12" cy="7" r="1"/><circle cx="16" cy="10" r="1"/></symbol>
   <symbol id="fsync" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v.5"/><path d="M12 10v4h4"/><path d="m12 14 1.53-1.53a5 5 0 0 1 8 1.06"/><path d="M22 22v-4h-4"/><path d="m22 18-1.53 1.53a5 5 0 0 1-8-1.06"/></symbol>
+  <symbol id="x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></symbol>
  </defs>
 </svg>
 
@@ -231,21 +238,40 @@ h1.caption{font-size:15px;font-weight:600;color:var(--secondary);margin:0 0 -28p
  </div>
 </div>
 
-<h1 class="caption">6. Settings › Accounts, plus tray menu</h1>
-<div class="win settings">
- <div class="titlebar">Accounts</div>
+<h1 class="caption">6. Settings dialog over the main window (Accounts), plus tray menu</h1>
+<div class="win">
+ <div class="titlebar">Google Drive</div>
  <svg class="trayicon" style="color:var(--text)"><use href="#fsync"/></svg>
  <span style="position:absolute;right:28px;top:26px;width:8px;height:8px;border-radius:4px;background:#F2B85C"></span>
  <div class="body">
   <div class="sidebar">
-   <div class="row sel" style="min-height:32px"><svg class="ico"><use href="#user"/></svg>Accounts</div>
-   <div class="row" style="min-height:32px"><svg class="ico" style="color:var(--secondary)"><use href="#palette"/></svg>Appearance</div>
+   <div class="side-head">Syncs <button class="iconbtn" title="Add Sync…"><svg class="ico"><use href="#plus"/></svg></button></div>
+   <div class="row sel"><svg class="ico" style="color:var(--secondary)"><use href="#folder"/></svg><div class="grow"><div class="t">Google Drive</div><div class="s">Synced 3 min ago</div></div><svg class="ico" style="color:var(--secondary)"><use href="#check"/></svg></div>
+   <div class="row"><svg class="ico" style="color:var(--secondary)"><use href="#folder"/></svg><div class="grow"><div class="t">Udesc</div><div class="s">Synced 2 hours ago</div></div><svg class="ico" style="color:var(--warning)"><use href="#eye"/></svg></div>
   </div>
-  <div class="main" style="padding:20px;gap:12px">
-   <div style="font-size:15px;font-weight:600">Accounts</div>
-   <div class="warn-row"><svg class="ico" style="color:var(--warning);margin-top:1px"><use href="#alert"/></svg><div style="flex:1"><div style="font-weight:600">gdrive · Google Drive</div><div class="callout">Uses rclone's shared client ID, which stops working in 2026.</div></div><button class="btn secondary">Use My Client ID…</button></div>
-   <div class="lrow" style="border:1px solid var(--outline);border-radius:8px;padding:0 12px"><svg class="ico" style="color:var(--secondary)"><use href="#user"/></svg><div style="flex:1"><b>trabalho</b> · Google Drive</div></div>
-   <div><button class="btn secondary"><svg class="ico"><use href="#plus"/></svg>Add Google Drive Account…</button></div>
+  <div class="main">
+   <div class="toolbar">
+    <div><div class="name">Google Drive</div><div class="path">~/Drive ↔ gdrive:</div></div>
+   </div>
+  </div>
+ </div>
+ <div class="dlg-scrim">
+  <div class="dialog">
+   <div class="dlg-head">Settings<button class="iconbtn" title="Close"><svg class="ico"><use href="#x"/></svg></button></div>
+   <div class="dlg-body">
+    <div class="dlg-side">
+     <div class="dlg-group" style="margin-top:0">Syncs</div>
+     <div class="row sel" style="min-height:32px"><svg class="ico"><use href="#user"/></svg>Accounts</div>
+     <div class="dlg-group">App</div>
+     <div class="row" style="min-height:32px"><svg class="ico" style="color:var(--secondary)"><use href="#palette"/></svg>Appearance</div>
+    </div>
+    <div class="dlg-main">
+     <div style="font-size:15px;font-weight:600">Accounts</div>
+     <div class="warn-row"><svg class="ico" style="color:var(--warning);margin-top:1px"><use href="#alert"/></svg><div style="flex:1"><div style="font-weight:600">gdrive · Google Drive</div><div class="callout">Uses rclone's shared client ID, which stops working in 2026.</div></div><button class="btn secondary">Use My Client ID…</button></div>
+     <div class="lrow" style="border:1px solid var(--outline);border-radius:8px;padding:0 12px"><svg class="ico" style="color:var(--secondary)"><use href="#user"/></svg><div style="flex:1"><b>trabalho</b> · Google Drive</div></div>
+     <div><button class="btn secondary"><svg class="ico"><use href="#plus"/></svg>Add Google Drive Account…</button></div>
+    </div>
+   </div>
   </div>
  </div>
  <div class="tray">

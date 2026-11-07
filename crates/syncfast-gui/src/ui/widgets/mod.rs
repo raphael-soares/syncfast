@@ -3,6 +3,7 @@
 
 mod alert;
 mod button;
+mod dialog;
 mod empty_state;
 mod folder_tree;
 mod icon_button;
@@ -11,6 +12,7 @@ mod list_row;
 mod modal;
 mod progress_bar;
 mod segmented;
+mod setting_row;
 mod sheet;
 mod sidebar_row;
 mod status_badge;
@@ -23,6 +25,7 @@ pub use alert::{AlertButton, alert};
 pub use button::{
     ButtonKind, button_with_icon, destructive_button, primary_button, secondary_button,
 };
+pub use dialog::dialog;
 pub use empty_state::empty_state;
 pub use folder_tree::{FolderNode, FolderTree, NodeState, TreeAction, folder_tree};
 pub use icon_button::icon_button;
@@ -30,6 +33,7 @@ pub use inline_error::inline_error;
 pub use list_row::list_row;
 pub use progress_bar::progress_bar;
 pub use segmented::segmented;
+pub use setting_row::setting_row;
 pub use sheet::{PrimaryKind, SheetAction, SheetButtons, sheet, sheet_with_header};
 pub use sidebar_row::{SidebarRow, sidebar_row};
 pub use status_badge::{BadgeSize, status_badge};
