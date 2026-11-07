@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/raphael-soares/syncfast/compare/v0.5.0...v0.5.1) (2026-11-07)
+
+
+### Documentation
+
+* google docs spike and ADR 0010 ([#64](https://github.com/raphael-soares/syncfast/issues/64)) ([40d0930](https://github.com/raphael-soares/syncfast/commit/40d0930ccacaa30b10ca4e679c9677e5ad5b37d7))
+
 ## [0.5.0](https://github.com/raphael-soares/syncfast/compare/v0.4.0...v0.5.0) (2026-11-04)
 
 
