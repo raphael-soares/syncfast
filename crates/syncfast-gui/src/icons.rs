@@ -8,7 +8,6 @@ fastframe_icons::icons! {
         directory: "../assets/icons/",
         Check => lucide "check",
         ChevronDown => lucide "chevron-down",
-        ChevronLeft => lucide "chevron-left",
         ChevronRight => lucide "chevron-right",
         CircleAlert => lucide "circle-alert",
         Clock => lucide "clock",

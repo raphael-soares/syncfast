@@ -591,3 +591,29 @@ fn a_setting_row_puts_the_label_and_caption_left_of_the_control_and_centers_them
     let text = label.union(caption);
     assert!((text.center().y - control.center().y).abs() < 2.0);
 }
+
+#[test]
+fn a_setting_row_grows_when_its_caption_wraps_instead_of_spilling_into_the_next_row() {
+    let mut harness = harness(
+        |ui, (): &mut ()| {
+            ui.set_max_width(320.0);
+            setting_row(
+                ui,
+                "Theme",
+                Some("A long caption that has to wrap onto several lines in a narrow column"),
+                |ui| ui.button("Choose"),
+            );
+            setting_row(ui, "Next", None, |ui| ui.button("Other"));
+        },
+        (),
+    );
+    harness.run();
+
+    let caption = harness.get_by_label_contains("A long caption").rect();
+    let control = harness.get_by_label("Choose").rect();
+    let next = harness.get_by_label("Next").rect();
+
+    assert!(caption.height() > 2.0 * 13.0, "the caption did not wrap");
+    assert!(caption.right() <= control.left());
+    assert!(caption.bottom() <= next.top());
+}
