@@ -80,6 +80,14 @@ pub async fn after_filters_saved(paths: &Paths, id: &str) -> Result<bool, OpErro
             state.save(paths, id).await?;
             Ok(false)
         }
+        Some(GateKind::NeedsReviewFiltersChanged) => {
+            if let Some(gate) = state.gate.as_mut()
+                && gate.auto_checked.take().is_some()
+            {
+                state.save(paths, id).await?;
+            }
+            Ok(false)
+        }
         Some(_) => Ok(false),
     }
 }
@@ -245,5 +253,42 @@ impl Ops {
         let all = self.rclone.list_files(folder, None).await?;
         let kept = self.rclone.list_files(folder, Some(filters)).await?;
         Ok((all, kept))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::behavior::ReviewLevel;
+
+    #[tokio::test]
+    async fn editing_the_filters_again_clears_the_automatic_check_of_a_held_review() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let paths = Paths::new(
+            root.join("home"),
+            root.join("config"),
+            root.join("state"),
+            root.join("data"),
+            root.join("run"),
+        );
+        let held = State {
+            gate: Some(Gate {
+                kind: GateKind::NeedsReviewFiltersChanged,
+                since: Timestamp::UNIX_EPOCH,
+                detail: String::new(),
+                fault: None,
+                auto_checked: Some(ReviewLevel::Deletions),
+            }),
+            ..State::default()
+        };
+        held.save(&paths, "notes").await.unwrap();
+
+        let had_no_gate = after_filters_saved(&paths, "notes").await.unwrap();
+
+        let gate = State::load(&paths, "notes").await.unwrap().gate.unwrap();
+        assert!(!had_no_gate);
+        assert_eq!(gate.kind, GateKind::NeedsReviewFiltersChanged);
+        assert_eq!(gate.auto_checked, None);
     }
 }

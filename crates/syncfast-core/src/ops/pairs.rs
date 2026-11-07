@@ -156,10 +156,15 @@ impl Ops {
             .await?;
         let level = Behavior::for_pair(&config.defaults(), &pair).review;
         Config::edit(&self.paths, |config| config.add_pair(pair)).await??;
-        let warnings = self.reapply(&[]).await;
+        let mut warnings = self.reapply(&[]).await;
         let next_step = if level == ReviewLevel::Automatic {
-            self.start_round(&id, FIRST_ROUND_WAIT).await?;
-            self.first_round_next_step(&id).await
+            match self.start_round(&id, FIRST_ROUND_WAIT).await {
+                Ok(_) => self.first_round_next_step(&id).await,
+                Err(error) => {
+                    warnings.push(format!("The first round did not start: {error}"));
+                    waits_for_review(&id)
+                }
+            }
         } else {
             waits_for_review(&id)
         };

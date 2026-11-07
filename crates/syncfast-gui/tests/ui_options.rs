@@ -711,6 +711,28 @@ fn the_warnings_wrap_inside_the_minimum_window_in_both_themes() {
 }
 
 #[test]
+fn a_long_warning_wraps_before_the_right_edge_of_the_options() {
+    for palette in [Palette::dark(), Palette::light()] {
+        let size = egui::vec2(760.0, 520.0);
+        let vm = options("", "conflict_loser = \"delete\"\nreview = \"automatic\"\n");
+        let mut harness = harness_in(vm, size, palette, ui::detail::show);
+        harness.run();
+
+        let content_right = harness
+            .get_all_by_role(Role::ComboBox)
+            .map(|combo| combo.rect().right())
+            .fold(f32::MIN, f32::max);
+        for label in [NEVER_ASK, DELETED_AND_KEPT] {
+            let rect = harness.get_all_by_label(label).next().unwrap().rect();
+            assert!(
+                rect.right() <= content_right,
+                "{label} runs past the options: {rect:?} against {content_right}"
+            );
+        }
+    }
+}
+
+#[test]
 fn the_defaults_panel_warns_about_a_default_that_turns_versions_off() {
     let vm = options("versions = false\n", "");
     let mut harness = harness(vm, defaults_screen());

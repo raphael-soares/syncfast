@@ -1414,6 +1414,37 @@ async fn adding_a_sync_at_automatic_review_starts_syncing_and_says_so() {
     );
 }
 
+struct RefusesToStart;
+
+impl Trigger for RefusesToStart {
+    fn start<'a>(&'a self, _pair_id: &'a str) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async { Err("systemd is not running".to_owned()) })
+    }
+}
+
+#[tokio::test]
+async fn a_first_round_that_cannot_start_still_reports_the_sync_that_was_added() {
+    let Some(mut bed) = bed() else { return };
+    write(&bed.local().join("a.txt"), "hello");
+    user_sets(&bed, &SettingScope::Defaults, "review", "automatic").await;
+    bed.ops.trigger = Arc::new(RefusesToStart);
+
+    let added = bed.ops.add(bed.new_sync()).await.unwrap();
+    let again = bed.ops.add(bed.new_sync()).await;
+
+    assert_eq!(added.sync.id, "docs");
+    assert_eq!(
+        added.warnings,
+        ["The first round did not start: systemd is not running"]
+    );
+    assert!(
+        added.next_step.contains("waits for a review"),
+        "{}",
+        added.next_step
+    );
+    assert!(again.is_err());
+}
+
 #[tokio::test]
 async fn an_agent_can_change_bandwidth_limits_either_way() {
     let Some(bed) = bed() else { return };

@@ -322,6 +322,11 @@ impl App {
         match event {
             Event::Snapshot(snapshot) => {
                 self.snapshot = snapshot;
+                if let Some(id) = &self.auto_confirmed_sync
+                    && self.snapshot.pairs.iter().any(|pair| pair.pair.id == *id)
+                {
+                    self.auto_confirmed_sync = None;
+                }
                 self.finish_welcome();
                 self.load_runs_if_stale();
                 let selected = self.selected_id();
@@ -952,6 +957,26 @@ mod tests {
         app.snapshot.pairs.clear();
         app.gui.welcome_done = true;
         assert!(!app.welcome_visible());
+    }
+
+    #[test]
+    fn the_welcome_does_not_repeat_the_automatic_review_text_once_the_sync_has_shown_up() {
+        let (_dir, mut app) = app();
+        app.handle_event(Event::SyncCreated(Ok(crate::backend::CreatedSync {
+            id: "a".into(),
+            confirmed_automatically: true,
+        })));
+        assert!(app.auto_confirmed_sync.is_some());
+
+        app.handle_event(Event::Snapshot(Snapshot {
+            config_error: None,
+            pairs: vec![pair_with_gate("a", None)],
+            ..Snapshot::default()
+        }));
+        app.handle_event(Event::Snapshot(Snapshot::default()));
+
+        assert!(app.welcome_visible());
+        assert!(app.auto_confirmed_sync.is_none());
     }
 
     #[test]
