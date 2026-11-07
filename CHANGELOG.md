@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/raphael-soares/syncfast/compare/v0.5.1...v0.6.0) (2026-11-07)
+
+
+### Features
+
+* settings as a modal dialog with grouped panes ([#66](https://github.com/raphael-soares/syncfast/issues/66)) ([1cdd405](https://github.com/raphael-soares/syncfast/commit/1cdd4056c108af6fd441cf5bc8e68f7cf690af5a))
+
 ## [0.5.1](https://github.com/raphael-soares/syncfast/compare/v0.5.0...v0.5.1) (2026-11-07)
 
 
