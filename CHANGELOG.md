@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/raphael-soares/syncfast/compare/v0.11.1...v0.12.0) (2026-11-07)
+
+
+### Features
+
+* one-way sync modes ([#80](https://github.com/raphael-soares/syncfast/issues/80)) ([911dc03](https://github.com/raphael-soares/syncfast/commit/911dc03f22b234c5e7653c17fb383ac152ee0820))
+
 ## [0.11.1](https://github.com/raphael-soares/syncfast/compare/v0.11.0...v0.11.1) (2026-11-07)
 
 
