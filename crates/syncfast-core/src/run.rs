@@ -373,28 +373,21 @@ pub async fn run(env: &RunEnv<'_>, pair_id: &str) -> Result<RunReport, RunError>
     let Some(_lock) = try_lock_pair(env.paths, pair_id)? else {
         return Ok(RunReport::Busy);
     };
-    let online = env.network.is_online().await;
     let filters_file = filters::write_if_changed(env.paths, &pair).await?;
     let mut state = load_state(env, pair_id).await?;
     let mut marker = ConfirmMarker::load(env.paths, pair_id).await?;
-    let local_exists = tokio::fs::metadata(&pair.local)
-        .await
-        .is_ok_and(|meta| meta.is_dir());
-    let gate_kind = state.gate.as_ref().map(|gate| gate.kind);
-    let decide_now = |state: &State, marker: Option<&ConfirmMarker>| {
-        decide(&DecideInput {
-            pair_enabled: pair.enabled,
-            local_exists,
-            online,
-            gate: state.gate.as_ref().map(|gate| gate.kind),
-            applied_filters_hash: state.applied_filters_hash.as_deref(),
-            current_filters_hash: &filters_file.hash,
-            mode: behavior.mode,
-            applied_mode: state.synced_mode(),
-            marker,
-        })
+    let round = Round {
+        env,
+        pair: &pair,
+        behavior: &behavior,
+        filters: &filters_file,
+        online: env.network.is_online().await,
+        local_exists: tokio::fs::metadata(&pair.local)
+            .await
+            .is_ok_and(|meta| meta.is_dir()),
     };
-    let mut decision = decide_now(&state, marker.as_ref());
+    let gate_kind = state.gate.as_ref().map(|gate| gate.kind);
+    let mut decision = round.decide(&state, marker.as_ref());
     if marker.is_some() && decision.discards_marker() {
         ConfirmMarker::remove(env.paths, pair_id).await?;
     }
@@ -404,7 +397,7 @@ pub async fn run(env: &RunEnv<'_>, pair_id: &str) -> Result<RunReport, RunError>
     let mode_is_back = gate_kind == Some(GateKind::NeedsReviewModeChanged)
         && state.synced_mode() == Some(behavior.mode);
     if let Some(kind) = gate_kind
-        && (matches!(kind, GateKind::LocalMissing | GateKind::ConfigError) && local_exists
+        && (matches!(kind, GateKind::LocalMissing | GateKind::ConfigError) && round.local_exists
             || mode_is_back)
         && decision != Decision::Skip(SkipReason::Paused)
     {
@@ -412,50 +405,50 @@ pub async fn run(env: &RunEnv<'_>, pair_id: &str) -> Result<RunReport, RunError>
         state.notified.retain(|key| *key != kind.notified_key());
         dirty = true;
     }
-    let round = Round {
-        env,
-        pair: &pair,
-        behavior: &behavior,
-        filters: &filters_file,
-    };
     let level = behavior.review;
     let mut held_at = None;
     let mut auto_reviewed = None;
-    if online
-        && local_exists
+    if round.online
+        && round.local_exists
         && let Some(kind) = reviewable_gate(decision, &state)
         && may_confirm(level, kind)
         && !already_checked(&state, kind, level)
     {
-        match check_review(&round, kind, level).await? {
-            Checked::Confirmed { saved, reviewed } => {
-                if state.gate.as_ref().map(|gate| gate.kind) != Some(kind) {
-                    set_gate(&mut state, kind, String::new(), None, env.now().timestamp());
-                }
+        match round.review(&mut state, kind, level).await? {
+            Review::Confirmed { saved, reviewed } => {
                 marker = Some(saved);
-                decision = decide_now(&state, marker.as_ref());
+                decision = round.decide(&state, marker.as_ref());
                 auto_reviewed = Some(reviewed);
             }
-            Checked::Held => held_at = Some(level),
-            Checked::Failed { exit_code, message } => {
-                record_failed_check(&round, &mut state, exit_code, message).await?;
-                dirty = false;
-            }
+            Review::Held => held_at = Some(level),
+            Review::Failed => dirty = false,
         }
     }
-    match decision {
-        Decision::Skip(SkipReason::Paused) => Ok(RunReport::Skipped(SkipReason::Paused)),
-        Decision::Skip(SkipReason::Offline) => {
-            state.offline = true;
-            state.failing_since = None;
-            state.save(env.paths, pair_id).await?;
-            Ok(RunReport::Skipped(SkipReason::Offline))
-        }
-        Decision::Skip(SkipReason::Gated) => finish_gated(&round, &mut state, held_at, dirty).await,
-        Decision::SetGate(kind) => finish_gate_set(&round, &mut state, kind, held_at).await,
-        Decision::Run(mode) => {
-            let (mode, outcome) = round.execute(&mut state, mode, auto_reviewed).await?;
-            Ok(RunReport::Ran { mode, outcome })
+    loop {
+        match decision {
+            Decision::Skip(SkipReason::Paused) => {
+                return Ok(RunReport::Skipped(SkipReason::Paused));
+            }
+            Decision::Skip(SkipReason::Offline) => {
+                state.offline = true;
+                state.failing_since = None;
+                state.save(env.paths, pair_id).await?;
+                return Ok(RunReport::Skipped(SkipReason::Offline));
+            }
+            Decision::Skip(SkipReason::Gated) => {
+                return finish_gated(&round, &mut state, held_at, dirty).await;
+            }
+            Decision::SetGate(kind) => {
+                return finish_gate_set(&round, &mut state, kind, held_at).await;
+            }
+            Decision::Run(mode) => match round.run(&mut state, mode, auto_reviewed).await? {
+                Settled::Report(report) => return Ok(report),
+                Settled::Confirmed { saved, reviewed } => {
+                    marker = Some(saved);
+                    auto_reviewed = Some(reviewed);
+                    decision = round.decide(&state, marker.as_ref());
+                }
+            },
         }
     }
 }
@@ -507,13 +500,14 @@ async fn record_failed_check(
     Ok(())
 }
 
-async fn finish_gated(
+/// Announces the gate in `state` (once), notes the level that found it
+/// held, saves what changed and sends the notice.
+async fn settle_gate(
     round: &Round<'_>,
     state: &mut State,
     held_at: Option<ReviewLevel>,
     mut dirty: bool,
-) -> Result<RunReport, RunError> {
-    let env = round.env;
+) -> Result<(), RunError> {
     // A gate nobody wrote through this code path (first run, or one
     // set by the GUI) is announced the first time a round sees it.
     let notice = state
@@ -527,9 +521,19 @@ async fn finish_gated(
         dirty = true;
     }
     if dirty {
-        state.save(env.paths, &round.pair.id).await?;
+        state.save(round.env.paths, &round.pair.id).await?;
     }
-    send(env, notice);
+    send(round.env, notice);
+    Ok(())
+}
+
+async fn finish_gated(
+    round: &Round<'_>,
+    state: &mut State,
+    held_at: Option<ReviewLevel>,
+    dirty: bool,
+) -> Result<RunReport, RunError> {
+    settle_gate(round, state, held_at, dirty).await?;
     Ok(RunReport::Skipped(SkipReason::Gated))
 }
 
@@ -539,17 +543,17 @@ async fn finish_gate_set(
     kind: GateKind,
     held_at: Option<ReviewLevel>,
 ) -> Result<RunReport, RunError> {
-    let env = round.env;
     let unchanged = state.gate.as_ref().is_some_and(|gate| gate.kind == kind);
     if !unchanged {
-        set_gate(state, kind, String::new(), None, env.now().timestamp());
+        set_gate(
+            state,
+            kind,
+            String::new(),
+            None,
+            round.env.now().timestamp(),
+        );
     }
-    if let (Some(level), Some(gate)) = (held_at, state.gate.as_mut()) {
-        gate.auto_checked = Some(level);
-    }
-    let notice = announce_gate(round.pair, round.behavior, state, kind);
-    state.save(env.paths, &round.pair.id).await?;
-    send(env, notice);
+    settle_gate(round, state, held_at, true).await?;
     Ok(RunReport::GateSet(kind))
 }
 
@@ -567,6 +571,27 @@ fn already_checked(state: &State, kind: GateKind, level: ReviewLevel) -> bool {
         .gate
         .as_ref()
         .is_some_and(|gate| gate.kind == kind && gate.auto_checked == Some(level))
+}
+
+/// How [`Round::run`] ended.
+enum Settled {
+    Report(RunReport),
+    /// The round ended at a cap and the level confirmed it: the marker is
+    /// on disk and the caller decides the round that follows.
+    Confirmed {
+        saved: ConfirmMarker,
+        reviewed: AutoReviewed,
+    },
+}
+
+/// What [`Round::review`] left behind; a failed check is already recorded.
+enum Review {
+    Confirmed {
+        saved: ConfirmMarker,
+        reviewed: AutoReviewed,
+    },
+    Held,
+    Failed,
 }
 
 enum Checked {
@@ -669,19 +694,101 @@ pub(crate) async fn take_changes(path: &Path) -> String {
     text
 }
 
+/// The gate a round that ended in `outcome` waits at, when `level` may
+/// confirm it without a sheet.
+fn confirmable_cap(outcome: &Outcome, level: ReviewLevel) -> Option<GateKind> {
+    let kind = match outcome {
+        Outcome::TooManyDeletes => GateKind::TooManyDeletes,
+        Outcome::AllFilesChanged => GateKind::AllFilesChanged,
+        _ => return None,
+    };
+    may_confirm(level, kind).then_some(kind)
+}
+
 struct Round<'a> {
     env: &'a RunEnv<'a>,
     pair: &'a Pair,
     behavior: &'a Behavior,
     filters: &'a FiltersFile,
+    online: bool,
+    local_exists: bool,
 }
 
 impl Round<'_> {
+    fn decide(&self, state: &State, marker: Option<&ConfirmMarker>) -> Decision {
+        decide(&DecideInput {
+            pair_enabled: self.pair.enabled,
+            local_exists: self.local_exists,
+            online: self.online,
+            gate: state.gate.as_ref().map(|gate| gate.kind),
+            applied_filters_hash: state.applied_filters_hash.as_deref(),
+            current_filters_hash: &self.filters.hash,
+            mode: self.behavior.mode,
+            applied_mode: state.synced_mode(),
+            marker,
+        })
+    }
+
+    /// Dry-runs the review `kind` waits for; a confirmed one leaves the
+    /// gate in `state` and the marker on disk, a failed one is recorded.
+    async fn review(
+        &self,
+        state: &mut State,
+        kind: GateKind,
+        level: ReviewLevel,
+    ) -> Result<Review, RunError> {
+        match check_review(self, kind, level).await? {
+            Checked::Confirmed { saved, reviewed } => {
+                if state.gate.as_ref().map(|gate| gate.kind) != Some(kind) {
+                    let now = self.env.now().timestamp();
+                    set_gate(state, kind, String::new(), None, now);
+                }
+                Ok(Review::Confirmed { saved, reviewed })
+            }
+            Checked::Held => Ok(Review::Held),
+            Checked::Failed { exit_code, message } => {
+                record_failed_check(self, state, exit_code, message).await?;
+                Ok(Review::Failed)
+            }
+        }
+    }
+
+    /// [`Round::execute`], and when the round ends at a cap the level may
+    /// confirm, the review in the same call: the user is not told about a
+    /// gate that syncfast is about to open.
+    async fn run(
+        &self,
+        state: &mut State,
+        mode: RoundMode,
+        auto_reviewed: Option<AutoReviewed>,
+    ) -> Result<Settled, RunError> {
+        let level = self.behavior.review;
+        let defer_at = auto_reviewed.is_none().then_some(level);
+        let (mode, outcome) = self.execute(state, mode, auto_reviewed, defer_at).await?;
+        let report = Settled::Report(RunReport::Ran {
+            mode,
+            outcome: outcome.clone(),
+        });
+        let Some(kind) = defer_at.and_then(|level| confirmable_cap(&outcome, level)) else {
+            return Ok(report);
+        };
+        let held_at = match self.review(state, kind, level).await? {
+            Review::Confirmed { saved, reviewed } => {
+                return Ok(Settled::Confirmed { saved, reviewed });
+            }
+            Review::Held => Some(level),
+            Review::Failed => None,
+        };
+        settle_gate(self, state, held_at, true).await?;
+        Ok(report)
+    }
+
     async fn execute(
         &self,
         state: &mut State,
         mut mode: RoundMode,
         auto_reviewed: Option<AutoReviewed>,
+        defer_at: Option<ReviewLevel>,
     ) -> Result<(RoundMode, Outcome), RunError> {
         let (env, pair) = (self.env, self.pair);
         let id = pair.id.as_str();
@@ -766,7 +873,11 @@ impl Round<'_> {
                 .is_mirror()
                 .then(|| files_at_destination(&changes)),
         };
-        let notices = self.apply_outcome(state, &outcome, ended).await;
+        let mut notices = self.apply_outcome(state, &outcome, ended).await;
+        if let Some(kind) = defer_at.and_then(|level| confirmable_cap(&outcome, level)) {
+            notices.clear();
+            state.notified.retain(|key| *key != kind.notified_key());
+        }
         state.save(env.paths, id).await?;
         send(env, notices);
 

@@ -663,7 +663,7 @@ Diretório `~/Desktop/Personal/syncfast`. Depois que todas as issues entraram:
 4. Drive real:
    1. `mirror_up` num sync de teste (`gdrive:syncfast-e2e`, `~/syncfast-e2e`): `rclone lsf gdrive:.syncfast-versions` lista a pasta do sync depois que um arquivo foi apagado localmente e a rodada correu.
    2. Autostart: o teste manual em GNOME ou KDE (fora desta máquina) com `Start syncfast when you log in` confirma a entrada em `~/.config/autostart` e a abertura oculta no próximo login. Nesta máquina a legenda do Hyprland aparece.
-   3. Banda: `mirror_up` ou `bisync` de um arquivo de 4 MiB em `gdrive:syncfast-e2e` com `settings set limit_upload 1M --sync dev` leva ao menos uns 4 s para enviar, e com só `limit_download 1M` o mesmo envio não é limitado (o item 5 dos em aberto já foi fechado com Drive real).
+   3. Banda: `mirror_up` ou `bisync` de um arquivo de 12 MiB em `gdrive:syncfast-e2e` com `settings set limit_upload 1M --sync dev` leva uns 8 s ou mais para enviar (o balde de banda do rclone começa cheio, então os primeiros 4 MiB passam em velocidade total), e com só `limit_download 1M` o mesmo envio não é limitado (o item 5 dos em aberto já foi fechado com Drive real).
    4. Spike (P2.7): `tests/capture_gdocs.sh gdrive syncfast-gdocs-spike`, depois `rclone purge gdrive:syncfast-gdocs-spike` e `rclone purge gdrive:.syncfast-versions`.
 
 ## Itens em aberto
