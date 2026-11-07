@@ -18,14 +18,21 @@ pub fn secret_field(ui: &mut Ui, label: &str, value: &mut String) -> egui::Respo
 const PADDING: i8 = 8;
 
 /// A single-line field `width` wide with no visible label, for a row that
-/// draws its own (a `setting_row`). `label` is the accessible name.
-pub fn inline_field(ui: &mut Ui, label: &str, value: &mut String, width: f32) -> egui::Response {
+/// draws its own (a `setting_row`). `label` is the accessible name; `hint` is
+/// shown while the field is empty.
+pub fn inline_field(
+    ui: &mut Ui,
+    label: &str,
+    value: &mut String,
+    hint: &str,
+    width: f32,
+) -> egui::Response {
     let outer = egui::vec2(width + 2.0 * f32::from(PADDING) + 2.0, size::CONTROL_HEIGHT);
     let response = ui
         .allocate_ui_with_layout(
             outer,
             egui::Layout::left_to_right(egui::Align::Center),
-            |ui| edit_box(ui, value, "", false, width),
+            |ui| edit_box(ui, value, hint, false, width),
         )
         .inner;
     response.widget_info(|| {

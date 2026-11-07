@@ -1118,7 +1118,7 @@ async fn settings_lists_every_key_with_origin_and_default() {
     let of_defaults = bed.ops.settings(None).await.unwrap();
 
     assert_eq!(of_sync.scope, "docs");
-    assert_eq!(of_sync.settings.len(), 11);
+    assert_eq!(of_sync.settings.len(), 13);
     let described = |view: &SettingsView, key: &str| {
         let row = row(view, key);
         (row.value.clone(), row.origin, row.default.clone())
@@ -1305,6 +1305,40 @@ async fn an_agent_can_lower_max_delete() {
         .unwrap();
 
     assert_eq!(changed.setting.value, json!(20));
+}
+
+#[tokio::test]
+async fn an_agent_can_change_bandwidth_limits_either_way() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs().await;
+
+    let limited = bed
+        .ops
+        .set_setting(Some("docs"), "limit_upload", "1M")
+        .await
+        .unwrap();
+    let unlimited = bed
+        .ops
+        .set_setting(Some("docs"), "limit_upload", "off")
+        .await
+        .unwrap();
+    let defaults = bed
+        .ops
+        .set_setting(None, "limit_download", "500K")
+        .await
+        .unwrap();
+
+    assert_eq!(limited.setting.value, json!("1M"));
+    assert_eq!(unlimited.setting.value, json!("off"));
+    assert_eq!(defaults.setting.value, json!("500K"));
+    assert!(
+        bed.ops
+            .settings(Some("docs"))
+            .await
+            .unwrap()
+            .lowered_safety
+            .is_empty()
+    );
 }
 
 #[tokio::test]

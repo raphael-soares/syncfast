@@ -66,7 +66,14 @@ fn the_rows_are_grouped_in_sections() {
     let mut harness = harness(options("", ""), screen());
     harness.run();
 
-    for title in ["Schedule", "Conflicts", "Versions", "Deletions", "Advanced"] {
+    for title in [
+        "Schedule",
+        "Bandwidth",
+        "Conflicts",
+        "Versions",
+        "Deletions",
+        "Advanced",
+    ] {
         harness.get_by_label(title);
     }
     for row in [
@@ -74,6 +81,8 @@ fn the_rows_are_grouped_in_sections() {
         "Wait after changes",
         "Longest wait while editing",
         "Check Drive every",
+        "Limit uploads to",
+        "Limit downloads to",
         "When both sides change",
         "The losing version",
         "Keep replaced files",
@@ -168,7 +177,12 @@ fn a_refused_text_stays_in_the_field_until_it_is_fixed() {
 
 #[test]
 fn a_number_outside_its_range_shows_the_reason_and_saves_nothing() {
-    let mut harness = harness(options("", ""), screen());
+    let mut harness = harness_in(
+        options("", ""),
+        egui::vec2(900.0, 1400.0),
+        Palette::dark(),
+        screen(),
+    );
     harness.run();
 
     type_into(
@@ -280,7 +294,7 @@ fn a_sync_with_the_built_in_safety_has_no_badge() {
 fn the_options_fit_the_minimum_window_in_both_themes() {
     for palette in [Palette::dark(), Palette::light()] {
         let size = egui::vec2(760.0, 520.0);
-        let all = "watch = false\ndebounce = \"1h\"\nmax_wait = \"2h\"\ninterval = \"1h\"\nconflict_resolve = \"none\"\nconflict_loser = \"pathname\"\nversions = false\nversions_keep_days = 365\nmax_delete = 100\nresync_mode = \"remote\"\nempty_dirs = false\n";
+        let all = "watch = false\ndebounce = \"1h\"\nmax_wait = \"2h\"\ninterval = \"1h\"\nlimit_upload = \"1536K\"\nlimit_download = \"1G\"\nconflict_resolve = \"none\"\nconflict_loser = \"pathname\"\nversions = false\nversions_keep_days = 365\nmax_delete = 100\nresync_mode = \"remote\"\nempty_dirs = false\n";
         let mut harness = harness_in(options("", all), size, palette, |ui, vm| {
             ui::detail::show(ui, vm)
         });
@@ -290,6 +304,8 @@ fn the_options_fit_the_minimum_window_in_both_themes() {
         for label in [
             "Watch for changes",
             "Check Drive every",
+            "Limit uploads to",
+            "Limit downloads to",
             "Stop when more than this share would be deleted",
             "When a first sync finds different files",
         ] {
@@ -439,4 +455,175 @@ fn a_number_field_sits_in_its_row_like_the_switch_above_it() {
         ((wait - switch) - (longest - wait)).abs() < 1.0,
         "{switch} {wait} {longest}"
     );
+}
+
+const SPEED_MESSAGE: &str =
+    "must be off or a speed: a whole number followed by K, M or G, for example 500K or 2M";
+
+#[test]
+fn bandwidth_is_unlimited_until_a_limit_is_set() {
+    let mut harness = harness(options("", ""), screen());
+    harness.run();
+
+    assert_eq!(harness.query_all_by_label("Default: Unlimited").count(), 2);
+    assert!(harness.query_by_label("Unlimited").is_none());
+}
+
+#[test]
+fn a_limit_reads_in_binary_units_and_says_what_it_overrides() {
+    let vm = options(
+        "limit_download = \"500K\"",
+        "limit_upload = \"2M\"\nlimit_download = \"1G\"\n",
+    );
+    let mut harness = harness(vm, screen());
+    harness.run();
+
+    for (label, value) in [("Limit uploads to", "2M"), ("Limit downloads to", "1G")] {
+        let field = harness.get_by_role_and_label(Role::TextInput, label);
+        assert_eq!(field.accesskit_node().value(), Some(value.to_owned()));
+    }
+    harness.get_by_label("Overrides the default (Unlimited)");
+    harness.get_by_label("Overrides the default (500 KiB/s)");
+}
+
+#[test]
+fn an_inherited_limit_is_shown_as_the_default() {
+    let mut harness = harness(
+        options("limit_upload = \"500K\"\nlimit_download = \"1G\"", ""),
+        screen(),
+    );
+    harness.run();
+
+    harness.get_by_label("Default: 500 KiB/s");
+    harness.get_by_label("Default: 1 GiB/s");
+}
+
+#[test]
+fn every_number_field_of_the_options_ends_at_the_same_edge() {
+    let vm = options(
+        "",
+        "limit_upload = \"2M\"\nversions_keep_days = 30\nmax_delete = 20\n",
+    );
+    let mut harness = harness_in(vm, egui::vec2(900.0, 1400.0), Palette::dark(), screen());
+    harness.run();
+
+    let right = |harness: &Harness<'static, Frame>, label: &str| {
+        harness
+            .get_by_role_and_label(Role::TextInput, label)
+            .rect()
+            .right()
+    };
+    let reference = right(&harness, "Check Drive every");
+    for label in [
+        "Wait after changes",
+        "Limit uploads to",
+        "Limit downloads to",
+        "Keep for",
+        "Stop when more than this share would be deleted",
+    ] {
+        let edge = right(&harness, label);
+        assert!(
+            (edge - reference).abs() < 0.5,
+            "{label} ends at {edge}, not {reference}"
+        );
+    }
+}
+
+#[test]
+fn a_speed_is_saved_in_its_canonical_form_when_committed() {
+    let mut harness = harness(options("", ""), screen());
+    harness.run();
+
+    type_into(&mut harness, "Limit uploads to", "1024k");
+    commit(&mut harness);
+
+    assert_eq!(harness.state().actions, [set("limit_upload", "1M")]);
+}
+
+#[test]
+fn an_empty_speed_saves_off() {
+    let mut harness = harness(options("", "limit_download = \"2M\"\n"), screen());
+    harness.run();
+    harness
+        .get_by_role_and_label(Role::TextInput, "Limit downloads to")
+        .click();
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    harness.key_press(egui::Key::Backspace);
+    harness.run_steps(2);
+
+    commit(&mut harness);
+
+    assert_eq!(harness.state().actions, [set("limit_download", "off")]);
+}
+
+#[test]
+fn off_typed_in_a_speed_field_saves_off() {
+    let mut harness = harness(options("", "limit_upload = \"2M\"\n"), screen());
+    harness.run();
+
+    type_into(&mut harness, "Limit uploads to", "off");
+    commit(&mut harness);
+
+    assert_eq!(harness.state().actions, [set("limit_upload", "off")]);
+}
+
+#[test]
+fn a_zero_speed_shows_the_reason_and_saves_nothing() {
+    let mut harness = harness(options("", ""), screen());
+    harness.run();
+
+    type_into(&mut harness, "Limit uploads to", "0");
+    commit(&mut harness);
+
+    harness.get_by_label(&format!("limit_upload {SPEED_MESSAGE}"));
+    assert!(harness.state().actions.is_empty());
+}
+
+#[test]
+fn a_speed_without_a_unit_is_refused_for_downloads_too() {
+    let mut harness = harness(options("", ""), screen());
+    harness.run();
+
+    type_into(&mut harness, "Limit downloads to", "10");
+    commit(&mut harness);
+
+    harness.get_by_label(&format!("limit_download {SPEED_MESSAGE}"));
+    assert!(harness.state().actions.is_empty());
+}
+
+#[test]
+fn the_summary_says_when_a_sync_runs_with_watching_on() {
+    let mut harness = harness(options("", ""), screen());
+    harness.run();
+
+    harness.get_by_label("Syncs every 5 min and 30 s after you stop editing.");
+}
+
+#[test]
+fn the_summary_says_changes_wait_for_the_next_round_with_watching_off() {
+    let mut harness = harness(options("", "watch = false\ninterval = \"10m\"\n"), screen());
+    harness.run();
+
+    harness.get_by_label("Syncs every 10 min. Changes on this computer wait for the next round.");
+}
+
+#[test]
+fn the_summary_follows_the_timing_the_sync_resolves() {
+    let mut harness = harness(
+        options("debounce = \"1m\"", "interval = \"1h\"\n"),
+        screen(),
+    );
+    harness.run();
+
+    harness.get_by_label("Syncs every 1 h and 1 min after you stop editing.");
+}
+
+#[test]
+fn the_defaults_have_the_bandwidth_section_but_no_summary() {
+    let mut harness = harness(from_config(&config("", ""), None), defaults_screen());
+    harness.run();
+
+    harness.get_by_label("Bandwidth");
+    assert!(harness.query_all_by_label("Limit uploads to").count() >= 1);
+    assert!(harness.query_by_label_contains("Syncs every").is_none());
 }

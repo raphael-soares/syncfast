@@ -132,12 +132,57 @@ impl ResyncMode {
     }
 }
 
+/// A speed limit in one direction of a sync's rounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bandwidth {
+    Off,
+    KiBPerSec(u64),
+}
+
+impl Bandwidth {
+    /// `off`, or a whole positive number followed by `K`, `M` or `G` (KiB,
+    /// MiB, GiB per second; lowercase is accepted).
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        if text == "off" {
+            return Some(Self::Off);
+        }
+        let unit = text.chars().next_back()?;
+        let shift = match unit.to_ascii_lowercase() {
+            'k' => 0,
+            'm' => 10,
+            'g' => 20,
+            _ => return None,
+        };
+        let digits = &text[..text.len() - unit.len_utf8()];
+        if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        let amount: u64 = digits.parse().ok().filter(|amount| *amount > 0)?;
+        amount.checked_mul(1 << shift).map(Self::KiBPerSec)
+    }
+
+    /// The form `config.toml` stores and `--bwlimit` takes: the largest unit
+    /// that divides the speed exactly, so `1024K` is `1M`.
+    #[must_use]
+    pub fn format(self) -> String {
+        match self {
+            Self::Off => "off".to_owned(),
+            Self::KiBPerSec(kib) if kib.is_multiple_of(1 << 20) => format!("{}G", kib >> 20),
+            Self::KiBPerSec(kib) if kib.is_multiple_of(1 << 10) => format!("{}M", kib >> 10),
+            Self::KiBPerSec(kib) => format!("{kib}K"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Behavior {
     pub watch: bool,
     pub debounce: Duration,
     pub max_wait: Duration,
     pub interval: Duration,
+    pub limit_upload: Bandwidth,
+    pub limit_download: Bandwidth,
     pub conflict_resolve: ConflictResolve,
     pub conflict_loser: ConflictLoser,
     pub versions: bool,
@@ -156,6 +201,8 @@ impl Default for Behavior {
             debounce: Duration::from_secs(30),
             max_wait: Duration::from_mins(5),
             interval: Duration::from_mins(5),
+            limit_upload: Bandwidth::Off,
+            limit_download: Bandwidth::Off,
             conflict_resolve: ConflictResolve::Newer,
             conflict_loser: ConflictLoser::Num,
             versions: true,
@@ -244,6 +291,8 @@ mod tests {
         assert_eq!(behavior.debounce, Duration::from_secs(30));
         assert_eq!(behavior.max_wait, Duration::from_secs(300));
         assert_eq!(behavior.interval, Duration::from_secs(300));
+        assert_eq!(behavior.limit_upload, Bandwidth::Off);
+        assert_eq!(behavior.limit_download, Bandwidth::Off);
         assert_eq!(behavior.conflict_resolve, ConflictResolve::Newer);
         assert_eq!(behavior.conflict_loser, ConflictLoser::Num);
         assert!(behavior.versions);
@@ -394,5 +443,99 @@ remote = "gdrive:Music"
         .to_vec();
 
         assert_eq!(values, ["num", "pathname", "delete"]);
+    }
+
+    #[test]
+    fn a_sync_off_overrides_a_defaults_limit() {
+        let config = config(
+            r#"
+version = 2
+
+[defaults]
+limit_upload = "2M"
+limit_download = "500K"
+
+[[pair]]
+id = "docs"
+name = "Docs"
+local = "/home/ada/Docs"
+remote = "gdrive:Docs"
+limit_upload = "off"
+
+[[pair]]
+id = "music"
+name = "Music"
+local = "/home/ada/Music"
+remote = "gdrive:Music"
+"#,
+        );
+        let defaults = config.defaults();
+
+        let docs = Behavior::for_pair(&defaults, &config.pairs()[0]);
+        let music = Behavior::for_pair(&defaults, &config.pairs()[1]);
+
+        assert_eq!(docs.limit_upload, Bandwidth::Off);
+        assert_eq!(docs.limit_download, Bandwidth::KiBPerSec(500));
+        assert_eq!(music.limit_upload, Bandwidth::KiBPerSec(2048));
+        assert_eq!(music.limit_download, Bandwidth::KiBPerSec(500));
+    }
+
+    #[test]
+    fn a_speed_is_off_or_a_whole_number_with_k_m_or_g() {
+        for (text, expected) in [
+            ("off", Bandwidth::Off),
+            ("500K", Bandwidth::KiBPerSec(500)),
+            ("2M", Bandwidth::KiBPerSec(2048)),
+            ("1G", Bandwidth::KiBPerSec(1_048_576)),
+            ("2m", Bandwidth::KiBPerSec(2048)),
+            ("1g", Bandwidth::KiBPerSec(1_048_576)),
+            ("5k", Bandwidth::KiBPerSec(5)),
+        ] {
+            assert_eq!(Bandwidth::parse(text), Some(expected), "{text}");
+        }
+    }
+
+    #[test]
+    fn anything_else_is_not_a_speed() {
+        for text in [
+            "",
+            "0",
+            "0K",
+            "00M",
+            "1.5M",
+            "10",
+            "-1K",
+            "+1K",
+            "5T",
+            "5P",
+            "5B",
+            "K",
+            "M5",
+            "1 M",
+            " 1M",
+            "Off",
+            "OFF",
+            "1MB",
+            "99999999999999999999K",
+            "17592186044416G",
+        ] {
+            assert_eq!(Bandwidth::parse(text), None, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn the_canonical_text_uses_the_largest_exact_unit() {
+        for (speed, text) in [
+            (Bandwidth::Off, "off"),
+            (Bandwidth::KiBPerSec(1), "1K"),
+            (Bandwidth::KiBPerSec(1023), "1023K"),
+            (Bandwidth::KiBPerSec(1024), "1M"),
+            (Bandwidth::KiBPerSec(1536), "1536K"),
+            (Bandwidth::KiBPerSec(1_048_576), "1G"),
+            (Bandwidth::KiBPerSec(2_097_152), "2G"),
+            (Bandwidth::KiBPerSec(1_048_577), "1048577K"),
+        ] {
+            assert_eq!(speed.format(), text);
+        }
     }
 }

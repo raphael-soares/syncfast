@@ -339,6 +339,9 @@ pub mod size {
     pub const SETTING_COMBO: f32 = 200.0;
     /// The number field of a setting row.
     pub const SETTING_FIELD: f32 = 72.0;
+    /// The slot after a number field where its unit goes, so every field of a
+    /// section ends at the same edge.
+    pub const SETTING_UNIT: f32 = 40.0;
     pub const ICON: f32 = 16.0;
     pub const ICON_LARGE: f32 = 40.0;
 }
