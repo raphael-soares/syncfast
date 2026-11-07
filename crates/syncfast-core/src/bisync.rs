@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use jiff::Zoned;
 use serde::{Deserialize, Serialize};
 
-use crate::behavior::{Behavior, GoogleDocs};
+use crate::behavior::{Bandwidth, Behavior, GoogleDocs};
 use crate::bisync_log::LogLine;
 use crate::config::Pair;
 use crate::paths::Paths;
@@ -172,6 +172,7 @@ pub fn bisync_args(
         let backup = paths.versions_dir(id).join(stamp(now));
         args.extend(["--backup-dir1".into(), dir_arg(&backup)]);
     }
+    args.extend(bwlimit_args(behavior));
     args.extend([
         "--stats".into(),
         STATS_INTERVAL.into(),
@@ -184,6 +185,24 @@ pub fn bisync_args(
     ]);
     args.extend(mode_args(behavior, mode));
     args
+}
+
+/// `--bwlimit <UP>:<DOWN>`, both sides always written (rclone rejects an
+/// empty one); nothing when both are unlimited.
+#[must_use]
+pub fn bwlimit_args(behavior: &Behavior) -> Vec<OsString> {
+    if behavior.limit_upload == Bandwidth::Off && behavior.limit_download == Bandwidth::Off {
+        return Vec::new();
+    }
+    vec![
+        "--bwlimit".into(),
+        format!(
+            "{}:{}",
+            behavior.limit_upload.format(),
+            behavior.limit_download.format()
+        )
+        .into(),
+    ]
 }
 
 fn mode_args(behavior: &Behavior, mode: Mode) -> Vec<OsString> {
@@ -401,6 +420,60 @@ mod tests {
         let args = args(&Behavior::default(), Mode::Normal);
 
         assert_eq!(args, expected(RUN_LOG, &[]));
+    }
+
+    fn limits(upload: Bandwidth, download: Bandwidth) -> Behavior {
+        Behavior {
+            limit_upload: upload,
+            limit_download: download,
+            ..Behavior::default()
+        }
+    }
+
+    fn bwlimit(behavior: &Behavior) -> Option<String> {
+        let args = args(behavior, Mode::Normal);
+        let at = args.iter().position(|arg| arg == "--bwlimit")?;
+        Some(args[at + 1].clone())
+    }
+
+    #[test]
+    fn bwlimit_names_both_directions_upload_first() {
+        let kib = Bandwidth::KiBPerSec;
+
+        assert_eq!(
+            bwlimit(&limits(kib(2048), Bandwidth::Off)).as_deref(),
+            Some("2M:off")
+        );
+        assert_eq!(
+            bwlimit(&limits(Bandwidth::Off, kib(512))).as_deref(),
+            Some("off:512K")
+        );
+        assert_eq!(
+            bwlimit(&limits(kib(1024), kib(2048))).as_deref(),
+            Some("1M:2M")
+        );
+    }
+
+    #[test]
+    fn bwlimit_is_left_out_when_both_directions_are_unlimited() {
+        let behavior = limits(Bandwidth::Off, Bandwidth::Off);
+
+        assert_eq!(bwlimit(&behavior), None);
+        assert_eq!(args(&behavior, Mode::Normal), expected(RUN_LOG, &[]));
+    }
+
+    #[test]
+    fn bwlimit_goes_to_every_mode_of_a_round() {
+        let behavior = limits(Bandwidth::KiBPerSec(512), Bandwidth::Off);
+
+        for mode in [Mode::Normal, Mode::Resync, Mode::Force] {
+            assert!(
+                args(&behavior, mode)
+                    .windows(2)
+                    .any(|pair| pair == ["--bwlimit", "512K:off"]),
+                "{mode:?}"
+            );
+        }
     }
 
     #[test]

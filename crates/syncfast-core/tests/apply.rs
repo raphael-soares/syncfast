@@ -663,6 +663,63 @@ async fn each_timer_uses_the_interval_its_sync_resolves() {
     assert_eq!(timer_interval(&bed, "own"), "7200s");
 }
 
+fn user_timer(bed: &Bed, id: &str) -> String {
+    fs::read_to_string(
+        bed.paths
+            .systemd_user_dir()
+            .join(format!("syncfast-{id}.timer")),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_new_interval_reaches_only_that_timer_with_a_reload_and_no_restart() {
+    let bed = Bed::new();
+    let config = |docs: &str| {
+        format!(
+            "version = 2\n{}{}",
+            pair_text(&bed, "docs", docs),
+            pair_text(&bed, "notes", "")
+        )
+    };
+    bed.write_config_text(&config(""));
+    let systemctl = FakeSystemctl::default();
+    apply_with(&bed, SystemdMode::User, &systemctl, &[]).await;
+    systemctl.take();
+    let notes_before = user_timer(&bed, "notes");
+    bed.write_config_text(&config("interval = \"30m\"\n"));
+
+    let report = apply_with(&bed, SystemdMode::User, &systemctl, &[]).await;
+
+    assert!(report.is_empty(), "{report}");
+    assert!(user_timer(&bed, "docs").contains("OnUnitInactiveSec=1800s"));
+    assert_eq!(user_timer(&bed, "notes"), notes_before);
+    let calls = systemctl.take();
+    assert_eq!(calls[0], "daemon-reload");
+    assert!(
+        calls
+            .iter()
+            .all(|call| !(call.starts_with("restart") && call.contains(".timer"))),
+        "{calls:?}"
+    );
+}
+
+#[tokio::test]
+async fn changing_the_interval_in_preview_mode_rewrites_the_preview_timer() {
+    let bed = Bed::new();
+    bed.write_config_text(&format!("version = 2\n{}", pair_text(&bed, "docs", "")));
+    apply_with(&bed, SystemdMode::Off, &FakeSystemctl::default(), &[]).await;
+    assert_eq!(timer_interval(&bed, "docs"), "300s");
+    bed.write_config_text(&format!(
+        "version = 2\n{}",
+        pair_text(&bed, "docs", "interval = \"1h\"\n")
+    ));
+
+    apply_with(&bed, SystemdMode::Off, &FakeSystemctl::default(), &[]).await;
+
+    assert_eq!(timer_interval(&bed, "docs"), "3600s");
+}
+
 #[tokio::test]
 async fn apply_migrates_a_v1_config_and_keeps_a_copy_of_the_old_file() {
     let bed = Bed::new();

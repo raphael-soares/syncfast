@@ -282,7 +282,7 @@ Depende só do passo 1.
   - `watch`, `debounce` e `max_wait` valem nos modos cuja origem é a pasta local (`bisync`, `upload`, `mirror_up`). Em `download` e `mirror_down` o watcher ignora o sync (olhar a pasta local não tem o que propagar; reagir a edição local desfaria a edição) e a aba `Options` esconde as três.
   - `max_wait >= debounce` (passo 1); o watcher já dispara no mais cedo de `último evento + debounce` e `primeiro evento + max_wait`.
 - Efeito ao vivo:
-  - `settings set interval` e a GUI chamam `reapply`. `apply` reescreve o timer do sync quando o texto muda e, só para o timer reescrito de um sync habilitado, executa `systemctl --user restart <timer>` depois do `daemon-reload` (hoje só há `enable --now`, que não reinicia um timer em execução). **[ABERTO 1]** confirmar com uma unit real que o `daemon-reload` sozinho não aplica o intervalo novo a um timer em execução; se aplicar, o restart sai.
+  - `settings set interval` e a GUI chamam `reapply`. `apply` reescreve o timer do sync quando o texto muda e roda o `daemon-reload` (e o `enable --now` de sempre); não há `restart` do timer, porque o `daemon-reload` sozinho aplica o `OnUnitInactiveSec` novo (**[ABERTO 1]** fechado, ver Itens em aberto).
   - O watcher recarrega o config ao mudar (`watch_config`) e recalcula `debounce`, `max_wait` e `watch` do sync sem reiniciar nem soltar os outros syncs.
 - **Banda (`limit_upload`, `limit_download`):** limita a velocidade das rodadas do sync, herdável de `[defaults]`, padrão sem limite.
   - Valor: `off` (sem limite, o padrão) ou um inteiro positivo seguido de `K`, `M` ou `G`, sem espaço e sem decimais: `500K`, `2M`, `1G`. `K`, `M` e `G` são KiB, MiB e GiB por segundo (potências de 1024, como no rclone; é bytes, não bits). Minúscula é aceita; a escrita canônica usa maiúscula e a maior unidade que divide exato (`1024K` vira `1M`). Parser próprio em `behavior.rs` (`Bandwidth { Off, KiBPerSec(u64) }`), com testes.
@@ -305,7 +305,7 @@ Depende só do passo 1.
 
 **Testes:**
 
-- Agenda: `pair_timer` com `interval` de `90s`, `1h`; `apply` reescreve só o timer do sync mudado (units fake) e reinicia só esse; `watch_ignores_the_sync_when_the_mode_is_download_or_mirror_down` (entra com o passo 6); `a_config_change_updates_debounce_of_one_sync_and_keeps_the_others_watched`; resumo da GUI para cada combinação; `SYNCFAST_SYSTEMD=off`: gravar `interval` regrava a unit de preview.
+- Agenda: `pair_timer` com `interval` de `90s`, `1h`; `apply` reescreve só o timer do sync mudado (units fake), com `daemon-reload` e sem `restart`; `watch_ignores_the_sync_when_the_mode_is_download_or_mirror_down` (entra com o passo 6); `a_config_change_updates_the_timing_of_one_sync_and_keeps_the_others_watched`; resumo da GUI para cada combinação; `SYNCFAST_SYSTEMD=off`: gravar `interval` regrava a unit de preview.
 - Banda: parser (`500K`, `2M`, `1G`, `2m`, `off`; recusa `0`, `0K`, `1.5M`, `10`, `-1K`, `5T`, vazio); escrita canônica (`1024K` vira `1M`); `bisync_args` com `2M:off`, `off:512K`, `1M:2M` e sem a flag quando os dois são `off`; `a_sync_off_overrides_a_defaults_limit`; `an_agent_can_change_bandwidth_limits_either_way`; GUI: `Default: Unlimited`, `2 MiB/s`, vazio grava `off`, `0` mostra a mensagem e não emite `SetSetting`, campo oculto quando a direção não vale no modo. Com o passo 6, o mesmo teste de `oneway_args` (quem entrar depois o acrescenta).
 
 `just check` verde.
@@ -665,7 +665,7 @@ Diretório `~/Desktop/Personal/syncfast`. Depois que todas as issues entraram:
 
 Marcados como `[ABERTO n]` no texto. Nenhum bloqueia o início; cada um tem o teste que o fecha.
 
-1. **Reinício do timer:** se o `daemon-reload` sozinho já aplica um `interval` novo a um timer em execução. Fecha no passo 2 com uma unit real.
+1. ~~**Reinício do timer**~~ **Fechado no passo 2:** com uma unit descartável do usuário, trocar `OnUnitInactiveSec` de `2min` para `7min` e rodar só `systemctl --user daemon-reload` moveu o próximo disparo de `list-timers` na hora; o `daemon-reload` sozinho aplica o intervalo novo. O timer do sync usa `OnStartupSec=2min`, relativo ao início do gerenciador de usuário (já passado), e não `OnActiveSec`: com `OnActiveSec=1s` a sonda re-disparou o serviço uma vez no primeiro reload, e é por isso que o timer do sync não o usa. Sem `restart`.
 2. **Fixtures dos modos de uma via:** `--combined` sob `--dry-run`, efeito de `--retries 1`, código de saída e texto do `--max-delete` excedido, e o encerramento do `lsf` depois do primeiro nome. Fecham no passo 6, antes dos parsers.
 3. **Nomes do `conflict_loser = pathname`:** `file.txt.path1` e `.path2` com `--conflict-suffix path` vêm da doc. Fecha com os fixtures do passo 3.
 4. **Autostart fora do Hyprland:** o comportamento do portal de segundo plano em GNOME e KDE não é verificável aqui. Fecha com o teste manual da Verificação.

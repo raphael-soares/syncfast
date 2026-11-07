@@ -5,7 +5,7 @@
 //! reason right below the row.
 
 use egui::{Id, RichText, Ui, WidgetInfo, WidgetType};
-use syncfast_core::behavior::Behavior;
+use syncfast_core::behavior::{Bandwidth, Behavior};
 use syncfast_core::config::SettingScope;
 use syncfast_core::settings::{self, Access, KeyDef, Origin, Value};
 
@@ -14,8 +14,9 @@ use super::{Action, ViewModel};
 use crate::icons::Icon;
 use crate::theme::{self, size, space};
 
-const SECTIONS: [(&str, &[&str]); 5] = [
+const SECTIONS: [(&str, &[&str]); 6] = [
     ("Schedule", &["watch", "debounce", "max_wait", "interval"]),
+    ("Bandwidth", &["limit_upload", "limit_download"]),
     ("Conflicts", &["conflict_resolve", "conflict_loser"]),
     ("Versions", &["versions", "versions_keep_days"]),
     ("Deletions", &["max_delete"]),
@@ -67,7 +68,8 @@ pub fn sync(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
         return Vec::new();
     };
     let scope = SettingScope::Sync(pair.id.clone());
-    sections(ui, &scope, |def| {
+    let summary = schedule_summary(&pair.effective.behavior);
+    sections(ui, &scope, Some(&summary), |def| {
         let inherited = value_label(def.name, &def.get(&vm.defaults));
         let overridden = pair.effective.origin(def.name) == Origin::Sync;
         Row {
@@ -90,7 +92,7 @@ pub fn sync(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
 /// The sections of `[defaults]`.
 #[must_use]
 pub fn defaults(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
-    sections(ui, &SettingScope::Defaults, |def| {
+    sections(ui, &SettingScope::Defaults, None, |def| {
         let set = vm.defaults_overrides.contains(def.name);
         let overriding = vm
             .pairs
@@ -125,7 +127,12 @@ pub fn defaults(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
     })
 }
 
-fn sections(ui: &mut Ui, scope: &SettingScope, row: impl Fn(&KeyDef) -> Row) -> Vec<Action> {
+fn sections(
+    ui: &mut Ui,
+    scope: &SettingScope,
+    summary: Option<&str>,
+    row: impl Fn(&KeyDef) -> Row,
+) -> Vec<Action> {
     let palette = theme::palette(ui.ctx());
     let mut actions = Vec::new();
     let mut first = true;
@@ -147,6 +154,13 @@ fn sections(ui: &mut Ui, scope: &SettingScope, row: impl Fn(&KeyDef) -> Row) -> 
                 .font(theme::headline())
                 .color(palette.text),
         );
+        if let (Some(summary), "Schedule") = (summary, title) {
+            ui.label(
+                RichText::new(summary)
+                    .font(theme::callout())
+                    .color(palette.secondary),
+            );
+        }
         for def in defs {
             setting(ui, scope, def, &row(def), &mut actions);
         }
@@ -324,22 +338,33 @@ fn text_control(
     actions: &mut Vec<Action>,
 ) {
     let title = label(field.def.name);
-    if let Some(unit) = suffix(field.def.name) {
-        let palette = theme::palette(ui.ctx());
+    let palette = theme::palette(ui.ctx());
+    let shown = match field.row.value {
+        Value::Bandwidth(_) => Some(value_label(field.def.name, &field.row.value)),
+        _ => suffix(field.def.name).map(str::to_owned),
+    };
+    if let Some(shown) = shown {
         ui.label(
-            RichText::new(unit)
+            RichText::new(shown)
                 .font(theme::body())
                 .color(palette.secondary),
         );
     }
-    let mut text = typed.unwrap_or_else(|| field.row.value.to_string());
+    let mut text = typed.unwrap_or_else(|| match field.row.value {
+        Value::Bandwidth(Bandwidth::Off) => String::new(),
+        value => value.to_string(),
+    });
     let response = inline_field(ui, title, &mut text, size::SETTING_FIELD);
     if response.changed() {
         *error = None;
         field.keep(ui, Some(text.clone()), None);
     }
     if response.lost_focus() {
-        match field.def.parse_text(text.trim()) {
+        let input = match text.trim() {
+            "" if matches!(field.def.access, Access::Bandwidth { .. }) => "off",
+            input => input,
+        };
+        match field.def.parse_text(input) {
             Ok(value) => field.propose(ui, &value, Some(text), error, actions),
             Err(message) => field.refuse(ui, Some(text), message, error),
         }
@@ -359,6 +384,8 @@ fn label(key: &str) -> &'static str {
         "debounce" => "Wait after changes",
         "max_wait" => "Longest wait while editing",
         "interval" => "Check Drive every",
+        "limit_upload" => "Limit uploads to",
+        "limit_download" => "Limit downloads to",
         "conflict_resolve" => "When both sides change",
         "conflict_loser" => "The losing version",
         "versions" => "Keep replaced files",
@@ -405,6 +432,22 @@ fn value_label(key: &str, value: &Value) -> String {
         Value::Int(count) if key == "versions_keep_days" => format!("{count} days"),
         Value::Int(count) => format!("{count}%"),
         Value::Choice(name) => choice_label(key, name).to_owned(),
+        Value::Bandwidth(Bandwidth::Off) => "Unlimited".to_owned(),
+        Value::Bandwidth(Bandwidth::KiBPerSec(kib)) => match kib {
+            kib if kib % (1024 * 1024) == 0 => format!("{} GiB/s", kib / (1024 * 1024)),
+            kib if kib % 1024 == 0 => format!("{} MiB/s", kib / 1024),
+            kib => format!("{kib} KiB/s"),
+        },
+    }
+}
+
+fn schedule_summary(behavior: &Behavior) -> String {
+    let interval = duration_label(behavior.interval.as_secs());
+    if behavior.watch {
+        let debounce = duration_label(behavior.debounce.as_secs());
+        format!("Syncs every {interval} and {debounce} after you stop editing.")
+    } else {
+        format!("Syncs every {interval}. Changes on this computer wait for the next round.")
     }
 }
 
@@ -469,5 +512,18 @@ mod tests {
         );
         assert_eq!(value_label("versions_keep_days", &Value::Int(1)), "1 day");
         assert_eq!(value_label("max_delete", &Value::Int(50)), "50%");
+    }
+
+    #[test]
+    fn speeds_read_in_the_largest_exact_binary_unit() {
+        let label = |kib| value_label("limit_upload", &Value::Bandwidth(Bandwidth::KiBPerSec(kib)));
+        assert_eq!(
+            value_label("limit_upload", &Value::Bandwidth(Bandwidth::Off)),
+            "Unlimited"
+        );
+        assert_eq!(label(500), "500 KiB/s");
+        assert_eq!(label(1536), "1536 KiB/s");
+        assert_eq!(label(2048), "2 MiB/s");
+        assert_eq!(label(1024 * 1024), "1 GiB/s");
     }
 }

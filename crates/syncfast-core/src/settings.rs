@@ -10,7 +10,8 @@ use serde::Serialize;
 use toml_edit::{Item, TableLike};
 
 use crate::behavior::{
-    Behavior, ConflictLoser, ConflictResolve, ResyncMode, format_duration, parse_duration,
+    Bandwidth, Behavior, ConflictLoser, ConflictResolve, ResyncMode, format_duration,
+    parse_duration,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,6 +20,7 @@ pub enum Value {
     Duration(Duration),
     Int(i64),
     Choice(&'static str),
+    Bandwidth(Bandwidth),
 }
 
 impl fmt::Display for Value {
@@ -29,6 +31,7 @@ impl fmt::Display for Value {
             Self::Duration(value) => f.write_str(&format_duration(*value)),
             Self::Int(value) => write!(f, "{value}"),
             Self::Choice(value) => f.write_str(value),
+            Self::Bandwidth(value) => f.write_str(&value.format()),
         }
     }
 }
@@ -39,7 +42,9 @@ impl Value {
         match self {
             Self::Bool(value) => serde_json::Value::Bool(*value),
             Self::Int(value) => serde_json::Value::from(*value),
-            Self::Duration(_) | Self::Choice(_) => serde_json::Value::String(self.to_string()),
+            Self::Duration(_) | Self::Choice(_) | Self::Bandwidth(_) => {
+                serde_json::Value::String(self.to_string())
+            }
         }
     }
 
@@ -47,7 +52,9 @@ impl Value {
         match self {
             Self::Bool(value) => toml_edit::Value::from(value),
             Self::Int(value) => toml_edit::Value::from(value),
-            Self::Duration(_) | Self::Choice(_) => toml_edit::Value::from(self.to_string()),
+            Self::Duration(_) | Self::Choice(_) | Self::Bandwidth(_) => {
+                toml_edit::Value::from(self.to_string())
+            }
         }
     }
 }
@@ -74,6 +81,10 @@ pub enum Access {
         names: &'static [&'static str],
         get: fn(&Behavior) -> &'static str,
         set: fn(&mut Behavior, &str),
+    },
+    Bandwidth {
+        get: fn(&Behavior) -> Bandwidth,
+        set: fn(&mut Behavior, Bandwidth),
     },
 }
 
@@ -103,7 +114,7 @@ macro_rules! choice {
 }
 
 /// In the order the docs and `settings` list them.
-pub static KEYS: [KeyDef; 11] = [
+pub static KEYS: [KeyDef; 13] = [
     KeyDef {
         name: "watch",
         per_sync_only: false,
@@ -140,6 +151,24 @@ pub static KEYS: [KeyDef; 11] = [
             min: Some(Duration::from_mins(1)),
             get: |behavior| behavior.interval,
             set: |behavior, value| behavior.interval = value,
+        },
+        lowers_safety: None,
+    },
+    KeyDef {
+        name: "limit_upload",
+        per_sync_only: false,
+        access: Access::Bandwidth {
+            get: |behavior| behavior.limit_upload,
+            set: |behavior, value| behavior.limit_upload = value,
+        },
+        lowers_safety: None,
+    },
+    KeyDef {
+        name: "limit_download",
+        per_sync_only: false,
+        access: Access::Bandwidth {
+            get: |behavior| behavior.limit_download,
+            set: |behavior, value| behavior.limit_download = value,
         },
         lowers_safety: None,
     },
@@ -252,6 +281,7 @@ impl KeyDef {
             Access::Duration { get, .. } => Value::Duration(get(behavior)),
             Access::Int { get, .. } => Value::Int(get(behavior)),
             Access::Choice { get, .. } => Value::Choice(get(behavior)),
+            Access::Bandwidth { get, .. } => Value::Bandwidth(get(behavior)),
         }
     }
 
@@ -261,6 +291,7 @@ impl KeyDef {
             (Access::Duration { set, .. }, Value::Duration(value)) => set(behavior, *value),
             (Access::Int { set, .. }, Value::Int(value)) => set(behavior, *value),
             (Access::Choice { set, .. }, Value::Choice(value)) => set(behavior, value),
+            (Access::Bandwidth { set, .. }, Value::Bandwidth(value)) => set(behavior, *value),
             _ => {}
         }
     }
@@ -296,6 +327,7 @@ impl KeyDef {
                 self.check_int(number)
             }
             Access::Choice { .. } => self.check_choice(text),
+            Access::Bandwidth { .. } => self.check_bandwidth(text),
         }
     }
 
@@ -321,6 +353,10 @@ impl KeyDef {
                 Some(text) => self.check_choice(text),
                 None => self.check_choice(item.to_string().trim()),
             },
+            Access::Bandwidth { .. } => {
+                let text = item.as_str().ok_or_else(|| self.type_error())?;
+                self.check_bandwidth(text)
+            }
         }
     }
 
@@ -329,6 +365,12 @@ impl KeyDef {
             Access::Bool { .. } => "bool",
             Access::Duration { .. } => "a duration",
             Access::Int { .. } | Access::Choice { .. } => "a whole number",
+            Access::Bandwidth { .. } => {
+                return format!(
+                    "{} must be off or a speed: a whole number followed by K, M or G, for example 500K or 2M",
+                    self.name
+                );
+            }
         };
         format!("{} must be {noun}", self.name)
     }
@@ -353,6 +395,12 @@ impl KeyDef {
             return Err(format!("{} must be between {min} and {max}", self.name));
         }
         Ok(Value::Int(number))
+    }
+
+    fn check_bandwidth(&self, text: &str) -> Result<Value, String> {
+        Bandwidth::parse(text)
+            .map(Value::Bandwidth)
+            .ok_or_else(|| self.type_error())
     }
 
     fn check_choice(&self, text: &str) -> Result<Value, String> {
@@ -502,6 +550,8 @@ mod tests {
                 "debounce=30s",
                 "max_wait=5m",
                 "interval=5m",
+                "limit_upload=off",
+                "limit_download=off",
                 "conflict_resolve=newer",
                 "conflict_loser=num",
                 "versions=true",
@@ -521,6 +571,8 @@ mod tests {
             ("debounce", "10s"),
             ("max_wait", "10m"),
             ("interval", "1h"),
+            ("limit_upload", "2m"),
+            ("limit_download", "512K"),
             ("conflict_resolve", "local"),
             ("conflict_loser", "pathname"),
             ("versions", "false"),
@@ -540,6 +592,8 @@ mod tests {
                 debounce: Duration::from_secs(10),
                 max_wait: Duration::from_mins(10),
                 interval: Duration::from_hours(1),
+                limit_upload: Bandwidth::KiBPerSec(2048),
+                limit_download: Bandwidth::KiBPerSec(512),
                 conflict_resolve: ConflictResolve::Local,
                 conflict_loser: ConflictLoser::Pathname,
                 versions: false,
@@ -579,6 +633,60 @@ mod tests {
             "interval must be at least 1m"
         );
         assert_eq!(text("interval", "1m").unwrap(), "1m");
+    }
+
+    const SPEED_MESSAGE: &str =
+        "must be off or a speed: a whole number followed by K, M or G, for example 500K or 2M";
+
+    #[test]
+    fn a_speed_is_written_in_its_canonical_form() {
+        assert_eq!(text("limit_upload", "1024K").unwrap(), "1M");
+        assert_eq!(text("limit_upload", "2m").unwrap(), "2M");
+        assert_eq!(text("limit_download", "1024M").unwrap(), "1G");
+        assert_eq!(text("limit_download", "1536K").unwrap(), "1536K");
+        assert_eq!(text("limit_upload", "off").unwrap(), "off");
+    }
+
+    #[test]
+    fn a_bad_speed_gets_the_one_message_of_its_key() {
+        for bad in ["0", "0K", "1.5M", "10", "-1K", "5T", ""] {
+            assert_eq!(
+                text("limit_upload", bad).unwrap_err(),
+                format!("limit_upload {SPEED_MESSAGE}"),
+                "{bad:?}"
+            );
+            assert_eq!(
+                text("limit_download", bad).unwrap_err(),
+                format!("limit_download {SPEED_MESSAGE}"),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_speed_in_the_config_is_a_string_and_a_number_is_refused() {
+        let upload = def("limit_upload");
+
+        assert_eq!(
+            upload.parse_item(&item("\"2M\"")).unwrap(),
+            Value::Bandwidth(Bandwidth::KiBPerSec(2048))
+        );
+        assert_eq!(
+            upload.parse_item(&item("2")).unwrap_err(),
+            format!("limit_upload {SPEED_MESSAGE}")
+        );
+    }
+
+    #[test]
+    fn bandwidth_limits_do_not_lower_safety() {
+        let limited = Behavior {
+            limit_upload: Bandwidth::KiBPerSec(512),
+            limit_download: Bandwidth::KiBPerSec(512),
+            ..Behavior::default()
+        };
+
+        assert!(lowered_safety(&limited).is_empty());
+        assert!(!def("limit_upload").lowers(&Behavior::default(), &limited));
     }
 
     #[test]

@@ -618,3 +618,59 @@ async fn the_config_decides_which_syncs_are_watched_and_how_long_they_wait() {
     assert_eq!(triggers_of(&run.recorder, "off"), 0);
     run.stop().await;
 }
+
+fn two_syncs(bed: &Bed, docs: &str) -> String {
+    fs::create_dir_all(bed.local("docs")).unwrap();
+    fs::create_dir_all(bed.local("notes")).unwrap();
+    let mut text =
+        String::from("version = 2\n\n[defaults]\ndebounce = \"5s\"\nmax_wait = \"5s\"\n");
+    text.push_str(&pair_block("docs", &bed.local("docs"), &bed.remote("docs")));
+    text.push_str(docs);
+    text.push_str(&pair_block(
+        "notes",
+        &bed.local("notes"),
+        &bed.remote("notes"),
+    ));
+    text
+}
+
+#[tokio::test]
+async fn a_config_change_updates_the_timing_of_one_sync_and_keeps_the_others_watched() {
+    let run = start_using(Behavior::for_pair, |bed| {
+        bed.write_config_text(&two_syncs(bed, "debounce = \"2m\"\nmax_wait = \"2m\"\n"));
+    })
+    .await;
+    run.bed.write_config_text(&two_syncs(&run.bed, ""));
+    sleep(Duration::from_millis(1200)).await;
+    let started = Instant::now();
+
+    write(&run.local("docs"), "a.txt");
+    write(&run.local("notes"), "a.txt");
+    let docs = wait_for_id(&run.recorder, "docs", Duration::from_secs(9)).await;
+    let notes = wait_for_id(&run.recorder, "notes", Duration::from_secs(9)).await;
+    let waited = started.elapsed();
+
+    assert!(docs && notes);
+    assert!(waited >= Duration::from_secs(4), "{waited:?}");
+    run.stop().await;
+}
+
+#[tokio::test]
+async fn turning_watch_off_for_one_sync_stops_only_that_sync() {
+    let run = start_using(Behavior::for_pair, |bed| {
+        bed.write_config_text(&two_syncs(bed, ""));
+    })
+    .await;
+    run.bed
+        .write_config_text(&two_syncs(&run.bed, "watch = false\n"));
+    sleep(Duration::from_millis(1200)).await;
+
+    write(&run.local("docs"), "a.txt");
+    write(&run.local("notes"), "a.txt");
+    let notes = wait_for_id(&run.recorder, "notes", Duration::from_secs(9)).await;
+    sleep(Duration::from_secs(1)).await;
+
+    assert!(notes);
+    assert_eq!(triggers_of(&run.recorder, "docs"), 0);
+    run.stop().await;
+}

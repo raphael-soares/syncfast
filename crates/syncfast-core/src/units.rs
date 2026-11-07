@@ -830,6 +830,23 @@ mod tests {
     }
 
     #[test]
+    fn timer_interval_is_written_in_seconds_for_any_length() {
+        for (interval, seconds) in [
+            (Duration::from_secs(90), "OnUnitInactiveSec=90s\n"),
+            (Duration::from_hours(1), "OnUnitInactiveSec=3600s\n"),
+        ] {
+            let behavior = Behavior {
+                interval,
+                ..Behavior::default()
+            };
+
+            let unit = pair_timer(&pair("drive", "Google Drive"), &behavior);
+
+            assert!(unit.contains(seconds), "{unit}");
+        }
+    }
+
+    #[test]
     fn timer_unit_uses_the_interval_in_seconds_and_names_its_service() {
         let behavior = Behavior {
             interval: Duration::from_secs(300),
