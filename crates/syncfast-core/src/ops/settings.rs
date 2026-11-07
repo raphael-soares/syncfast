@@ -67,7 +67,7 @@ impl Ops {
                             value: def.get(&effective.behavior).to_json(),
                             origin: effective.origin(def.name).name(),
                             default: def.get(&defaults).to_json(),
-                            applies: true,
+                            applies: (def.applies_to)(effective.behavior.mode),
                         })
                         .collect(),
                     lowered_safety: lowered_safety(&effective.behavior),

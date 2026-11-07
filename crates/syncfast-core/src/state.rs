@@ -13,7 +13,7 @@ use std::time::Duration;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use crate::behavior::ReviewLevel;
+use crate::behavior::{ReviewLevel, SyncMode};
 use crate::bisync::{Fault, ReviewKind};
 use crate::bisync_log::RunSummary;
 use crate::config::Pair;
@@ -54,6 +54,7 @@ pub enum StateError {
 pub enum GateKind {
     NeedsReviewFirstRun,
     NeedsReviewFiltersChanged,
+    NeedsReviewModeChanged,
     NeedsReviewCriticalError,
     TooManyDeletes,
     AllFilesChanged,
@@ -71,6 +72,7 @@ impl GateKind {
         match self {
             Self::NeedsReviewFirstRun => "needs_review_first_run",
             Self::NeedsReviewFiltersChanged => "needs_review_filters_changed",
+            Self::NeedsReviewModeChanged => "needs_review_mode_changed",
             Self::NeedsReviewCriticalError => "needs_review_critical_error",
             Self::TooManyDeletes => "too_many_deletes",
             Self::AllFilesChanged => "all_files_changed",
@@ -87,6 +89,7 @@ impl GateKind {
             self,
             Self::NeedsReviewFirstRun
                 | Self::NeedsReviewFiltersChanged
+                | Self::NeedsReviewModeChanged
                 | Self::NeedsReviewCriticalError
         )
     }
@@ -163,12 +166,29 @@ pub struct State {
     pub last_success: Option<Timestamp>,
     pub last_attempt: Option<Timestamp>,
     pub applied_filters_hash: Option<String>,
+    /// The sync mode the last good round ran in. Absent from files written
+    /// before the modes existed; see [`State::synced_mode`].
+    pub applied_mode: Option<SyncMode>,
+    /// Files the destination held after the last good round of a mirror;
+    /// the base of its `--max-delete` cap.
+    pub dest_files: Option<u64>,
     pub conflicts_pending: u32,
     pub last_run: Option<LastRun>,
     pub notified: Vec<String>,
 }
 
 impl State {
+    /// The mode of the last good round: the one recorded, or two-way for a
+    /// sync that did round before modes existed.
+    #[must_use]
+    pub fn synced_mode(&self) -> Option<SyncMode> {
+        match (self.applied_mode, &self.applied_filters_hash) {
+            (Some(mode), _) => Some(mode),
+            (None, Some(_)) => Some(SyncMode::Bisync),
+            (None, None) => None,
+        }
+    }
+
     /// A pair that has never synced: waiting for its first review.
     #[must_use]
     pub fn first_run(now: Timestamp) -> Self {
@@ -625,6 +645,8 @@ mod tests {
             last_success: Some(at("2026-01-01T10:00:00Z")),
             last_attempt: Some(at("2026-01-01T11:00:00Z")),
             applied_filters_hash: Some("abc".into()),
+            applied_mode: Some(SyncMode::MirrorUp),
+            dest_files: Some(12),
             conflicts_pending: 4,
             last_run: Some(LastRun {
                 started: at("2026-01-01T11:00:00Z"),
@@ -717,6 +739,8 @@ mod tests {
                 "last_success": null,
                 "last_attempt": null,
                 "applied_filters_hash": null,
+                "applied_mode": null,
+                "dest_files": null,
                 "conflicts_pending": 0,
                 "last_run": null,
                 "notified": []
@@ -1069,6 +1093,7 @@ mod tests {
         for kind in [
             GateKind::NeedsReviewFirstRun,
             GateKind::NeedsReviewFiltersChanged,
+            GateKind::NeedsReviewModeChanged,
             GateKind::NeedsReviewCriticalError,
             GateKind::TooManyDeletes,
             GateKind::AllFilesChanged,
@@ -1246,6 +1271,10 @@ mod tests {
                 "needs_review_filters_changed",
             ),
             (
+                GateKind::NeedsReviewModeChanged,
+                "needs_review_mode_changed",
+            ),
+            (
                 GateKind::NeedsReviewCriticalError,
                 "needs_review_critical_error",
             ),
@@ -1262,5 +1291,23 @@ mod tests {
             assert_eq!(kind.as_str(), name);
             assert_eq!(kind.notified_key(), format!("gate:{name}"));
         }
+    }
+
+    #[test]
+    fn the_synced_mode_is_the_recorded_one_or_two_way_for_a_sync_that_predates_modes() {
+        let never = State::default();
+        let legacy = State {
+            applied_filters_hash: Some("abc".into()),
+            ..State::default()
+        };
+        let recorded = State {
+            applied_filters_hash: Some("abc".into()),
+            applied_mode: Some(SyncMode::Upload),
+            ..State::default()
+        };
+
+        assert_eq!(never.synced_mode(), None);
+        assert_eq!(legacy.synced_mode(), Some(SyncMode::Bisync));
+        assert_eq!(recorded.synced_mode(), Some(SyncMode::Upload));
     }
 }

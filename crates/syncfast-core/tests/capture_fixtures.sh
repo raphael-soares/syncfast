@@ -265,3 +265,92 @@ for n in $(seq 1 200); do
   head -c 65536 /dev/urandom > "$root/local/bulk-$n.bin"
 done
 capture stats --stats 1s --bwlimit 2M
+
+# One-way engine: `rclone copy` and `rclone sync` from local/ to remote/, with
+# the flags oneway_args writes. The `--combined` report of each scenario is
+# kept next to its log as <name>.changes.
+oneway() { # oneway <copy|sync> <log> <changes> [extra flags]
+  local sub="$1" log="$2" changes="$3"
+  shift 3
+  rclone "$sub" "$root/local" "$root/remote" \
+    --filter-from "$root/state/filters/x.txt" \
+    --create-empty-src-dirs \
+    --drive-skip-gdocs \
+    --combined "$changes" \
+    --retries 1 \
+    --stats 2s --stats-log-level NOTICE \
+    --use-json-log --log-file "$log" -v \
+    "$@"
+}
+
+capture_oneway() { # capture_oneway <name> <copy|sync> [extra flags]
+  local name="oneway_$1" sub="$2"
+  shift 2
+  wanted "$name" || return 0
+  local code=0
+  rm -f "$out/$name.jsonl" "$out/$name.changes"
+  oneway "$sub" "$out/$name.jsonl" "$out/$name.changes" "$@" || code=$?
+  echo "$code" > "$out/$name.exit"
+  echo "$name: exit $code"
+}
+
+# Every kind of line: new, identical and differing files, a folder, and a
+# file only in the destination.
+oneway_mixed() {
+  setup
+  put "$root/local/new.txt" "only in the source" "$mid"
+  put "$root/local/same.txt" "identical" "$old"
+  put "$root/remote/same.txt" "identical" "$old"
+  put "$root/local/changed.txt" "source edit, longer" "$mid"
+  put "$root/remote/changed.txt" "old" "$new"
+  put "$root/local/dir/nested.txt" "nested" "$mid"
+  put "$root/remote/extra.txt" "only in the destination" "$old"
+}
+
+oneway_mixed
+capture_oneway copy_new copy
+oneway_mixed
+capture_oneway copy_changed copy --backup-dir "$root/data/versions/x/$stamp/"
+oneway_mixed
+capture_oneway sync_delete sync
+oneway_mixed
+capture_oneway sync_delete_dry_run sync --dry-run
+oneway_mixed
+capture_oneway sync_backup_dir sync --backup-dir "$root/data/versions/x/$stamp/"
+
+setup
+for n in 1 2 3 4; do
+  put "$root/remote/f$n.txt" "file $n" "$old"
+done
+put "$root/local/keep.txt" "kept" "$old"
+capture_oneway sync_max_delete sync --max-delete 1
+
+setup
+for n in 1 2 3; do
+  put "$root/remote/f$n.txt" "file $n" "$old"
+done
+capture_oneway sync_empty_source sync
+
+# An unreadable source file: rclone must not delete anything in the
+# destination when a source file fails.
+setup
+put "$root/local/ok.txt" "readable" "$mid"
+put "$root/local/locked.txt" "unreadable" "$mid"
+put "$root/remote/extra.txt" "only in the destination" "$old"
+chmod 000 "$root/local/locked.txt"
+capture_oneway sync_errors sync
+chmod 644 "$root/local/locked.txt"
+
+# `lsf -R --files-only` as Rclone::has_files runs it: one name is enough, so
+# the process is stopped after the first line.
+if wanted oneway_size_json; then
+  setup
+  rclone lsf -R --files-only --filter-from "$root/state/filters/x.txt" "$root/local" \
+    > "$out/oneway_lsf_empty.out"
+  put "$root/local/a.txt" "a" "$old"
+  put "$root/local/dir/b.txt" "b" "$old"
+  put "$root/local/skip.tmp" "filtered out" "$old"
+  rclone lsf -R --files-only --filter-from "$root/state/filters/x.txt" "$root/local" \
+    | sort > "$out/oneway_lsf_files.out"
+  echo "oneway_size_json: done"
+fi

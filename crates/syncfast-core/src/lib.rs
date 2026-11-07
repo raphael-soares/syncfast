@@ -7,6 +7,7 @@ pub mod filters;
 pub mod flatpak;
 pub mod network;
 pub mod notify;
+pub mod oneway;
 pub mod ops;
 pub mod paths;
 pub mod preview;

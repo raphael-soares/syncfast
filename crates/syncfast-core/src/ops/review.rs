@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use super::views::{load_state, review_kind};
 use super::{OpError, Ops, PairView};
+use crate::behavior::SyncMode;
 use crate::bisync::ReviewKind;
 use crate::bisync_log::Change;
 use crate::filters;
@@ -34,8 +35,10 @@ struct StoredReview {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ReviewView {
     pub sync_id: String,
-    /// `First sync`, `Filters changed`, `Sync stopped after an error`,
-    /// `Many files would be deleted` or `Every file changed`.
+    pub mode: SyncMode,
+    /// `First sync`, `Filters changed`, `Sync mode changed`,
+    /// `Sync stopped after an error`, `Many files would be deleted` or
+    /// `Every file changed`.
     pub reason: &'static str,
     pub kind: ReviewKind,
     /// Pass this to `review confirm`.
@@ -65,6 +68,7 @@ fn reason(gate: GateKind) -> &'static str {
     match gate {
         GateKind::NeedsReviewFirstRun => "First sync",
         GateKind::NeedsReviewFiltersChanged => "Filters changed",
+        GateKind::NeedsReviewModeChanged => "Sync mode changed",
         GateKind::NeedsReviewCriticalError => "Sync stopped after an error",
         GateKind::TooManyDeletes => "Many files would be deleted",
         _ => "Every file changed",
@@ -79,7 +83,7 @@ impl Ops {
     /// No such sync, the sync waits for no review, a round is running
     /// ([`OpError::Busy`]), or the dry run fails.
     pub async fn show_review(&self, id: &str) -> Result<ReviewView, OpError> {
-        self.find_pair(id).await?;
+        let (_, behavior) = self.find_pair_and_behavior(id).await?;
         let state = load_state(self, id).await;
         let gate = state.gate.map(|gate| gate.kind);
         let Some((gate, kind)) = gate.and_then(|gate| review_kind(gate).map(|kind| (gate, kind)))
@@ -119,6 +123,7 @@ impl Ops {
         changes.truncate(SHOWN_CHANGES);
         Ok(ReviewView {
             sync_id: id.to_owned(),
+            mode: behavior.mode,
             reason: reason(gate),
             kind,
             filters_hash: stored.filters_hash,

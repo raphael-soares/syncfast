@@ -52,6 +52,9 @@ pub enum Fault {
     /// rclone refuses to sync from a side that is now empty, usually a
     /// drive that is not mounted.
     LocalEmpty,
+    /// A one-way sync whose source on the account holds no file; it never
+    /// reaches rclone, so no log line names it.
+    RemoteEmpty,
 }
 
 /// The fault an rclone error line names, if any. Case-insensitive.
@@ -82,8 +85,8 @@ const MUST_RESYNC: &str = "Must run --resync to recover";
 const EMPTY_PRIOR_LISTINGS: [&str; 2] = ["Empty prior Path1 listing", "Empty prior Path2 listing"];
 pub(crate) const FAILED_TO_BISYNC: &str = "Failed to bisync";
 const EXIT_NOT_CRITICAL: i32 = 1;
-const EXIT_USAGE: i32 = 2;
-const EXIT_CRITICAL: i32 = 7;
+pub(crate) const EXIT_USAGE: i32 = 2;
+pub(crate) const EXIT_CRITICAL: i32 = 7;
 
 /// What the user confirmed in the review: a first sync or a resync after an
 /// error or a filter change (`Resync`), or going ahead with a mass deletion
@@ -96,7 +99,7 @@ pub enum ReviewKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
+pub enum RoundMode {
     Normal,
     Resync,
     Force,
@@ -113,19 +116,19 @@ pub(crate) fn stamp(now: &Zoned) -> String {
 /// show up in Activity or count toward the 50 kept runs; whoever starts the
 /// preview reads that file and deletes it.
 #[must_use]
-pub fn log_file(paths: &Paths, pair_id: &str, mode: Mode, now: &Zoned) -> PathBuf {
+pub fn log_file(paths: &Paths, pair_id: &str, mode: RoundMode, now: &Zoned) -> PathBuf {
     let stamp = stamp(now);
     match mode {
-        Mode::DryRun(_) => paths
+        RoundMode::DryRun(_) => paths
             .pair_state_dir(pair_id)
             .join(format!("preview-{stamp}.jsonl")),
-        Mode::Normal | Mode::Resync | Mode::Force => {
+        RoundMode::Normal | RoundMode::Resync | RoundMode::Force => {
             paths.runs_dir(pair_id).join(format!("{stamp}.jsonl"))
         }
     }
 }
 
-fn dir_arg(path: &Path) -> OsString {
+pub(crate) fn dir_arg(path: &Path) -> OsString {
     let mut arg = path.as_os_str().to_owned();
     arg.push("/");
     arg
@@ -139,7 +142,7 @@ pub fn bisync_args(
     pair: &Pair,
     behavior: &Behavior,
     paths: &Paths,
-    mode: Mode,
+    mode: RoundMode,
     now: &Zoned,
 ) -> Vec<OsString> {
     let id = pair.id.as_str();
@@ -210,7 +213,7 @@ pub fn bwlimit_args(behavior: &Behavior) -> Vec<OsString> {
     ]
 }
 
-fn mode_args(behavior: &Behavior, mode: Mode) -> Vec<OsString> {
+fn mode_args(behavior: &Behavior, mode: RoundMode) -> Vec<OsString> {
     let resync = || -> Vec<OsString> {
         vec![
             "--resync".into(),
@@ -219,10 +222,10 @@ fn mode_args(behavior: &Behavior, mode: Mode) -> Vec<OsString> {
         ]
     };
     match mode {
-        Mode::Normal => Vec::new(),
-        Mode::Resync => resync(),
-        Mode::Force => vec!["--force".into()],
-        Mode::DryRun(kind) => {
+        RoundMode::Normal => Vec::new(),
+        RoundMode::Resync => resync(),
+        RoundMode::Force => vec!["--force".into()],
+        RoundMode::DryRun(kind) => {
             let mut args = match kind {
                 ReviewKind::Resync => resync(),
                 ReviewKind::Force => vec!["--force".into()],
@@ -371,7 +374,7 @@ mod tests {
         }
     }
 
-    fn args(behavior: &Behavior, mode: Mode) -> Vec<String> {
+    fn args(behavior: &Behavior, mode: RoundMode) -> Vec<String> {
         bisync_args(&pair(), behavior, &paths(), mode, &now())
             .into_iter()
             .map(|arg| arg.to_string_lossy().into_owned())
@@ -422,7 +425,7 @@ mod tests {
 
     #[test]
     fn normal_mode_uses_only_the_fixed_arguments() {
-        let args = args(&Behavior::default(), Mode::Normal);
+        let args = args(&Behavior::default(), RoundMode::Normal);
 
         assert_eq!(args, expected(RUN_LOG, &[]));
     }
@@ -436,7 +439,7 @@ mod tests {
     }
 
     fn bwlimit(behavior: &Behavior) -> Option<String> {
-        let args = args(behavior, Mode::Normal);
+        let args = args(behavior, RoundMode::Normal);
         let at = args.iter().position(|arg| arg == "--bwlimit")?;
         Some(args[at + 1].clone())
     }
@@ -464,14 +467,14 @@ mod tests {
         let behavior = limits(Bandwidth::Off, Bandwidth::Off);
 
         assert_eq!(bwlimit(&behavior), None);
-        assert_eq!(args(&behavior, Mode::Normal), expected(RUN_LOG, &[]));
+        assert_eq!(args(&behavior, RoundMode::Normal), expected(RUN_LOG, &[]));
     }
 
     #[test]
     fn bwlimit_goes_to_every_mode_of_a_round() {
         let behavior = limits(Bandwidth::KiBPerSec(512), Bandwidth::Off);
 
-        for mode in [Mode::Normal, Mode::Resync, Mode::Force] {
+        for mode in [RoundMode::Normal, RoundMode::Resync, RoundMode::Force] {
             assert!(
                 args(&behavior, mode)
                     .windows(2)
@@ -483,7 +486,7 @@ mod tests {
 
     #[test]
     fn resync_mode_adds_resync_with_the_newer_policy() {
-        let args = args(&Behavior::default(), Mode::Resync);
+        let args = args(&Behavior::default(), RoundMode::Resync);
 
         assert_eq!(
             args,
@@ -493,14 +496,14 @@ mod tests {
 
     #[test]
     fn force_mode_adds_force() {
-        let args = args(&Behavior::default(), Mode::Force);
+        let args = args(&Behavior::default(), RoundMode::Force);
 
         assert_eq!(args, expected(RUN_LOG, &["--force"]));
     }
 
     #[test]
     fn resync_dry_run_adds_dry_run_and_logs_to_the_preview_file() {
-        let args = args(&Behavior::default(), Mode::DryRun(ReviewKind::Resync));
+        let args = args(&Behavior::default(), RoundMode::DryRun(ReviewKind::Resync));
 
         assert_eq!(
             args,
@@ -513,15 +516,20 @@ mod tests {
 
     #[test]
     fn force_dry_run_adds_force_and_dry_run_and_logs_to_the_preview_file() {
-        let args = args(&Behavior::default(), Mode::DryRun(ReviewKind::Force));
+        let args = args(&Behavior::default(), RoundMode::DryRun(ReviewKind::Force));
 
         assert_eq!(args, expected(PREVIEW_LOG, &["--force", "--dry-run"]));
     }
 
     #[test]
     fn log_file_is_the_one_in_the_arguments() {
-        let normal = log_file(&paths(), "drive", Mode::Normal, &now());
-        let preview = log_file(&paths(), "drive", Mode::DryRun(ReviewKind::Force), &now());
+        let normal = log_file(&paths(), "drive", RoundMode::Normal, &now());
+        let preview = log_file(
+            &paths(),
+            "drive",
+            RoundMode::DryRun(ReviewKind::Force),
+            &now(),
+        );
 
         assert_eq!(normal, Path::new(RUN_LOG));
         assert_eq!(preview, Path::new(PREVIEW_LOG));
@@ -537,7 +545,7 @@ mod tests {
             ..Behavior::default()
         };
 
-        let args = args(&behavior, Mode::Resync);
+        let args = args(&behavior, RoundMode::Resync);
 
         let value_of = |flag: &str| {
             let at = args.iter().position(|arg| arg == flag).unwrap();
@@ -570,7 +578,7 @@ mod tests {
                 ..Behavior::default()
             };
 
-            let args = args(&behavior, Mode::Normal);
+            let args = args(&behavior, RoundMode::Normal);
 
             assert_eq!(
                 value_after(&args, "--conflict-resolve").as_deref(),
@@ -591,7 +599,7 @@ mod tests {
                 ..Behavior::default()
             };
 
-            let args = args(&behavior, Mode::Normal);
+            let args = args(&behavior, RoundMode::Normal);
 
             assert_eq!(
                 value_after(&args, "--conflict-loser").as_deref(),
@@ -608,7 +616,7 @@ mod tests {
             ..Behavior::default()
         };
 
-        let args = args(&behavior, Mode::Normal);
+        let args = args(&behavior, RoundMode::Normal);
 
         assert!(!args.iter().any(|arg| arg.starts_with("--backup-dir")));
     }
@@ -620,7 +628,7 @@ mod tests {
             ..Behavior::default()
         };
 
-        assert_eq!(args(&behavior, Mode::Normal), expected(RUN_LOG, &[]));
+        assert_eq!(args(&behavior, RoundMode::Normal), expected(RUN_LOG, &[]));
     }
 
     #[test]
@@ -632,7 +640,7 @@ mod tests {
             ..Behavior::default()
         };
 
-        let args = args(&behavior, Mode::Normal);
+        let args = args(&behavior, RoundMode::Normal);
 
         assert!(!args.contains(&"--backup-dir1".to_owned()));
         assert!(!args.contains(&"--create-empty-src-dirs".to_owned()));

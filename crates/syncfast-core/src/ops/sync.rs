@@ -6,7 +6,7 @@ use serde::Serialize;
 use tokio::time::Instant;
 
 use super::{OpError, Ops, PairView};
-use crate::bisync::{Mode, Outcome};
+use crate::bisync::{Outcome, RoundMode};
 use crate::paths::Paths;
 use crate::run::RunReport;
 use crate::run_decision::SkipReason;
@@ -73,10 +73,10 @@ impl From<RunReport> for RoundOutcome {
             RunReport::Ran { mode, outcome } => {
                 out.result = "ran";
                 out.mode = Some(match mode {
-                    Mode::Normal => "normal",
-                    Mode::Resync => "resync",
-                    Mode::Force => "force",
-                    Mode::DryRun(_) => "dry_run",
+                    RoundMode::Normal => "normal",
+                    RoundMode::Resync => "resync",
+                    RoundMode::Force => "force",
+                    RoundMode::DryRun(_) => "dry_run",
                 });
                 out.outcome = Some(match outcome {
                     Outcome::Ok => "ok",

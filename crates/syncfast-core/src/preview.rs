@@ -6,13 +6,15 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::behavior::Behavior;
-use crate::bisync::{Mode, ReviewKind, bisync_args, log_file};
+use crate::bisync::{ReviewKind, RoundMode, bisync_args, log_file};
 use crate::bisync_log::{Change, ChangeKind, RunSummary, summarize};
 use crate::config::Pair;
 use crate::filters::{self, FiltersFile};
 use crate::notify::last_error_message;
+use crate::oneway::{self, oneway_args, summarize_oneway};
 use crate::run::{
     PairLookup, RunEnv, RunError, execute, fresh_start, lookup_pair, read_log_or_empty,
+    take_changes,
 };
 use crate::state::try_lock_pair;
 
@@ -119,16 +121,18 @@ impl PreviewError {
     }
 }
 
-/// The log of a dry run. It goes away with the guard, also when the caller
-/// gives up on the preview and the future is dropped.
-struct PreviewLog(PathBuf);
+/// The files of a dry run. They go away with the guard, also when the
+/// caller gives up on the preview and the future is dropped.
+struct PreviewLog(Vec<PathBuf>);
 
 impl Drop for PreviewLog {
     fn drop(&mut self) {
-        if let Err(err) = std::fs::remove_file(&self.0)
-            && err.kind() != std::io::ErrorKind::NotFound
-        {
-            log::warn!("cannot delete {}: {err}", self.0.display());
+        for path in &self.0 {
+            if let Err(err) = std::fs::remove_file(path)
+                && err.kind() != std::io::ErrorKind::NotFound
+            {
+                log::warn!("cannot delete {}: {err}", path.display());
+            }
         }
     }
 }
@@ -173,13 +177,24 @@ pub(crate) async fn preview_locked(
             context: "creating the sync's state folder",
             source,
         })?;
-    let mode = Mode::DryRun(kind);
+    let mode = RoundMode::DryRun(kind);
     let now = fresh_start(env.paths, pair_id, mode, env.now());
     let log_path = log_file(env.paths, pair_id, mode, &now);
-    let args = bisync_args(pair, behavior, env.paths, mode, &now);
-    let log = PreviewLog(log_path);
+    let one_way = behavior.mode.is_one_way();
+    let changes_path = oneway::changes_file(env.paths, pair_id, mode, &now);
+    let args = if one_way {
+        oneway_args(pair, behavior, env.paths, mode, 0, &now)
+    } else {
+        bisync_args(pair, behavior, env.paths, mode, &now)
+    };
+    let log = PreviewLog(vec![log_path.clone(), changes_path.clone()]);
     let exit_code = execute(env.rclone, args, env.forward_signals).await?;
-    let lines = read_log_or_empty(&log.0).await;
+    let lines = read_log_or_empty(&log_path).await;
+    let changes = if one_way {
+        take_changes(&changes_path).await
+    } else {
+        String::new()
+    };
     drop(log);
     if exit_code != 0 {
         let message = last_error_message(&lines).map_or_else(
@@ -188,10 +203,15 @@ pub(crate) async fn preview_locked(
         );
         return Err(PreviewError::Failed { exit_code, message });
     }
+    let summary = if one_way {
+        summarize_oneway(&changes, behavior.mode, exit_code)
+    } else {
+        summarize(&lines)
+    };
     Ok(Preview {
         filters_hash: filters_file.hash.clone(),
         excluded_repos: filters_file.git_repos.clone(),
-        summary: summarize(&lines),
+        summary,
     })
 }
 
@@ -231,7 +251,7 @@ mod tests {
         let path = dir.path().join("preview-1.jsonl");
         std::fs::write(&path, "x").unwrap();
 
-        drop(PreviewLog(path.clone()));
+        drop(PreviewLog(vec![path.clone()]));
 
         assert!(!path.exists());
     }
@@ -240,7 +260,7 @@ mod tests {
     fn a_log_that_is_already_gone_is_not_an_error() {
         let dir = tempfile::tempdir().unwrap();
 
-        drop(PreviewLog(dir.path().join("absent.jsonl")));
+        drop(PreviewLog(vec![dir.path().join("absent.jsonl")]));
     }
 
     #[tokio::test]
@@ -248,7 +268,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("preview-2.jsonl");
         std::fs::write(&path, "x").unwrap();
-        let log = PreviewLog(path.clone());
+        let log = PreviewLog(vec![path.clone()]);
         let job = tokio::spawn(async move {
             let _log = log;
             std::future::pending::<()>().await;

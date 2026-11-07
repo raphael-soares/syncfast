@@ -1,0 +1,5 @@
+* changed.txt
+- extra.txt
++ new.txt
++ dir/nested.txt
+= same.txt

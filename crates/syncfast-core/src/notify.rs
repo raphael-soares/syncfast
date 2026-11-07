@@ -126,6 +126,10 @@ pub fn notice(pair: &Pair, behavior: &Behavior, alert: &Alert) -> Notice {
                 format!("{name}: review needed"),
                 "Review the first sync before it starts.".to_owned(),
             ),
+            GateKind::NeedsReviewModeChanged => (
+                format!("{name}: review needed"),
+                "Sync mode changed. Review what will change.".to_owned(),
+            ),
             GateKind::NeedsReviewFiltersChanged => (
                 format!("{name}: review needed"),
                 "Filters changed. Review what will sync.".to_owned(),
@@ -232,6 +236,7 @@ pub fn attention_body(fault: Option<Fault>, detail: &str) -> &'static str {
         Some(Fault::Permission) => "No permission to a file or folder on Google Drive.",
         Some(Fault::RemoteMissing) => "The folder on Google Drive is missing.",
         Some(Fault::LocalEmpty) => "The folder is empty. If it is on a drive, mount it.",
+        Some(Fault::RemoteEmpty) => "The folder on Google Drive is empty. Nothing was changed.",
         Some(Fault::Auth) | None => "Syncing keeps failing. Open syncfast for details.",
     }
 }

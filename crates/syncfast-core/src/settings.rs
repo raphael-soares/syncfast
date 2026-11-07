@@ -10,8 +10,8 @@ use serde::Serialize;
 use toml_edit::{Item, TableLike};
 
 use crate::behavior::{
-    Bandwidth, Behavior, ConflictLoser, ConflictResolve, ResyncMode, ReviewLevel, format_duration,
-    parse_duration,
+    Bandwidth, Behavior, ConflictLoser, ConflictResolve, ResyncMode, ReviewLevel, SyncMode,
+    format_duration, parse_duration,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,6 +99,9 @@ pub struct KeyDef {
     pub name: &'static str,
     /// The key is only valid in a `[[pair]]`, never in `[defaults]`.
     pub per_sync_only: bool,
+    /// Whether the key does anything in a sync of this mode. A key that does
+    /// not apply is still accepted and kept, so changing mode loses nothing.
+    pub applies_to: fn(SyncMode) -> bool,
     pub access: Access,
     /// Whether going from the first behavior to the second makes the sync
     /// less safe: only the user may do it.
@@ -119,11 +122,40 @@ macro_rules! choice {
     };
 }
 
+fn always(_: SyncMode) -> bool {
+    true
+}
+
+fn watches(mode: SyncMode) -> bool {
+    mode.local_is_source()
+}
+
+fn bisync_only(mode: SyncMode) -> bool {
+    mode == SyncMode::Bisync
+}
+
+fn keeps_versions(mode: SyncMode) -> bool {
+    mode != SyncMode::Upload
+}
+
+fn deletes(mode: SyncMode) -> bool {
+    mode != SyncMode::Upload && mode != SyncMode::Download
+}
+
+fn uploads(mode: SyncMode) -> bool {
+    mode.uploads()
+}
+
+fn downloads(mode: SyncMode) -> bool {
+    mode.downloads()
+}
+
 /// In the order the docs and `settings` list them.
-pub static KEYS: [KeyDef; 14] = [
+pub static KEYS: [KeyDef; 15] = [
     KeyDef {
         name: "watch",
         per_sync_only: false,
+        applies_to: watches,
         access: Access::Bool {
             get: |behavior| behavior.watch,
             set: |behavior, value| behavior.watch = value,
@@ -133,6 +165,7 @@ pub static KEYS: [KeyDef; 14] = [
     KeyDef {
         name: "debounce",
         per_sync_only: false,
+        applies_to: watches,
         access: Access::Duration {
             min: Some(Duration::from_secs(5)),
             get: |behavior| behavior.debounce,
@@ -143,6 +176,7 @@ pub static KEYS: [KeyDef; 14] = [
     KeyDef {
         name: "max_wait",
         per_sync_only: false,
+        applies_to: watches,
         access: Access::Duration {
             min: None,
             get: |behavior| behavior.max_wait,
@@ -153,6 +187,7 @@ pub static KEYS: [KeyDef; 14] = [
     KeyDef {
         name: "interval",
         per_sync_only: false,
+        applies_to: always,
         access: Access::Duration {
             min: Some(Duration::from_mins(1)),
             get: |behavior| behavior.interval,
@@ -163,6 +198,7 @@ pub static KEYS: [KeyDef; 14] = [
     KeyDef {
         name: "limit_upload",
         per_sync_only: false,
+        applies_to: uploads,
         access: Access::Bandwidth {
             get: |behavior| behavior.limit_upload,
             set: |behavior, value| behavior.limit_upload = value,
@@ -172,6 +208,7 @@ pub static KEYS: [KeyDef; 14] = [
     KeyDef {
         name: "limit_download",
         per_sync_only: false,
+        applies_to: downloads,
         access: Access::Bandwidth {
             get: |behavior| behavior.limit_download,
             set: |behavior, value| behavior.limit_download = value,
@@ -181,12 +218,14 @@ pub static KEYS: [KeyDef; 14] = [
     KeyDef {
         name: "conflict_resolve",
         per_sync_only: false,
+        applies_to: bisync_only,
         access: choice!(conflict_resolve, ConflictResolve),
         lowers_safety: None,
     },
     KeyDef {
         name: "conflict_loser",
         per_sync_only: false,
+        applies_to: bisync_only,
         access: choice!(conflict_loser, ConflictLoser),
         lowers_safety: Some(|before, after| {
             before.conflict_loser != ConflictLoser::Delete
@@ -196,6 +235,7 @@ pub static KEYS: [KeyDef; 14] = [
     KeyDef {
         name: "versions",
         per_sync_only: false,
+        applies_to: keeps_versions,
         access: Access::Bool {
             get: |behavior| behavior.versions,
             set: |behavior, value| behavior.versions = value,
@@ -205,6 +245,7 @@ pub static KEYS: [KeyDef; 14] = [
     KeyDef {
         name: "versions_keep_days",
         per_sync_only: false,
+        applies_to: keeps_versions,
         access: Access::Int {
             min: 1,
             max: 3650,
@@ -218,6 +259,7 @@ pub static KEYS: [KeyDef; 14] = [
     KeyDef {
         name: "max_delete",
         per_sync_only: false,
+        applies_to: deletes,
         access: Access::Int {
             min: 1,
             max: 100,
@@ -229,12 +271,14 @@ pub static KEYS: [KeyDef; 14] = [
     KeyDef {
         name: "resync_mode",
         per_sync_only: false,
+        applies_to: bisync_only,
         access: choice!(resync_mode, ResyncMode),
         lowers_safety: None,
     },
     KeyDef {
         name: "empty_dirs",
         per_sync_only: false,
+        applies_to: always,
         access: Access::Bool {
             get: |behavior| behavior.empty_dirs,
             set: |behavior, value| behavior.empty_dirs = value,
@@ -244,8 +288,16 @@ pub static KEYS: [KeyDef; 14] = [
     KeyDef {
         name: "review",
         per_sync_only: false,
+        applies_to: always,
         access: choice!(review, ReviewLevel),
         lowers_safety: Some(|before, after| after.review.is_less_safe_than(before.review)),
+    },
+    KeyDef {
+        name: "mode",
+        per_sync_only: true,
+        applies_to: always,
+        access: choice!(mode, SyncMode),
+        lowers_safety: Some(|before, after| after.mode.is_mirror() && after.mode != before.mode),
     },
 ];
 
@@ -254,6 +306,7 @@ macro_rules! notification_flag {
         KeyDef {
             name: $name,
             per_sync_only: false,
+            applies_to: always,
             access: Access::Bool {
                 get: |behavior| behavior.notifications.$field,
                 set: |behavior, value| behavior.notifications.$field = value,
@@ -272,6 +325,7 @@ pub static APP_KEYS: [KeyDef; 6] = [
     KeyDef {
         name: "notifications.failures_after",
         per_sync_only: false,
+        applies_to: always,
         access: Access::Int {
             min: 0,
             max: 100,
@@ -286,6 +340,7 @@ pub static APP_KEYS: [KeyDef; 6] = [
     KeyDef {
         name: "app.autostart",
         per_sync_only: false,
+        applies_to: always,
         access: Access::Bool {
             get: |behavior| behavior.app.autostart,
             set: |behavior, value| behavior.app.autostart = value,
@@ -295,6 +350,7 @@ pub static APP_KEYS: [KeyDef; 6] = [
     KeyDef {
         name: "app.theme",
         per_sync_only: false,
+        applies_to: always,
         access: Access::Text {
             get: |behavior| behavior.app.theme.clone(),
             set: |behavior, value| value.clone_into(&mut behavior.app.theme),
@@ -693,6 +749,7 @@ mod tests {
                 "resync_mode=newer",
                 "empty_dirs=true",
                 "review=deletions",
+                "mode=bisync",
             ]
         );
     }
@@ -715,6 +772,7 @@ mod tests {
             ("resync_mode", "remote"),
             ("empty_dirs", "false"),
             ("review", "automatic"),
+            ("mode", "mirror_up"),
         ] {
             let def = def(name);
             def.apply(&mut behavior, &def.parse_text(value).unwrap());
@@ -735,6 +793,7 @@ mod tests {
                 versions_keep_days: 7,
                 max_delete: 10,
                 resync_mode: ResyncMode::Remote,
+                mode: SyncMode::MirrorUp,
                 empty_dirs: false,
                 review: ReviewLevel::Automatic,
                 ..Behavior::default()
@@ -1011,6 +1070,7 @@ mod tests {
         let per_sync = KeyDef {
             name: "mode",
             per_sync_only: true,
+            applies_to: always,
             access: Access::Bool {
                 get: |behavior| behavior.watch,
                 set: |behavior, value| behavior.watch = value,
@@ -1117,7 +1177,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_four_safety_keys_can_lower_safety() {
+    fn only_the_safety_keys_can_lower_safety() {
         let names: Vec<_> = KEYS
             .iter()
             .filter(|def| def.lowers_safety.is_some())
@@ -1126,7 +1186,7 @@ mod tests {
 
         assert_eq!(
             names,
-            ["conflict_loser", "versions", "max_delete", "review"]
+            ["conflict_loser", "versions", "max_delete", "review", "mode"]
         );
     }
 
@@ -1168,6 +1228,98 @@ mod tests {
         for def in &KEYS {
             assert!(!def.lowers(&deleting, &deleting), "{}", def.name);
         }
+    }
+
+    #[test]
+    fn mode_lowers_safety_only_when_it_becomes_a_different_mirror() {
+        let mode = def("mode");
+        let at = |mode| Behavior {
+            mode,
+            ..Behavior::default()
+        };
+        let modes = [
+            SyncMode::Bisync,
+            SyncMode::Upload,
+            SyncMode::Download,
+            SyncMode::MirrorUp,
+            SyncMode::MirrorDown,
+        ];
+
+        for before in modes {
+            for after in modes {
+                assert_eq!(
+                    mode.lowers(&at(before), &at(after)),
+                    after.is_mirror() && after != before,
+                    "{before:?} to {after:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn keys_apply_to_the_modes_of_the_spec_table() {
+        let modes = [
+            SyncMode::Bisync,
+            SyncMode::Upload,
+            SyncMode::Download,
+            SyncMode::MirrorUp,
+            SyncMode::MirrorDown,
+        ];
+        let applying = |name: &str| -> Vec<SyncMode> {
+            modes
+                .into_iter()
+                .filter(|mode| (def(name).applies_to)(*mode))
+                .collect()
+        };
+
+        for name in ["watch", "debounce", "max_wait"] {
+            assert_eq!(
+                applying(name),
+                [SyncMode::Bisync, SyncMode::Upload, SyncMode::MirrorUp],
+                "{name}"
+            );
+        }
+        for name in ["interval", "empty_dirs", "review", "mode"] {
+            assert_eq!(applying(name), modes, "{name}");
+        }
+        for name in ["conflict_resolve", "conflict_loser", "resync_mode"] {
+            assert_eq!(applying(name), [SyncMode::Bisync], "{name}");
+        }
+        for name in ["versions", "versions_keep_days"] {
+            assert_eq!(
+                applying(name),
+                [
+                    SyncMode::Bisync,
+                    SyncMode::Download,
+                    SyncMode::MirrorUp,
+                    SyncMode::MirrorDown
+                ],
+                "{name}"
+            );
+        }
+        assert_eq!(
+            applying("max_delete"),
+            [SyncMode::Bisync, SyncMode::MirrorUp, SyncMode::MirrorDown]
+        );
+        assert_eq!(
+            applying("limit_upload"),
+            [SyncMode::Bisync, SyncMode::Upload, SyncMode::MirrorUp]
+        );
+        assert_eq!(
+            applying("limit_download"),
+            [SyncMode::Bisync, SyncMode::Download, SyncMode::MirrorDown]
+        );
+    }
+
+    #[test]
+    fn a_mode_is_one_of_the_five_names_and_unknown_ones_are_refused() {
+        for name in ["bisync", "upload", "download", "mirror_up", "mirror_down"] {
+            assert_eq!(text("mode", name).unwrap(), name);
+        }
+        assert_eq!(
+            text("mode", "two_way").unwrap_err(),
+            "unknown value \"two_way\" for mode: use bisync, upload, download, mirror_up or mirror_down"
+        );
     }
 
     #[test]

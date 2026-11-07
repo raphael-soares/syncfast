@@ -2,8 +2,8 @@
 //! the spec (step 7). Review is mandatory: only a matching confirmation
 //! marker lets a resync or a `--force` run.
 
-use crate::behavior::ReviewLevel;
-use crate::bisync::{Mode, ReviewKind};
+use crate::behavior::{ReviewLevel, SyncMode};
+use crate::bisync::{ReviewKind, RoundMode};
 use crate::preview::ChangeCounts;
 use crate::state::{ConfirmMarker, GateKind};
 
@@ -19,7 +19,7 @@ pub enum Decision {
     Skip(SkipReason),
     SetGate(GateKind),
     /// Only ever `Normal`, `Resync` or `Force`.
-    Run(Mode),
+    Run(RoundMode),
 }
 
 impl Decision {
@@ -31,7 +31,7 @@ impl Decision {
             self,
             Self::Skip(SkipReason::Paused | SkipReason::Offline)
                 | Self::SetGate(GateKind::LocalMissing)
-                | Self::Run(Mode::Resync | Mode::Force)
+                | Self::Run(RoundMode::Resync | RoundMode::Force)
         )
     }
 }
@@ -44,6 +44,10 @@ pub struct DecideInput<'a> {
     pub gate: Option<GateKind>,
     pub applied_filters_hash: Option<&'a str>,
     pub current_filters_hash: &'a str,
+    pub mode: SyncMode,
+    /// [`crate::state::State::synced_mode`]: `None` for a sync that never
+    /// rounded.
+    pub applied_mode: Option<SyncMode>,
     pub marker: Option<&'a ConfirmMarker>,
 }
 
@@ -66,6 +70,8 @@ pub fn decide(input: &DecideInput<'_>) -> Decision {
             Decision::Skip(SkipReason::Gated)
         };
     }
+    let mode_changed =
+        input.applied_filters_hash.is_some() && input.applied_mode != Some(input.mode);
     let resync_confirmed = input.marker.is_some_and(|marker| {
         marker.kind == ReviewKind::Resync && marker.filters_hash == input.current_filters_hash
     });
@@ -77,6 +83,11 @@ pub fn decide(input: &DecideInput<'_>) -> Decision {
         {
             Some(GateKind::NeedsReviewFirstRun)
         }
+        // The review of a mode change was confirmed and the round found
+        // nothing to sync: the confirmation still stands.
+        Some(GateKind::NeedsAttention) if mode_changed && resync_confirmed => {
+            Some(GateKind::NeedsReviewModeChanged)
+        }
         // The pair is valid again (or its failure may be gone). One that
         // never synced still owes its first review.
         Some(GateKind::ConfigError | GateKind::NeedsAttention)
@@ -86,6 +97,8 @@ pub fn decide(input: &DecideInput<'_>) -> Decision {
         }
         // Attention never stops rounds: the next one may succeed.
         Some(GateKind::LocalMissing | GateKind::ConfigError | GateKind::NeedsAttention) => None,
+        // The mode went back to the one that last synced: nothing to review.
+        Some(GateKind::NeedsReviewModeChanged) if !mode_changed => None,
         other => other,
     };
     if !input.online {
@@ -97,10 +110,10 @@ pub fn decide(input: &DecideInput<'_>) -> Decision {
     {
         match (marker.kind, gate) {
             (ReviewKind::Resync, Some(kind)) if kind.is_needs_review() => {
-                return Decision::Run(Mode::Resync);
+                return Decision::Run(RoundMode::Resync);
             }
             (ReviewKind::Force, Some(kind)) if kind.is_force_review() => {
-                return Decision::Run(Mode::Force);
+                return Decision::Run(RoundMode::Force);
             }
             _ => {}
         }
@@ -108,13 +121,16 @@ pub fn decide(input: &DecideInput<'_>) -> Decision {
     if gate.is_some() {
         return Decision::Skip(SkipReason::Gated);
     }
+    if mode_changed {
+        return Decision::SetGate(GateKind::NeedsReviewModeChanged);
+    }
     if input
         .applied_filters_hash
         .is_some_and(|applied| applied != input.current_filters_hash)
     {
         return Decision::SetGate(GateKind::NeedsReviewFiltersChanged);
     }
-    Decision::Run(Mode::Normal)
+    Decision::Run(RoundMode::Normal)
 }
 
 /// What the review level makes of a gate that waits for a review.
@@ -133,6 +149,7 @@ pub fn may_confirm(level: ReviewLevel, gate: GateKind) -> bool {
         gate,
         GateKind::NeedsReviewFirstRun
             | GateKind::NeedsReviewFiltersChanged
+            | GateKind::NeedsReviewModeChanged
             | GateKind::TooManyDeletes
             | GateKind::AllFilesChanged
     );
@@ -169,6 +186,8 @@ mod tests {
             gate: None,
             applied_filters_hash: Some(HASH),
             current_filters_hash: HASH,
+            mode: SyncMode::Bisync,
+            applied_mode: Some(SyncMode::Bisync),
             marker: None,
         }
     }
@@ -211,7 +230,7 @@ mod tests {
             ..input()
         });
 
-        assert_eq!(decision, Decision::Run(Mode::Normal));
+        assert_eq!(decision, Decision::Run(RoundMode::Normal));
     }
 
     #[test]
@@ -221,7 +240,7 @@ mod tests {
             ..input()
         });
 
-        assert_eq!(decision, Decision::Run(Mode::Normal));
+        assert_eq!(decision, Decision::Run(RoundMode::Normal));
     }
 
     #[test]
@@ -246,7 +265,7 @@ mod tests {
             ..input()
         });
 
-        assert_eq!(decision, Decision::Run(Mode::Resync));
+        assert_eq!(decision, Decision::Run(RoundMode::Resync));
         assert!(!decision.discards_marker());
     }
 
@@ -322,7 +341,7 @@ mod tests {
                 ..input()
             });
 
-            assert_eq!(decision, Decision::Run(Mode::Resync), "{gate:?}");
+            assert_eq!(decision, Decision::Run(RoundMode::Resync), "{gate:?}");
         }
     }
 
@@ -336,7 +355,7 @@ mod tests {
                 ..input()
             });
 
-            assert_eq!(decision, Decision::Run(Mode::Force), "{gate:?}");
+            assert_eq!(decision, Decision::Run(RoundMode::Force), "{gate:?}");
         }
     }
 
@@ -388,7 +407,7 @@ mod tests {
             ..input()
         });
 
-        assert_eq!(decision, Decision::Run(Mode::Normal));
+        assert_eq!(decision, Decision::Run(RoundMode::Normal));
         assert!(decision.discards_marker());
     }
 
@@ -448,7 +467,7 @@ mod tests {
             ..input()
         });
 
-        assert_eq!(decision, Decision::Run(Mode::Normal));
+        assert_eq!(decision, Decision::Run(RoundMode::Normal));
     }
 
     #[test]
@@ -482,12 +501,123 @@ mod tests {
             ..input()
         });
 
-        assert_eq!(decision, Decision::Run(Mode::Normal));
+        assert_eq!(decision, Decision::Run(RoundMode::Normal));
+    }
+
+    #[test]
+    fn a_changed_mode_of_a_synced_pair_sets_needs_review_mode_changed() {
+        let decision = decide(&DecideInput {
+            mode: SyncMode::MirrorUp,
+            ..input()
+        });
+
+        assert_eq!(
+            decision,
+            Decision::SetGate(GateKind::NeedsReviewModeChanged)
+        );
+        assert!(decision.discards_marker());
+    }
+
+    #[test]
+    fn a_mode_never_applied_does_not_set_the_mode_gate() {
+        let decision = decide(&DecideInput {
+            mode: SyncMode::MirrorUp,
+            applied_filters_hash: None,
+            applied_mode: None,
+            ..input()
+        });
+
+        assert_eq!(decision, Decision::Run(RoundMode::Normal));
+    }
+
+    #[test]
+    fn the_mode_gate_comes_before_the_filters_gate() {
+        let decision = decide(&DecideInput {
+            mode: SyncMode::Download,
+            applied_filters_hash: Some("hash-before"),
+            ..input()
+        });
+
+        assert_eq!(
+            decision,
+            Decision::SetGate(GateKind::NeedsReviewModeChanged)
+        );
+    }
+
+    #[test]
+    fn the_mode_gate_waits_while_the_mode_is_still_changed() {
+        let decision = decide(&DecideInput {
+            gate: Some(GateKind::NeedsReviewModeChanged),
+            mode: SyncMode::MirrorUp,
+            ..input()
+        });
+
+        assert_eq!(decision, Decision::Skip(SkipReason::Gated));
+    }
+
+    #[test]
+    fn the_mode_gate_ends_when_the_mode_is_back() {
+        let decision = decide(&DecideInput {
+            gate: Some(GateKind::NeedsReviewModeChanged),
+            mode: SyncMode::Bisync,
+            applied_mode: Some(SyncMode::Bisync),
+            ..input()
+        });
+
+        assert_eq!(decision, Decision::Run(RoundMode::Normal));
+    }
+
+    #[test]
+    fn a_confirmed_mode_review_runs_as_resync() {
+        let confirmed = marker(ReviewKind::Resync, HASH);
+
+        let decision = decide(&DecideInput {
+            gate: Some(GateKind::NeedsReviewModeChanged),
+            mode: SyncMode::MirrorDown,
+            marker: Some(&confirmed),
+            ..input()
+        });
+
+        assert_eq!(decision, Decision::Run(RoundMode::Resync));
+        assert!(!decision.discards_marker());
+    }
+
+    #[test]
+    fn a_mode_review_confirmed_for_other_filters_is_not_used() {
+        let stale = marker(ReviewKind::Resync, "old-hash");
+
+        let decision = decide(&DecideInput {
+            gate: Some(GateKind::NeedsReviewModeChanged),
+            mode: SyncMode::MirrorDown,
+            marker: Some(&stale),
+            ..input()
+        });
+
+        assert_eq!(decision, Decision::Skip(SkipReason::Gated));
+    }
+
+    #[test]
+    fn an_attention_gate_after_a_confirmed_mode_review_resumes_it() {
+        let confirmed = marker(ReviewKind::Resync, HASH);
+        let attention = DecideInput {
+            gate: Some(GateKind::NeedsAttention),
+            mode: SyncMode::MirrorUp,
+            ..input()
+        };
+
+        let resumed = decide(&DecideInput {
+            marker: Some(&confirmed),
+            ..attention
+        });
+        let without = decide(&attention);
+
+        assert_eq!(resumed, Decision::Run(RoundMode::Resync));
+        assert_eq!(without, Decision::SetGate(GateKind::NeedsReviewModeChanged));
     }
 
     #[test]
     fn healthy_pair_runs_normally() {
-        assert_eq!(decide(&input()), Decision::Run(Mode::Normal));
+        assert_eq!(decide(&input()), Decision::Run(RoundMode::Normal));
     }
 
     #[test]
@@ -519,7 +649,11 @@ mod tests {
             };
 
             assert_eq!(decide(&waiting), held, "{gate:?}");
-            assert_eq!(decide(&released), Decision::Run(Mode::Resync), "{gate:?}");
+            assert_eq!(
+                decide(&released),
+                Decision::Run(RoundMode::Resync),
+                "{gate:?}"
+            );
         }
     }
 
@@ -537,7 +671,8 @@ mod tests {
     fn auto_review_follows_the_table_of_levels_gates_and_deletions() {
         use AutoReview::{Confirm, Hold};
         use GateKind::{
-            AllFilesChanged, NeedsReviewFiltersChanged, NeedsReviewFirstRun, TooManyDeletes,
+            AllFilesChanged, NeedsReviewFiltersChanged, NeedsReviewFirstRun,
+            NeedsReviewModeChanged, TooManyDeletes,
         };
         use ReviewLevel::{Automatic, Deletions, Manual};
 
@@ -545,6 +680,11 @@ mod tests {
         let local = counts(1, 0);
         let remote = counts(0, 3);
         let table = [
+            (Manual, NeedsReviewModeChanged, nothing, Hold),
+            (Deletions, NeedsReviewModeChanged, nothing, Confirm),
+            (Deletions, NeedsReviewModeChanged, local, Hold),
+            (Deletions, NeedsReviewModeChanged, remote, Hold),
+            (Automatic, NeedsReviewModeChanged, remote, Confirm),
             (Manual, NeedsReviewFirstRun, nothing, Hold),
             (Manual, NeedsReviewFiltersChanged, nothing, Hold),
             (Manual, AllFilesChanged, nothing, Hold),
@@ -572,6 +712,27 @@ mod tests {
                 "{level:?} {gate:?} {counts:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_mode_change_waits_for_review_at_manual_and_confirms_at_deletions_when_nothing_is_deleted()
+    {
+        let gate = GateKind::NeedsReviewModeChanged;
+        let deletes = counts(0, 1);
+
+        assert_eq!(
+            auto_review(ReviewLevel::Manual, gate, &counts(0, 0)),
+            AutoReview::Hold
+        );
+        assert_eq!(
+            auto_review(ReviewLevel::Deletions, gate, &counts(0, 0)),
+            AutoReview::Confirm
+        );
+        assert_eq!(
+            auto_review(ReviewLevel::Deletions, gate, &deletes),
+            AutoReview::Hold
+        );
+        assert!(may_confirm(ReviewLevel::Automatic, gate));
     }
 
     #[test]
@@ -646,8 +807,8 @@ mod tests {
             Decision::Skip(SkipReason::Paused),
             Decision::Skip(SkipReason::Offline),
             Decision::SetGate(GateKind::LocalMissing),
-            Decision::Run(Mode::Resync),
-            Decision::Run(Mode::Force),
+            Decision::Run(RoundMode::Resync),
+            Decision::Run(RoundMode::Force),
         ] {
             assert!(!decision.discards_marker(), "{decision:?}");
         }

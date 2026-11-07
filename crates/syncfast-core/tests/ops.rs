@@ -1175,7 +1175,7 @@ async fn settings_lists_every_key_with_origin_and_default() {
     let of_defaults = bed.ops.settings(None).await.unwrap();
 
     assert_eq!(of_sync.scope, "docs");
-    assert_eq!(of_sync.settings.len(), 14);
+    assert_eq!(of_sync.settings.len(), 15);
     let described = |view: &SettingsView, key: &str| {
         let row = row(view, key);
         (row.value.clone(), row.origin, row.default.clone())
@@ -1403,6 +1403,120 @@ async fn an_agent_cannot_set_review_to_automatic() {
     refused_as_needing_the_user(&bed, None, "review", "automatic").await;
     user_sets(&bed, &SettingScope::Defaults, "review", "manual").await;
     refused_as_needing_the_user(&bed, Some("docs"), "review", "deletions").await;
+}
+
+#[tokio::test]
+async fn an_agent_cannot_switch_a_sync_to_a_mirror_mode() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs().await;
+
+    refused_as_needing_the_user(&bed, Some("docs"), "mode", "mirror_up").await;
+    refused_as_needing_the_user(&bed, Some("docs"), "mode", "mirror_down").await;
+}
+
+#[tokio::test]
+async fn an_agent_cannot_flip_a_mirror_direction() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs().await;
+    user_sets(
+        &bed,
+        &SettingScope::Sync("docs".into()),
+        "mode",
+        "mirror_up",
+    )
+    .await;
+
+    refused_as_needing_the_user(&bed, Some("docs"), "mode", "mirror_down").await;
+}
+
+#[tokio::test]
+async fn an_agent_can_switch_to_upload() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs().await;
+
+    let changed = bed
+        .ops
+        .set_setting(Some("docs"), "mode", "upload")
+        .await
+        .unwrap();
+
+    assert_eq!(changed.setting.value, json!("upload"));
+    assert_eq!(changed.setting.origin, "sync");
+}
+
+#[tokio::test]
+async fn an_agent_can_leave_a_mirror_mode_and_reset_mode_goes_back_to_bisync() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs().await;
+    user_sets(
+        &bed,
+        &SettingScope::Sync("docs".into()),
+        "mode",
+        "mirror_up",
+    )
+    .await;
+
+    let download = bed
+        .ops
+        .set_setting(Some("docs"), "mode", "download")
+        .await
+        .unwrap();
+    user_sets(
+        &bed,
+        &SettingScope::Sync("docs".into()),
+        "mode",
+        "mirror_down",
+    )
+    .await;
+    let reset = bed.ops.reset_setting(Some("docs"), "mode").await.unwrap();
+
+    assert_eq!(download.setting.value, json!("download"));
+    assert_eq!(reset.setting.value, json!("bisync"));
+    assert_eq!(reset.setting.origin, "builtin");
+}
+
+#[tokio::test]
+async fn mode_is_set_per_sync_and_refused_for_defaults_with_exit_2() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs().await;
+
+    let err = bed
+        .ops
+        .set_setting(None, "mode", "upload")
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.to_string(), "mode is set per sync, not in [defaults]");
+    assert_eq!(err.exit_code(), 2);
+    let listed = bed.ops.settings(None).await.unwrap();
+    assert!(listed.settings.iter().all(|row| row.key != "mode"));
+    assert_eq!(listed.settings.len(), 14);
+}
+
+#[tokio::test]
+async fn settings_marks_the_keys_that_do_not_apply_to_the_mode_of_the_sync() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs().await;
+    let not_applying = |view: &SettingsView| -> Vec<&'static str> {
+        view.settings
+            .iter()
+            .filter(|row| !row.applies)
+            .map(|row| row.key)
+            .collect()
+    };
+
+    let two_way = bed.ops.settings(Some("docs")).await.unwrap();
+    user_sets(&bed, &SettingScope::Sync("docs".into()), "mode", "download").await;
+    let download = bed.ops.settings(Some("docs")).await.unwrap();
+    user_sets(&bed, &SettingScope::Sync("docs".into()), "mode", "upload").await;
+    let upload = bed.ops.settings(Some("docs")).await.unwrap();
+
+    assert!(not_applying(&two_way).is_empty());
+    assert!(not_applying(&download).contains(&"limit_upload"));
+    assert!(not_applying(&download).contains(&"debounce"));
+    assert!(!not_applying(&download).contains(&"limit_download"));
+    assert!(not_applying(&upload).contains(&"conflict_resolve"));
+    assert!(!not_applying(&upload).contains(&"limit_upload"));
 }
 
 #[tokio::test]

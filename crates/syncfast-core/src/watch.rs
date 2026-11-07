@@ -742,7 +742,7 @@ async fn load_pairs(env: &WatchEnv) -> Result<Vec<Watched>, WatchError> {
     let mut watched = Vec::new();
     for pair in validation.pairs.iter().filter(|pair| pair.enabled) {
         let behavior = (env.behavior_for)(&defaults, pair);
-        if !behavior.watch {
+        if !behavior.watch || !behavior.mode.local_is_source() {
             continue;
         }
         watched.push(Watched {

@@ -7,7 +7,7 @@ use jiff::Timestamp;
 use serde::Serialize;
 
 use super::{OpError, Ops};
-use crate::behavior::Behavior;
+use crate::behavior::{Behavior, SyncMode};
 use crate::bisync::ReviewKind;
 use crate::config::Pair;
 use crate::filters;
@@ -41,6 +41,7 @@ pub struct PairView {
     pub last_outcome: Option<LastOutcome>,
     pub consecutive_failures: u32,
     pub conflicts_pending: u32,
+    pub mode: SyncMode,
     pub offline: bool,
     /// Something to fix that does not block rounds: the watcher ran out of
     /// inotify watches, so changes wait for the timer.
@@ -107,6 +108,9 @@ fn explanation(gate: &Gate, behavior: &Behavior) -> String {
         GateKind::NeedsReviewFiltersChanged => {
             "Filters changed: review what will sync.".to_owned()
         }
+        GateKind::NeedsReviewModeChanged => {
+            "Sync mode changed: review what will change before syncing resumes.".to_owned()
+        }
         GateKind::NeedsReviewCriticalError => {
             "Sync stopped after an error: review to resume.".to_owned()
         }
@@ -171,6 +175,7 @@ impl PairView {
             last_outcome: state.last_outcome,
             consecutive_failures: state.consecutive_failures,
             conflicts_pending: state.conflicts_pending,
+            mode: behavior.mode,
             offline: state.offline,
             notice: realtime_off.then_some(WATCH_LIMIT_NOTICE),
             config_error,
