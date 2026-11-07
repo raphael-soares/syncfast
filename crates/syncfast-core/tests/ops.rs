@@ -401,6 +401,33 @@ async fn saving_filters_on_a_synced_sync_holds_it_for_the_review_of_the_new_filt
 }
 
 #[tokio::test]
+async fn saving_filters_while_a_round_runs_succeeds_and_the_next_round_asks_for_the_review() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs().await;
+    user_sets(&bed, &SettingScope::Defaults, "review", "manual").await;
+    let round = try_lock_pair(&bed.ops.paths, "docs").unwrap();
+
+    let saved = bed
+        .ops
+        .set_filters("docs", None, Some(vec!["- *.bak".into()]))
+        .await
+        .unwrap();
+    drop(round);
+    let next = bed.ops.sync_now(Some("docs"), WAIT).await.unwrap();
+
+    assert!(saved.review_needed);
+    assert_eq!(saved.sync.filters, ["- *.bak"]);
+    assert_eq!(
+        next.rounds[0]
+            .sync
+            .gate
+            .as_ref()
+            .map(|gate| gate.kind.as_str()),
+        Some("needs_review_filters_changed")
+    );
+}
+
+#[tokio::test]
 async fn saving_filters_on_a_sync_held_for_mass_deletion_holds_it_for_the_new_review_instead() {
     let Some(bed) = bed() else { return };
     bed.synced_docs().await;
