@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/raphael-soares/syncfast/compare/v0.6.0...v0.7.0) (2026-11-07)
+
+
+### Features
+
+* config v2 with defaults and per-sync options ([#68](https://github.com/raphael-soares/syncfast/issues/68)) ([3934f6b](https://github.com/raphael-soares/syncfast/commit/3934f6bcc8122629635b668a06e319bd7eaacc66))
+
 ## [0.6.0](https://github.com/raphael-soares/syncfast/compare/v0.5.1...v0.6.0) (2026-11-07)
 
 
