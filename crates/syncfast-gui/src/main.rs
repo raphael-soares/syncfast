@@ -5,6 +5,7 @@ use fastframe_instance::Claim;
 use fastframe_shell::{Lease, Shell, Waker};
 use syncfast_core::paths::Paths;
 use syncfast_gui::app::{App, app_id};
+use syncfast_gui::app_settings;
 use syncfast_gui::backend;
 use syncfast_gui::gui_state::{self, GuiState};
 use syncfast_gui::instance::{self, Inbox};
@@ -91,10 +92,12 @@ fn run(start_hidden: bool) -> anyhow::Result<ExitCode> {
         }
     };
     let gui = GuiState::load(&gui_state::file(&paths));
+    let theme = app_settings::migrate_theme(&paths);
     // Read before the frame loop starts; reloads go through the backend.
     let themes = Themes::load(&backend::themes_dir(&paths));
-    let app =
-        App::new(&paths, &waker, inbox, gui, themes, true).context("cannot start the backend")?;
+    let app = App::new(&paths, &waker, inbox, gui, themes, true)
+        .context("cannot start the backend")?
+        .with_theme(theme);
     Shell::new(app, &waker)
         .start_hidden(start_hidden)
         .idle(fastframe_tray::idle)

@@ -1,5 +1,7 @@
 pub mod app;
+pub mod app_settings;
 pub mod appearance;
+pub mod autostart;
 pub mod backend;
 pub mod gui_state;
 pub mod icons;

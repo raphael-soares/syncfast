@@ -320,6 +320,9 @@ pub enum ConflictsCommand {
 #[derive(Debug, Subcommand)]
 pub enum SettingsCommand {
     /// Set a setting; settings that lower safety are for the user to change
+    ///
+    /// `app.autostart` only writes the config. The Flatpak window asks the
+    /// desktop to start syncfast at login the next time it opens.
     Set {
         /// A setting name, as `settings` lists it
         key: String,

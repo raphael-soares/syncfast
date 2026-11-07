@@ -145,15 +145,16 @@ fn the_sidebar_switches_panes() {
 }
 
 fn appearance(choice: ThemeChoice, errors: Vec<String>) -> ViewModel {
-    ViewModel {
+    let mut vm = ViewModel {
         settings_pane: SettingsPane::Appearance,
         appearance: AppearanceView {
-            choice,
             themes: vec!["noctalia.json".into()],
             errors,
         },
         ..view_model(Vec::new(), None)
-    }
+    };
+    vm.defaults.app.theme = choice.into();
+    vm
 }
 
 #[test]
@@ -188,7 +189,11 @@ fn picking_a_theme_asks_to_save_it() {
 
     assert_eq!(
         harness.state().actions,
-        [Action::SetTheme(ThemeChoice::Named("noctalia.json".into()))]
+        [Action::SetSetting {
+            scope: SettingScope::Defaults,
+            key: "app.theme".into(),
+            value: "noctalia.json".into(),
+        }]
     );
 }
 

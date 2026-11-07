@@ -151,6 +151,11 @@ impl Bed {
         fs::write(self.paths.config_file(), text).unwrap();
     }
 
+    /// The same enabled sync with `keys` in the `[notifications]` table.
+    fn write_notifications(&self, keys: &str) {
+        self.write_behavior(&format!("\n[notifications]\n{keys}"), "");
+    }
+
     /// Makes the pair invalid: its local folder becomes a relative path.
     fn break_config(&self) {
         let text = fs::read_to_string(self.paths.config_file())
@@ -987,6 +992,83 @@ async fn third_failure_in_a_row_notifies_once_with_the_last_error_line() {
             body: "Failed 3 times in a row. drive quota exceeded".to_owned(),
         }]
     );
+}
+
+async fn failing_bodies(keys: &str, rounds: usize) -> Option<Vec<String>> {
+    let bed = bed()?;
+    synced_base(&bed).await;
+    bed.write_notifications(keys);
+    let failing = fake_rclone(&bed, r#"{"level":"error","msg":"drive quota exceeded"}"#, 1);
+    for _ in 0..rounds {
+        bed.run_with(&failing).await;
+    }
+    Some(bed.notices.bodies())
+}
+
+#[tokio::test]
+async fn failing_uses_failures_after_and_zero_turns_it_off() {
+    let Some(lowered) = failing_bodies("failures_after = 2\n", 3).await else {
+        return;
+    };
+    let off = failing_bodies("failures_after = 0\n", 4).await.unwrap();
+
+    assert_eq!(lowered, ["Failed 2 times in a row. drive quota exceeded"]);
+    assert!(off.is_empty());
+}
+
+#[tokio::test]
+async fn a_gate_notice_is_dropped_when_needs_action_is_off_but_still_recorded_as_notified() {
+    let Some(bed) = bed() else { return };
+    bed.write_notifications("needs_action = false\n");
+    bed.break_config();
+
+    bed.run().await;
+
+    assert!(bed.notices.titles().is_empty());
+    assert_eq!(bed.state().await.notified, ["gate:config_error"]);
+}
+
+#[tokio::test]
+async fn new_conflicts_respect_conflicts() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "doc.txt", "base");
+    write(&bed.local, "untouched.txt", "same");
+    bed.first_sync().await;
+    bed.write_notifications("conflicts = false\n");
+    write(&bed.local, "doc.txt", "local edit");
+    write(&bed.remote, "doc.txt", "remote edit, newer");
+    set_age(&bed.local, "doc.txt", 3600);
+    set_age(&bed.remote, "doc.txt", 60);
+
+    bed.run().await;
+
+    assert_eq!(bed.state().await.conflicts_pending, 1);
+    assert!(bed.notices.titles().is_empty());
+}
+
+#[tokio::test]
+async fn a_successful_round_notifies_only_when_it_changed_files() {
+    let Some(bed) = bed() else { return };
+    synced_base(&bed).await;
+    bed.write_notifications("success = true\n");
+    write(&bed.local, "new.txt", "hello");
+
+    bed.run().await;
+    bed.run().await;
+
+    assert_eq!(bed.notices.titles(), ["Docs: synced"]);
+    assert_eq!(bed.notices.bodies(), ["1 uploaded"]);
+}
+
+#[tokio::test]
+async fn a_successful_round_stays_quiet_by_default() {
+    let Some(bed) = bed() else { return };
+    synced_base(&bed).await;
+    write(&bed.local, "new.txt", "hello");
+
+    bed.run().await;
+
+    assert!(bed.notices.titles().is_empty());
 }
 
 #[tokio::test]
@@ -1956,6 +2038,80 @@ async fn automatic_confirms_a_mass_deletion_and_the_remote_loses_the_files() {
     let reviewed = state.last_run.and_then(|last| last.auto_reviewed).unwrap();
     assert_eq!(reviewed.gate, GateKind::TooManyDeletes);
     assert_eq!(reviewed.counts.delete_remote, 3);
+}
+
+async fn automatic_review_of_a_mass_deletion(bed: &Bed, notifications: &str) {
+    four_files_synced(bed).await;
+    bed.write_behavior(
+        &format!("review = \"automatic\"\n\n[notifications]\n{notifications}"),
+        "",
+    );
+    delete_three_locally(bed);
+    assert_eq!(
+        bed.run().await,
+        RunReport::Ran {
+            mode: Mode::Normal,
+            outcome: Outcome::TooManyDeletes
+        }
+    );
+    assert_eq!(bed.run().await, ran_ok(Mode::Force));
+}
+
+#[tokio::test]
+async fn an_automatic_review_that_deleted_files_notifies_when_success_is_on() {
+    let Some(bed) = bed() else { return };
+
+    automatic_review_of_a_mass_deletion(&bed, "success = true\n").await;
+
+    assert!(
+        bed.notices
+            .titles()
+            .contains(&"Docs: reviewed automatically".to_owned()),
+        "{:?}",
+        bed.notices.titles()
+    );
+    assert!(
+        bed.notices
+            .bodies()
+            .contains(&"Deleted 3 files after an automatic review.".to_owned()),
+        "{:?}",
+        bed.notices.bodies()
+    );
+}
+
+#[tokio::test]
+async fn an_automatic_review_that_deleted_files_is_silent_when_success_is_off() {
+    let Some(bed) = bed() else { return };
+
+    automatic_review_of_a_mass_deletion(&bed, "success = false\n").await;
+
+    assert!(
+        !bed.notices
+            .titles()
+            .contains(&"Docs: reviewed automatically".to_owned()),
+        "{:?}",
+        bed.notices.titles()
+    );
+}
+
+#[tokio::test]
+async fn an_automatic_review_that_deleted_nothing_is_silent_even_with_success_on() {
+    let Some(bed) = bed() else { return };
+    bed.write_behavior(
+        "review = \"automatic\"\n\n[notifications]\nsuccess = true\n",
+        "",
+    );
+    write(&bed.local, "a.txt", "a");
+
+    assert_eq!(bed.run().await, ran_ok(Mode::Resync));
+
+    assert!(
+        !bed.notices
+            .titles()
+            .contains(&"Docs: reviewed automatically".to_owned()),
+        "{:?}",
+        bed.notices.titles()
+    );
 }
 
 #[tokio::test]

@@ -6,6 +6,7 @@ fastframe_icons::icons! {
     pub enum Icon {
         prefix: "syncfast-icon-",
         directory: "../assets/icons/",
+        Bell => "bell",
         Check => lucide "check",
         ChevronDown => lucide "chevron-down",
         ChevronRight => lucide "chevron-right",
@@ -27,6 +28,7 @@ fastframe_icons::icons! {
         Pause => lucide "pause",
         Play => lucide "play",
         Plus => lucide "plus",
+        Power => "power",
         Refresh => lucide "refresh-cw",
         RotateCcw => "rotate-ccw",
         Settings => lucide "settings",

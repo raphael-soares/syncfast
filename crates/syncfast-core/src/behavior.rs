@@ -6,6 +6,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::config::Pair;
+use crate::notify::Policy;
 
 macro_rules! named {
     ($ty:ident { $($variant:ident => $name:literal),+ $(,)? }) => {
@@ -226,6 +227,26 @@ pub struct Behavior {
     pub resync_mode: ResyncMode,
     pub empty_dirs: bool,
     pub review: ReviewLevel,
+    /// App-wide: which notifications a round may send.
+    pub notifications: Policy,
+    /// App-wide: what the window and its autostart use.
+    pub app: AppOptions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppOptions {
+    pub autostart: bool,
+    /// `system`, `light`, `dark` or a file of the user's themes folder.
+    pub theme: String,
+}
+
+impl Default for AppOptions {
+    fn default() -> Self {
+        Self {
+            autostart: false,
+            theme: "system".to_owned(),
+        }
+    }
 }
 
 impl Default for Behavior {
@@ -246,6 +267,8 @@ impl Default for Behavior {
             resync_mode: ResyncMode::Newer,
             empty_dirs: true,
             review: ReviewLevel::Deletions,
+            notifications: Policy::default(),
+            app: AppOptions::default(),
         }
     }
 }

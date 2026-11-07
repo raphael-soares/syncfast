@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use fastframe_instance::{Claim, Slot};
 use fastframe_shell::Waker;
 use syncfast_core::config::valid_id;
-use syncfast_core::notify::SLOT;
+use syncfast_core::notify::{Notice, SLOT};
 
 const REPLY: &str = "ok";
 
@@ -16,8 +16,8 @@ const REPLY: &str = "ok";
 pub enum Request {
     Show,
     ReloadThemes,
-    /// The `run` command has something to tell about this sync.
-    Notify(String),
+    /// The `run` command worded a notice about a sync; the window shows it.
+    Notify(Notice),
     /// The user clicked the notification of this sync.
     Opened(String),
 }
@@ -31,8 +31,8 @@ impl Request {
             "show" => Some(Self::Show),
             "reload-themes" => Some(Self::ReloadThemes),
             _ => {
-                let id = text.strip_prefix("notify ")?;
-                valid_id(id).then(|| Self::Notify(id.to_owned()))
+                let notice: Notice = serde_json::from_str(text.strip_prefix("notify ")?).ok()?;
+                valid_id(&notice.pair_id).then_some(Self::Notify(notice))
             }
         }
     }
@@ -91,22 +91,51 @@ pub fn ask_to_reload_themes() -> io::Result<()> {
 mod tests {
     use super::*;
 
+    fn notice(pair_id: &str) -> Notice {
+        Notice {
+            pair_id: pair_id.to_owned(),
+            title: "Drive: new conflicts".to_owned(),
+            body: "2 files kept both versions.\nOpen syncfast.".to_owned(),
+        }
+    }
+
+    fn request(pair_id: &str) -> String {
+        format!(
+            "notify {}",
+            serde_json::to_string(&notice(pair_id)).unwrap()
+        )
+    }
+
     #[test]
     fn known_verbs_become_requests() {
         assert_eq!(Request::parse("show"), Some(Request::Show));
         assert_eq!(Request::parse("reload-themes"), Some(Request::ReloadThemes));
         assert_eq!(
-            Request::parse("notify drive"),
-            Some(Request::Notify("drive".into()))
+            Request::parse(&request("drive")),
+            Some(Request::Notify(notice("drive")))
         );
+    }
+
+    #[test]
+    fn a_synced_notice_reaches_the_app_as_the_core_worded_it() {
+        let synced = Notice {
+            pair_id: "drive".to_owned(),
+            title: "Drive: synced".to_owned(),
+            body: "2 uploaded, 1 deleted".to_owned(),
+        };
+        let text = format!("notify {}", serde_json::to_string(&synced).unwrap());
+
+        assert_eq!(Request::parse(&text), Some(Request::Notify(synced)));
     }
 
     #[test]
     fn unknown_verbs_and_invalid_sync_ids_are_declined() {
         assert_eq!(Request::parse("quit"), None);
         assert_eq!(Request::parse("notify"), None);
-        assert_eq!(Request::parse("notify ../etc"), None);
-        assert_eq!(Request::parse("notify Drive"), None);
+        assert_eq!(Request::parse("notify drive"), None);
+        assert_eq!(Request::parse("notify {\"pair_id\":\"x\"}"), None);
+        assert_eq!(Request::parse(&request("../etc")), None);
+        assert_eq!(Request::parse(&request("Drive")), None);
     }
 
     #[test]
@@ -130,7 +159,7 @@ mod tests {
         let first = claim_on(&slot, &inbox, &Waker::default());
         assert!(matches!(first, Claim::First(_)));
 
-        let reply = slot.send("notify drive").unwrap();
+        let reply = slot.send(&request("drive")).unwrap();
         let declined = slot.send("quit");
 
         assert_eq!(reply, REPLY);
@@ -138,6 +167,6 @@ mod tests {
             declined.unwrap_err().kind(),
             io::ErrorKind::PermissionDenied
         );
-        assert_eq!(inbox.drain(), [Request::Notify("drive".into())]);
+        assert_eq!(inbox.drain(), [Request::Notify(notice("drive"))]);
     }
 }

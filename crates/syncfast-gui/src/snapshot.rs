@@ -93,7 +93,12 @@ async fn load_pair(
         None
     };
     PairSnapshot {
-        status: display_status(pair, &state, running),
+        status: display_status(
+            pair,
+            &state,
+            running,
+            config.defaults().notifications.failing_after(),
+        ),
         pair: pair.clone(),
         state,
         running,

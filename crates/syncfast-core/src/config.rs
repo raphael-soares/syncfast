@@ -16,7 +16,8 @@ use crate::settings::{self, Effective, Origin, Overrides};
 const SUPPORTED_VERSION: i64 = 2;
 const FIRST_VERSION: i64 = 1;
 const V1_TOP_LEVEL_KEYS: [&str; 2] = ["version", "pair"];
-const TOP_LEVEL_KEYS: [&str; 3] = ["version", "defaults", "pair"];
+const TOP_LEVEL_KEYS: [&str; 5] = ["version", "defaults", "notifications", "app", "pair"];
+const APP_TABLES: [&str; 2] = ["notifications", "app"];
 const PAIR_KEYS: [&str; 7] = [
     "id", "name", "local", "remote", "enabled", "presets", "filters",
 ];
@@ -35,6 +36,8 @@ pub enum GlobalConfigError {
     UnsupportedVersion(i64),
     #[error("config.toml: [defaults]: {0}")]
     Defaults(String),
+    #[error("config.toml: {0}")]
+    App(String),
 }
 
 /// Why one pair cannot run; the other pairs are unaffected.
@@ -198,7 +201,7 @@ impl Config {
         }
         normalize_pair_array(&mut document);
         reject_unknown_keys(&document, version.unwrap_or(SUPPORTED_VERSION))?;
-        let defaults = read_defaults(&document)?;
+        let defaults = read_settings(&document)?;
         let mut raw: Raw =
             toml::from_str(text).map_err(|err| GlobalConfigError::Toml(err.to_string()))?;
         for pair in &mut raw.pair {
@@ -527,7 +530,7 @@ impl Config {
         key: &str,
         text: &str,
     ) -> Result<(), SettingError> {
-        let def = settings::key(key).ok_or_else(|| SettingError::UnknownKey(key.to_owned()))?;
+        let def = scoped_key(scope, key)?;
         if *scope == SettingScope::Defaults && def.per_sync_only {
             return Err(SettingError::Invalid(settings::per_sync_only_message(key)));
         }
@@ -541,7 +544,7 @@ impl Config {
     /// The key or the sync does not exist, or the value it falls back to
     /// makes an invalid combination.
     pub fn reset_setting(&mut self, scope: &SettingScope, key: &str) -> Result<(), SettingError> {
-        let def = settings::key(key).ok_or_else(|| SettingError::UnknownKey(key.to_owned()))?;
+        let def = scoped_key(scope, key)?;
         self.change_setting(scope, def, None)
     }
 
@@ -568,15 +571,28 @@ impl Config {
     ) -> Result<(), SettingError> {
         match scope {
             SettingScope::Defaults => {
+                let section = def
+                    .name
+                    .split_once('.')
+                    .map_or("defaults", |(table, _)| table);
                 let table = match value {
-                    Some(_) => self.defaults_table_mut(),
+                    Some(_) => self.section_table_mut(section),
                     None => self
                         .document
-                        .get_mut("defaults")
+                        .get_mut(section)
                         .and_then(Item::as_table_like_mut),
                 };
                 if let Some(table) = table {
                     write_or_remove(table, def, value);
+                }
+                if section != "defaults"
+                    && self
+                        .document
+                        .get(section)
+                        .and_then(Item::as_table_like)
+                        .is_some_and(TableLike::is_empty)
+                {
+                    self.document.remove(section);
                 }
             }
             SettingScope::Sync(id) => {
@@ -598,27 +614,45 @@ impl Config {
         Ok(())
     }
 
-    /// `[defaults]` goes right after `version`, ahead of the syncs.
-    fn defaults_table_mut(&mut self) -> Option<&mut dyn TableLike> {
-        self.document
-            .entry("defaults")
-            .or_insert_with(|| {
-                let mut table = Table::new();
-                table.decor_mut().set_prefix("\n");
-                table.set_position(0);
-                Item::Table(table)
-            })
-            .as_table_like_mut()
+    /// `[defaults]`, `[notifications]` and `[app]`, in that order, go right
+    /// after `version`, ahead of the syncs.
+    fn section_table_mut(&mut self, name: &str) -> Option<&mut dyn TableLike> {
+        if !self.document.contains_key(name) {
+            let mut table = Table::new();
+            table.decor_mut().set_prefix("\n");
+            self.document.insert(name, Item::Table(table));
+            self.order_tables();
+        }
+        self.document.get_mut(name)?.as_table_like_mut()
+    }
+
+    fn order_tables(&mut self) {
+        let mut next = 0;
+        for name in ["defaults", "notifications", "app"] {
+            if let Some(table) = self.document.get_mut(name).and_then(Item::as_table_mut) {
+                table.set_position(next);
+                next += 1;
+            }
+        }
+        let pairs = self
+            .document
+            .get_mut("pair")
+            .and_then(Item::as_array_of_tables_mut);
+        for table in pairs.into_iter().flat_map(ArrayOfTables::iter_mut) {
+            table.set_position(next);
+            next += 1;
+        }
     }
 
     /// Reads the behavior keys again from the document, the one place they
     /// are kept.
     fn refresh_overrides(&mut self) {
-        self.defaults = self
+        let defaults = self
             .document
             .get("defaults")
             .and_then(Item::as_table_like)
             .map_or_else(Overrides::default, |table| Overrides::read(table, true));
+        self.defaults = Overrides::read_app(self.document.as_table()).merged_over(&defaults);
         if let Some(tables) = self.document.get("pair").and_then(Item::as_array_of_tables) {
             for (pair, table) in self.pairs.iter_mut().zip(tables) {
                 pair.overrides = Overrides::read(table, false);
@@ -733,6 +767,39 @@ fn normalize_pair_array(document: &mut DocumentMut) {
     }
 }
 
+/// The values `[defaults]`, `[notifications]` and `[app]` set, together.
+fn read_settings(document: &DocumentMut) -> Result<Overrides, GlobalConfigError> {
+    let defaults = read_defaults(document)?;
+    for section in APP_TABLES {
+        if document
+            .get(section)
+            .is_some_and(|item| item.as_table_like().is_none())
+        {
+            return Err(GlobalConfigError::Toml(format!(
+                "[{section}] must be a table"
+            )));
+        }
+    }
+    let app = Overrides::read_app(document.as_table());
+    match app.problem() {
+        Some(message) => Err(GlobalConfigError::App(message.to_owned())),
+        None => Ok(app.merged_over(&defaults)),
+    }
+}
+
+fn scoped_key(scope: &SettingScope, key: &str) -> Result<&'static settings::KeyDef, SettingError> {
+    if let Some(def) = settings::key(key) {
+        return Ok(def);
+    }
+    let def = settings::app_key(key).ok_or_else(|| SettingError::UnknownKey(key.to_owned()))?;
+    if matches!(scope, SettingScope::Sync(_)) {
+        return Err(SettingError::Invalid(format!(
+            "{key} applies to the whole app, not to one sync"
+        )));
+    }
+    Ok(def)
+}
+
 fn read_defaults(document: &DocumentMut) -> Result<Overrides, GlobalConfigError> {
     let Some(item) = document.get("defaults") else {
         return Ok(Overrides::default());
@@ -753,9 +820,9 @@ fn write_or_remove(
     value: Option<&settings::Value>,
 ) {
     match value {
-        Some(value) => replace_value(table, def.name, value.to_toml()),
+        Some(value) => replace_value(table, def.short(), value.to_toml()),
         None => {
-            table.remove(def.name);
+            table.remove(def.short());
         }
     }
 }
@@ -797,6 +864,17 @@ fn reject_unknown_keys(document: &DocumentMut, version: i64) -> Result<(), Globa
         && let Some(err) = unknown(table, &|key| settings::key(key).is_some(), "defaults.")
     {
         return Err(err);
+    }
+    for section in APP_TABLES {
+        if let Some(table) = document.get(section).and_then(Item::as_table_like)
+            && let Some(err) = unknown(
+                table,
+                &|key| settings::app_key(&format!("{section}.{key}")).is_some(),
+                &format!("{section}."),
+            )
+        {
+            return Err(err);
+        }
     }
     let pair_key =
         |key: &str| PAIR_KEYS.contains(&key) || (has_behavior_keys && settings::key(key).is_some());
@@ -2235,5 +2313,101 @@ mod tests {
             ]
         );
         assert_eq!(config.to_toml(), before);
+    }
+
+    #[test]
+    fn app_settings_are_written_to_their_own_tables_before_the_syncs() {
+        let mut config = parse(&format!(
+            "version = 2\n\n[defaults]\ndebounce = \"10s\"\n\n{}",
+            pair_block("a", "A", "/a", "gdrive:a")
+        ));
+        let defaults = SettingScope::Defaults;
+
+        config
+            .set_setting(&defaults, "notifications.success", "true")
+            .unwrap();
+        config.set_setting(&defaults, "app.theme", "dark").unwrap();
+
+        let written = config.to_toml();
+        let reloaded = parse(&written);
+        assert!(reloaded.defaults().notifications.success);
+        assert_eq!(reloaded.defaults().app.theme, "dark");
+        let position = |needle: &str| written.find(needle).unwrap();
+        assert!(position("[defaults]") < position("[notifications]"));
+        assert!(position("[notifications]") < position("[[pair]]"));
+        assert!(position("[app]") < position("[[pair]]"));
+    }
+
+    #[test]
+    fn resetting_the_last_app_setting_of_a_table_removes_the_table() {
+        let mut config = parse(&format!(
+            "version = 2\n\n[app]\ntheme = \"dark\"\n\n{}",
+            pair_block("a", "A", "/a", "gdrive:a")
+        ));
+
+        config
+            .reset_setting(&SettingScope::Defaults, "app.theme")
+            .unwrap();
+
+        assert!(!config.to_toml().contains("[app]"));
+        assert_eq!(config.defaults().app.theme, "system");
+    }
+
+    #[test]
+    fn app_settings_are_reported_with_the_defaults_overrides() {
+        let config = parse(&format!(
+            "version = 2\n\n[notifications]\nfailures_after = 0\n\n{}",
+            pair_block("a", "A", "/a", "gdrive:a")
+        ));
+
+        assert!(
+            config
+                .defaults_overrides()
+                .get("notifications.failures_after")
+                .is_some()
+        );
+        assert!(config.defaults_overrides().get("app.theme").is_none());
+    }
+
+    #[test]
+    fn an_app_setting_cannot_be_set_on_one_sync() {
+        let mut config = config(&[pair_block("a", "A", "/a", "gdrive:a")]);
+        let before = config.to_toml();
+
+        let error = config
+            .set_setting(&SettingScope::Sync("a".into()), "app.theme", "dark")
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "app.theme applies to the whole app, not to one sync"
+        );
+        assert_eq!(config.to_toml(), before);
+    }
+
+    #[test]
+    fn an_unknown_key_in_the_notifications_or_app_table_is_refused() {
+        for (table, key) in [("notifications", "sound"), ("app", "language")] {
+            let text = format!("version = 2\n\n[{table}]\n{key} = true\n");
+
+            let error = Config::parse(&text, Path::new("/home/u")).unwrap_err();
+
+            assert_eq!(
+                error.to_string(),
+                format!("unknown key \"{table}.{key}\": not supported by this syncfast version")
+            );
+        }
+    }
+
+    #[test]
+    fn a_bad_app_value_names_its_table_and_key() {
+        let text = "version = 2\n\n[notifications]\nfailures_after = 101\n";
+
+        let error = Config::parse(text, Path::new("/home/u")).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "config.toml: [notifications]: failures_after must be between 0 and 100"
+        );
     }
 }
