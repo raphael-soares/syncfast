@@ -5,16 +5,18 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use super::views::load_state;
+use super::sync::start_round;
 use super::{OpError, Ops, PairView};
 use crate::behavior::{Behavior, ReviewLevel};
 use crate::config::{Config, Pair, expand_tilde, unique_id};
 use crate::filters::PRESETS;
+use crate::paths::Paths;
 use crate::rclone::RcloneError;
-use crate::state::{ConfirmMarker, GateKind, is_running};
+use crate::state::{ConfirmMarker, GateKind, State, is_running};
+use crate::watch::Trigger;
 
-/// How long `add` waits for the round that checks the first review.
-const FIRST_ROUND_WAIT: Duration = Duration::from_secs(10);
+/// How long the first round of a new sync is waited for.
+pub const FIRST_ROUND_WAIT: Duration = Duration::from_secs(10);
 
 fn waits_for_review(id: &str) -> String {
     format!("Run `review show` for \"{id}\": the first sync waits for a review.")
@@ -158,8 +160,14 @@ impl Ops {
         Config::edit(&self.paths, |config| config.add_pair(pair)).await??;
         let mut warnings = self.reapply(&[]).await;
         let next_step = if level == ReviewLevel::Automatic {
-            match self.start_round(&id, FIRST_ROUND_WAIT).await {
-                Ok(_) => self.first_round_next_step(&id).await,
+            match first_round_confirmed(&self.paths, &*self.trigger, &id, FIRST_ROUND_WAIT).await {
+                Ok(FirstRound::Confirmed) => {
+                    "Syncing started: review confirmed automatically.".to_owned()
+                }
+                Ok(FirstRound::Held) => waits_for_review(&id),
+                Ok(FirstRound::StillChecking) => format!(
+                    "The first check of \"{id}\" is still running: read `status` later, and run `review show` if it waits for a review."
+                ),
                 Err(error) => {
                     warnings.push(format!("The first round did not start: {error}"));
                     waits_for_review(&id)
@@ -173,23 +181,6 @@ impl Ops {
             warnings,
             next_step,
         })
-    }
-
-    /// The first round of a sync whose review level is `automatic` has run
-    /// its check: either it confirmed the review or the sync still waits.
-    async fn first_round_next_step(&self, id: &str) -> String {
-        let state = load_state(self, id).await;
-        let confirmed = matches!(ConfirmMarker::load(&self.paths, id).await, Ok(Some(_)));
-        let waiting = state
-            .gate
-            .is_some_and(|gate| gate.kind == GateKind::NeedsReviewFirstRun)
-            && !is_running(&self.paths, id)
-            && !confirmed;
-        if waiting {
-            waits_for_review(id)
-        } else {
-            "Syncing started: review confirmed automatically.".to_owned()
-        }
     }
 
     async fn prepare_remote(&self, remote: &str, create: bool) -> Result<(), OpError> {
@@ -258,6 +249,46 @@ impl Ops {
         }
         Ok(Toggled { syncs, warnings })
     }
+}
+
+/// How the first round of a sync at the `automatic` review level stands
+/// after the wait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FirstRound {
+    /// The check found nothing to review and the sync is syncing.
+    Confirmed,
+    /// The check failed or left the first review for the user.
+    Held,
+    /// The check has not ended; the gate shows later if it holds the sync.
+    StillChecking,
+}
+
+/// Starts the first round of a sync whose review level is `automatic` and
+/// waits up to `wait` for its check.
+///
+/// # Errors
+/// The round cannot be started.
+pub async fn first_round_confirmed(
+    paths: &Paths,
+    trigger: &dyn Trigger,
+    id: &str,
+    wait: Duration,
+) -> Result<FirstRound, OpError> {
+    if !start_round(paths, trigger, id, wait).await? {
+        return Ok(FirstRound::StillChecking);
+    }
+    let state = State::load_or_config_error(paths, id).await;
+    let confirmed = matches!(ConfirmMarker::load(paths, id).await, Ok(Some(_)));
+    let waiting = state
+        .gate
+        .is_some_and(|gate| gate.kind == GateKind::NeedsReviewFirstRun)
+        && !is_running(paths, id)
+        && !confirmed;
+    Ok(if waiting {
+        FirstRound::Held
+    } else {
+        FirstRound::Confirmed
+    })
 }
 
 async fn prepare_local(local: &Path, create: bool) -> Result<(), OpError> {

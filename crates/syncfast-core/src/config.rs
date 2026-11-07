@@ -240,18 +240,26 @@ impl Config {
         if config.migrated_from().is_none() {
             return Ok(false);
         }
-        let target = real_config_file(paths).await?;
-        let backup = target.with_file_name(V1_BACKUP);
-        if !tokio::fs::try_exists(&backup).await.unwrap_or(false) {
-            tokio::fs::copy(&target, &backup)
-                .await
-                .map_err(|source| ConfigSaveError::Write {
-                    path: backup,
-                    source,
-                })?;
-        }
         config.save(paths).await?;
         Ok(true)
+    }
+
+    async fn back_up_v1(&self, target: &Path) -> Result<(), ConfigSaveError> {
+        if self.migrated_from().is_none() {
+            return Ok(());
+        }
+        let backup = target.with_file_name(V1_BACKUP);
+        if tokio::fs::try_exists(&backup).await.unwrap_or(false) {
+            return Ok(());
+        }
+        match tokio::fs::copy(target, &backup).await {
+            Ok(_) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(ConfigSaveError::Write {
+                path: backup,
+                source,
+            }),
+        }
     }
 
     /// The built-in values with `[defaults]` on top.
@@ -484,13 +492,15 @@ impl Config {
     }
 
     /// Writes `config.toml` atomically. A symlinked file (GNU stow) is
-    /// followed, so the link survives and its target is updated.
+    /// followed, so the link survives and its target is updated. An older
+    /// file is first copied to `config.toml.v1`, once.
     ///
     /// # Errors
     /// The file cannot be written, or is a link to a file that does not
     /// exist (writing would replace the link).
     pub async fn save(&self, paths: &Paths) -> Result<(), ConfigSaveError> {
         let target = real_config_file(paths).await?;
+        self.back_up_v1(&target).await?;
         let contents = self.saved_text();
         let written = target.clone();
         let outcome =
@@ -2006,6 +2016,30 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(paths.config_file()).unwrap(),
             V1_FILE
+        );
+    }
+
+    #[tokio::test]
+    async fn an_edit_of_a_v1_file_keeps_the_original_as_config_toml_v1_and_never_overwrites_it() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths_in(root.path());
+        let backup = paths.config_file().with_file_name("config.toml.v1");
+        write_config_file(&paths, V1_FILE);
+
+        Config::edit(&paths, |config| config.set_enabled("a", false))
+            .await
+            .unwrap();
+        let after_first = std::fs::read_to_string(&backup).unwrap();
+        Config::edit(&paths, |config| config.set_enabled("a", true))
+            .await
+            .unwrap();
+
+        assert_eq!(after_first, V1_FILE);
+        assert_eq!(std::fs::read_to_string(backup).unwrap(), V1_FILE);
+        assert!(
+            std::fs::read_to_string(paths.config_file())
+                .unwrap()
+                .contains("version = 2")
         );
     }
 

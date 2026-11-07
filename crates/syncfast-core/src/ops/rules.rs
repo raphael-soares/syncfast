@@ -11,7 +11,7 @@ use super::{DEFAULT_WAIT_SECONDS, OpError, Ops, PairView};
 use crate::config::{Config, Pair, expand_tilde, filter_line_problem};
 use crate::filters::{self, ExclusionSummary, PRESETS};
 use crate::paths::Paths;
-use crate::state::{Gate, GateKind, State};
+use crate::state::{Gate, GateKind, State, try_lock_pair};
 
 static TEST_FILES: AtomicU64 = AtomicU64::new(0);
 
@@ -63,9 +63,17 @@ fn check_rules(presets: &[String], rules: &[String]) -> Result<(), OpError> {
 /// since the old confirmation no longer applies. Returns whether the sync
 /// had no gate at all.
 ///
+/// A running round owns the state, so nothing is written while one runs and
+/// the answer is `false`: the round ends having applied the old filters and
+/// the next one holds the sync for their review, and a confirmation of the
+/// old review is refused for its hash.
+///
 /// # Errors
-/// The state of the sync cannot be read or written.
+/// The state cannot be read or written.
 pub async fn after_filters_saved(paths: &Paths, id: &str) -> Result<bool, OpError> {
+    let Some(_lock) = try_lock_pair(paths, id)? else {
+        return Ok(false);
+    };
     let mut state = State::load(paths, id).await?;
     match state.gate.as_ref().map(|gate| gate.kind) {
         None => Ok(true),

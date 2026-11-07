@@ -15,8 +15,8 @@ use syncfast_core::config::{Config, SettingScope};
 use syncfast_core::network::{BoxFuture, Network};
 use syncfast_core::notify::{Notice, Notifier};
 use syncfast_core::ops::{
-    ExploreOptions, Keep, NewSync, OpError, Ops, SettingView, SettingsView, TransferOptions,
-    TransferStarter, run_transfer,
+    ExploreOptions, FIRST_ROUND_WAIT, FirstRound, Keep, NewSync, OpError, Ops, SettingView,
+    SettingsView, TransferOptions, TransferStarter, first_round_confirmed, run_transfer,
 };
 use syncfast_core::paths::Paths;
 use syncfast_core::rclone::Rclone;
@@ -398,6 +398,33 @@ async fn saving_filters_on_a_synced_sync_holds_it_for_the_review_of_the_new_filt
     );
     assert_eq!(saved.sync.filters, ["- *.bak"]);
     assert!(saved.sync.presets.is_empty());
+}
+
+#[tokio::test]
+async fn saving_filters_while_a_round_runs_succeeds_and_the_next_round_asks_for_the_review() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs().await;
+    user_sets(&bed, &SettingScope::Defaults, "review", "manual").await;
+    let round = try_lock_pair(&bed.ops.paths, "docs").unwrap();
+
+    let saved = bed
+        .ops
+        .set_filters("docs", None, Some(vec!["- *.bak".into()]))
+        .await
+        .unwrap();
+    drop(round);
+    let next = bed.ops.sync_now(Some("docs"), WAIT).await.unwrap();
+
+    assert!(saved.review_needed);
+    assert_eq!(saved.sync.filters, ["- *.bak"]);
+    assert_eq!(
+        next.rounds[0]
+            .sync
+            .gate
+            .as_ref()
+            .map(|gate| gate.kind.as_str()),
+        Some("needs_review_filters_changed")
+    );
 }
 
 #[tokio::test]
@@ -1470,6 +1497,72 @@ async fn a_first_round_that_cannot_start_still_reports_the_sync_that_was_added()
         added.next_step
     );
     assert!(again.is_err());
+}
+
+#[tokio::test]
+async fn the_first_round_of_a_sync_at_automatic_review_confirms_a_safe_first_sync() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local().join("a.txt"), "hello");
+    bed.ops.add(bed.new_sync()).await.unwrap();
+    user_sets(&bed, &SettingScope::Defaults, "review", "automatic").await;
+
+    let confirmed =
+        first_round_confirmed(&bed.ops.paths, &*bed.ops.trigger, "docs", FIRST_ROUND_WAIT)
+            .await
+            .unwrap();
+
+    assert_eq!(confirmed, FirstRound::Confirmed);
+    assert_eq!(
+        fs::read_to_string(bed.remote().join("a.txt")).unwrap(),
+        "hello"
+    );
+}
+
+#[tokio::test]
+async fn the_first_round_does_not_confirm_when_its_dry_run_fails() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local().join("a.txt"), "hello");
+    bed.ops.add(bed.new_sync()).await.unwrap();
+    user_sets(&bed, &SettingScope::Defaults, "review", "automatic").await;
+    fs::remove_dir_all(bed.remote()).unwrap();
+
+    let confirmed =
+        first_round_confirmed(&bed.ops.paths, &*bed.ops.trigger, "docs", FIRST_ROUND_WAIT)
+            .await
+            .unwrap();
+
+    assert_eq!(confirmed, FirstRound::Held);
+    assert!(!bed.remote().join("a.txt").exists());
+}
+
+struct HoldsTheRound {
+    paths: Paths,
+    held: std::sync::Mutex<Option<std::fs::File>>,
+}
+
+impl Trigger for HoldsTheRound {
+    fn start<'a>(&'a self, pair_id: &'a str) -> BoxFuture<'a, Result<(), String>> {
+        let lock = try_lock_pair(&self.paths, pair_id).unwrap();
+        *self.held.lock().unwrap() = lock;
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[tokio::test]
+async fn a_first_round_whose_check_outlasts_the_wait_is_neither_confirmed_nor_held() {
+    let Some(bed) = bed() else { return };
+    bed.ops.add(bed.new_sync()).await.unwrap();
+    let trigger = HoldsTheRound {
+        paths: bed.ops.paths.clone(),
+        held: std::sync::Mutex::new(None),
+    };
+
+    let outcome =
+        first_round_confirmed(&bed.ops.paths, &trigger, "docs", Duration::from_millis(300))
+            .await
+            .unwrap();
+
+    assert_eq!(outcome, FirstRound::StillChecking);
 }
 
 #[tokio::test]

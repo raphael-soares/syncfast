@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use fastframe_shell::window::Geometry;
 use fastframe_shell::{Closed, Headless, Resident, Waker};
 use jiff::Timestamp;
+use syncfast_core::ops::FirstRound;
 use syncfast_core::paths::Paths;
 use syncfast_core::state::LastOutcome;
 
@@ -412,7 +413,7 @@ impl App {
             other => {
                 if let Event::SyncCreated(Ok(created)) = &other {
                     self.auto_confirmed_sync =
-                        created.confirmed_automatically.then(|| created.id.clone());
+                        (created.first_round == FirstRound::Confirmed).then(|| created.id.clone());
                 }
                 for command in self.sheets.handle_event(&other) {
                     self.backend.send(command);
@@ -1022,7 +1023,7 @@ mod tests {
         let (_dir, mut app) = app();
         app.handle_event(Event::SyncCreated(Ok(crate::backend::CreatedSync {
             id: "a".into(),
-            confirmed_automatically: true,
+            first_round: FirstRound::Confirmed,
         })));
         assert!(app.auto_confirmed_sync.is_some());
 
