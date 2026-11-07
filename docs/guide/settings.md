@@ -7,6 +7,18 @@ Open Settings with `Ctrl+,` or from the tray menu. It is a dialog over the windo
 - **Accounts** lists the cloud accounts and signs them in or out.
 - **Defaults** holds the options every sync inherits. A sync can override any of them in the **Options** tab of its detail view. Under each row, the caption says whether the value is the built-in one, your default, or overridden by some syncs. **Reset to Default** appears when a value was changed.
 
+## Sync modes
+
+The **Mode** section of a sync's **Options** tab chooses what the sync does. It has no default: every sync sets its own, and **Add Sync** always starts with **Two-way**.
+
+- **Two-way**: changes on either side are copied to the other, and both versions are kept when both changed.
+- **Upload only**: new and changed files go to the cloud. Nothing is deleted there and nothing comes back.
+- **Download only**: new and changed files come to this computer. Nothing is deleted here.
+- **Mirror to Drive**: the cloud folder becomes a copy of this one. Files that exist only in the cloud are deleted. Replaced and deleted files are kept in `.syncfast-versions` on the account.
+- **Mirror to this computer**: this folder becomes a copy of the cloud one. Files that exist only here are deleted. They are kept in the versions folder.
+
+Changing the mode holds the sync for a review of its next round. A mirror never runs from an empty source folder: the sync needs attention and the destination keeps every file. Watching for changes only exists in modes that read this computer, conflicts only in **Two-way**, and the rows that do nothing in a mode are hidden. Going back to **Two-way** asks for a review that rebuilds the comparison between both sides.
+
 ## App
 
 - **General**: **Start syncfast when you log in** starts syncfast hidden in the tray when you log in. It is available in the Flatpak install, where the desktop is asked through the Background portal. If the desktop refuses, the row says so and the setting stays as you chose it. On Hyprland the desktop does not run the entry, so the row tells you to start `syncfast-gui --start-hidden` from your own Hyprland config.
