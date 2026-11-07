@@ -156,11 +156,17 @@ fn the_mode_chip_never_overlaps_the_subtitle_or_the_actions_in_the_smallest_wind
         .fold(f32::INFINITY, f32::min);
 
     let title_left = harness.get_by_label("Google Drive").rect().left();
+    let sync_now = harness.get_by_label("Sync Now").rect();
 
     assert!(!chip.intersects(subtitle), "{chip:?} {subtitle:?}");
     assert!(chip.right() <= actions_left, "{chip:?} {actions_left}");
     assert!(chip.left() >= title_left, "{chip:?} {title_left}");
     assert!(subtitle.width() > 0.0, "{subtitle:?}");
+    assert!(chip.height() < sync_now.height(), "{chip:?} {sync_now:?}");
+    assert!(
+        (chip.center().y - sync_now.center().y).abs() <= 1.0,
+        "{chip:?} {sync_now:?}"
+    );
 }
 
 #[test]
