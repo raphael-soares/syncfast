@@ -104,7 +104,7 @@ Verificados nesta máquina com restic 0.19.1 (binário de release, sha256 confer
 - **restic 0.19.1: agrupamento, banda e `--one-file-system`.** Verificados no código (`cmd/restic/cmd_forget.go`: `--group-by` padrão `Host: true, Path: true`) e na documentação (`060_forget.rst`, `040_backup.rst`, `manual_rest.rst`), não por execução:
   - `forget` agrupa por host e pastas por padrão (`-g, --group-by`), aplica a política a cada grupo e aceita `--host` para só considerar um hostname; `--keep-yearly <n>` existe ao lado de `--keep-daily`, `--keep-weekly` e `--keep-monthly`; as opções de calendário só contam períodos que têm snapshot.
   - O snapshot pai do `backup` é o último do grupo `host,paths` (padrão). A documentação sugere o mesmo `--group-by` no `forget`; o syncfast usa `host` no `forget` de propósito (Da spec, Host = hostname real). O pai só acelera a leitura: com uma lista de pastas nova não há pai e o restic lê tudo uma vez.
-  - `--limit-upload` e `--limit-download` são opções globais, em KiB/s, padrão sem limite.
+  - `--limit-upload` e `--limit-download` são opções globais, em KiB/s, padrão sem limite. Medido nesta máquina com o backend rclone e remote `type = local`: ao contrário do `--bwlimit` do rclone (que deixa passar os primeiros 4 MiB na velocidade cheia, medido na fase 2), o limitador do restic não tem rajada inicial perceptível: 12 MiB com `--limit-upload 1024` levaram 11,9 s, 2 MiB com `512` levaram 4,2 s, e 12 MiB sem limite, 1,0 s.
   - `-x, --one-file-system`: "exclude other file systems, don't cross filesystem boundaries and subvolumes".
 
 ## Approach
@@ -562,14 +562,14 @@ O aviso de `key_unsaved` sai uma vez, quando um agente cria o backup (chave `key
 
 ### 11. GUI: sidebar, bandeja e Settings
 
-Arquivos: `ui/sidebar.rs`, `tray.rs`, `ui/settings.rs` (extensão); sem mock aprovado para as telas novas: a primeira atividade da fatia P3.2 (issue #57) é acrescentar os quadros de backup a `docs/design/ui-mock.html` e mostrá-los ao dono.
+Arquivos: `ui/sidebar.rs`, `tray.rs`, `ui/settings/` (extensão); sem mock aprovado para as telas novas: a primeira atividade da fatia P3.2 (issue #57) é acrescentar os quadros de backup a `docs/design/ui-mock.html` e mostrá-los ao dono.
 
 - **Sidebar.** Abaixo dos syncs, uma segunda seção: cabeçalho `Backups` com dois `icon_button`: `plus` (tooltip `New Backup…`) e `ellipsis` (menu: `Add Existing Backup…`). Uma `sidebar_row` por backup: ícone `archive`, nome, `status_badge` compacto e `subheadline` `Backed up <tempo relativo>` ou `Never backed up`. Sem backups: a seção mostra `empty_state` pequeno `No backups yet` com `New Backup…`. A seleção pode ser um sync ou um backup; o título da janela é o nome do selecionado; `gui.json` guarda `selected_backup` ao lado de `selected_pair`.
 - **Bandeja** (itens constantes, desabilita em vez de esconder). A linha de status dos syncs não muda; entram:
   1. logo abaixo dela, uma linha desabilitada `Backups up to date` / `Backing up…` / `<n> backups need attention` / `No backups yet`;
   2. `Back Up All Now` depois de `Sync All Now` (desabilitado sem backups).
   O ponto de atenção e de erro do ícone considera também os backups (`Error` e `Failing` de backup valem como os de sync; `NeedsReview` não existe em backup).
-- **Settings > Backups** (painel novo ao lado dos da fase 2):
+- **Settings > Backups**: painel novo do modal de Settings da fase 2 (#63), num arquivo próprio em `crates/syncfast-gui/src/ui/settings/` (como `accounts.rs`), com uma variante `Backups` em `SettingsPane` (`gui_state.rs`) registrada ao lado de `Accounts`, `Defaults`, `General`, `Notifications` e `Appearance` (ícone na lista de `ui/settings/mod.rs` e o despacho do `show`):
   - `Key storage`: o backend em uso (`Secret portal` ou `Host keyring (Secret Service)`) ou o motivo de não haver (`No Secret portal and no Secret Service answered. See docs/guide/backup.md.`), e `Test Key Storage`, que grava, lê e apaga um item de teste no backend em uso. Com o keyring do host, uma nota: `The Flatpak can read every secret in your keyring. Routing the Secret portal is safer; see docs/guide/backup.md.`
   - `restic`: versão em uso.
   - Link para `docs/guide/backup.md`.
@@ -764,7 +764,7 @@ P3.3 e P3.4 são independentes entre si e só dependem de P3.2; P3.5 espera o re
 
 ## Verification
 
-Diretório `~/Desktop/Personal/syncfast`.
+Diretório `~/Code/Personal/syncfast`.
 
 1. `just check` verde, com os 16 cenários de integração de backup, os testes de UI e `cargo deny check`.
 2. `just mutants` sem sobrevivente nos módulos-alvo do passo 16.
@@ -784,14 +784,14 @@ Diretório `~/Desktop/Personal/syncfast`.
    3. Com a linha ainda fora, `flatpak override --user --no-talk-name=org.freedesktop.secrets`: o painel mostra o motivo, o assistente de New Backup abre com `Continue` desabilitado e `syncfast backup add` sai com exit 1 sem criar nada. Desfazer o override e repor a linha ao terminar.
    4. `flatpak run --command=hostname io.github.raphael_soares.syncfast` igual a `hostname` (item 6 dos em aberto).
 5. Drive real, depois da migração:
-   1. `mkdir -p ~/syncfast-e2e-backup && echo a > ~/syncfast-e2e-backup/a.txt`; criar o backup com `gdrive` / `syncfast-e2e-backup-repo` / `~/syncfast-e2e-backup`.
-   2. `rclone lsf gdrive:syncfast-e2e-backup-repo` lista `config`, `data`, `index`, `keys`, `locks`, `snapshots` e nenhum nome de arquivo do usuário.
+   1. `mkdir -p ~/syncfast-e2e-backup && echo a > ~/syncfast-e2e-backup/a.txt`; criar o backup com a conta `Raphael` / pasta `syncfast-e2e-backup-repo` / `~/syncfast-e2e-backup`. No Drive real só `Raphael:syncfast-e2e-backup-repo` pode ser tocada; nada fora dela.
+   2. `rclone lsf Raphael:syncfast-e2e-backup-repo` lista `config`, `data`, `index`, `keys`, `locks`, `snapshots` e nenhum nome de arquivo do usuário.
    3. `systemctl --user list-timers 'syncfast-backup_*'` lista o timer; `systemctl --user cat syncfast-backup_<id>.timer` mostra `OnCalendar=*-*-* 03:00:00` e `Persistent=true`.
-   4. Pelo `Show Key…`, pegar a chave e criar 8 snapshots em dias diferentes direto no restic (`restic -r rclone:gdrive:syncfast-e2e-backup-repo backup --host "$(hostname)" --time "<data>" ~/syncfast-e2e-backup`, a chave por `--password-file` num arquivo temporário apagado depois); rodar `Back Up Now`: sobram os snapshots da política. Conferir no Drive que o espaço dos packs removidos foi liberado (`rclone about gdrive:` e a lixeira) para validar o `--drive-use-trash=false` (Questões em aberto 1).
+   4. Pelo `Show Key…`, pegar a chave e criar 8 snapshots em dias diferentes direto no restic (`restic -r rclone:Raphael:syncfast-e2e-backup-repo backup --host "$(hostname)" --time "<data>" ~/syncfast-e2e-backup`, a chave por `--password-file` num arquivo temporário apagado depois); rodar `Back Up Now`: sobram os snapshots da política. Conferir no Drive que o espaço dos packs removidos foi liberado (`rclone about Raphael:` e a lixeira) para validar o `--drive-use-trash=false` (Questões em aberto 1).
    5. `nmcli networking off && systemctl --user start syncfast-backup_<id>.service`: a unit sai 75 e o status mostra `Offline`, sem notificação; `nmcli networking on` e, em até 15 min, o backup roda sozinho.
    6. Copiar 3 GiB para a pasta: o cartão mostra barra determinada com ETA.
-   7. Banda: com `limit_upload` em `1M` na aba Settings, copiar 4 MiB novos e rodar `Back Up Now` leva ao menos uns 4 s para enviar; com só `limit_download` em `1M` o mesmo envio não é limitado.
-   8. Limpeza: `Remove Backup…` com `Also delete the key from this computer`, `rclone purge gdrive:syncfast-e2e-backup-repo`, `rm -r ~/syncfast-e2e-backup`.
+   7. Banda: com `limit_upload` em `1M` na aba Settings, copiar 12 MiB aleatórios novos e rodar `Back Up Now` leva uns 8 s ou mais para enviar (o limitador do restic não tem rajada, ver Fatos, mas 12 MiB deixam folga sobre o tempo de abrir o repositório e se protegem de uma rajada de 4 MiB como a do rclone); com só `limit_download` em `1M` o mesmo envio não é limitado.
+   8. Limpeza: `Remove Backup…` com `Also delete the key from this computer`, `rclone purge Raphael:syncfast-e2e-backup-repo`, `rm -r ~/syncfast-e2e-backup`.
 
 ## Questões em aberto
 
