@@ -15,10 +15,19 @@ pub fn secret_field(ui: &mut Ui, label: &str, value: &mut String) -> egui::Respo
     field(ui, label, value, "", true)
 }
 
+const PADDING: i8 = 8;
+
 /// A single-line field `width` wide with no visible label, for a row that
 /// draws its own (a `setting_row`). `label` is the accessible name.
 pub fn inline_field(ui: &mut Ui, label: &str, value: &mut String, width: f32) -> egui::Response {
-    let response = edit_box(ui, value, "", false, width);
+    let outer = egui::vec2(width + 2.0 * f32::from(PADDING) + 2.0, size::CONTROL_HEIGHT);
+    let response = ui
+        .allocate_ui_with_layout(
+            outer,
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| edit_box(ui, value, "", false, width),
+        )
+        .inner;
     response.widget_info(|| {
         let mut info = egui::WidgetInfo::text_edit(ui.is_enabled(), "", value.as_str(), "");
         info.label = Some(label.to_owned());
@@ -54,7 +63,7 @@ fn edit_box(
     let mut frame = egui::Frame::new()
         .fill(palette.surface)
         .corner_radius(radius::CONTROL)
-        .inner_margin(egui::Margin::symmetric(8, 0))
+        .inner_margin(egui::Margin::symmetric(PADDING, 0))
         .begin(ui);
     frame.content_ui.set_min_height(size::CONTROL_HEIGHT - 2.0);
     let response = frame.content_ui.add(

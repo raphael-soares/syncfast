@@ -25,20 +25,39 @@ const SECTIONS: [(&str, &[&str]); 5] = [
 /// What one row shows.
 struct Row {
     value: Value,
-    /// The resolved settings of the scope, to judge what one key does to
-    /// another.
-    behavior: Behavior,
+    /// What the key becomes when reset.
+    fallback: Value,
+    /// The settings a change of this key can reach.
+    targets: Vec<Target>,
     caption: String,
     /// `Reset to Default` is offered: the key is set in this scope.
     resettable: bool,
 }
 
-/// The text the user is typing in a duration or number field, and why it was
-/// refused.
+impl Row {
+    fn basis(&self) -> Vec<Behavior> {
+        self.targets
+            .iter()
+            .map(|target| target.behavior.clone())
+            .collect()
+    }
+}
+
+/// A resolved setting, to judge what one key does to another. `reached` is
+/// false when the change does not flow into it (a sync that sets the key
+/// itself).
+struct Target {
+    behavior: Behavior,
+    reached: bool,
+}
+
+/// What the user typed in a duration or number field, and why a change was
+/// refused, with the settings the refusal was judged against.
 #[derive(Clone)]
 struct Draft {
-    text: String,
+    text: Option<String>,
     error: Option<String>,
+    basis: Vec<Behavior>,
 }
 
 /// The sections of the selected sync.
@@ -53,7 +72,11 @@ pub fn sync(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
         let overridden = pair.effective.origin(def.name) == Origin::Sync;
         Row {
             value: def.get(&pair.effective.behavior),
-            behavior: pair.effective.behavior.clone(),
+            fallback: def.get(&vm.defaults),
+            targets: vec![Target {
+                behavior: pair.effective.behavior.clone(),
+                reached: true,
+            }],
             caption: if overridden {
                 format!("Overrides the default ({inherited})")
             } else {
@@ -84,9 +107,18 @@ pub fn defaults(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
             1 => notes.push("Overridden by 1 sync".to_owned()),
             count => notes.push(format!("Overridden by {count} syncs")),
         }
+        let mut targets = vec![Target {
+            behavior: vm.defaults.clone(),
+            reached: true,
+        }];
+        targets.extend(vm.pairs.iter().map(|pair| Target {
+            behavior: pair.effective.behavior.clone(),
+            reached: pair.effective.origin(def.name) != Origin::Sync,
+        }));
         Row {
             value: def.get(&vm.defaults),
-            behavior: vm.defaults.clone(),
+            fallback: def.builtin(),
+            targets,
             caption: notes.join(" \u{b7} "),
             resettable: set,
         }
@@ -124,16 +156,29 @@ fn sections(ui: &mut Ui, scope: &SettingScope, row: impl Fn(&KeyDef) -> Row) -> 
 
 fn setting(ui: &mut Ui, scope: &SettingScope, def: &KeyDef, row: &Row, actions: &mut Vec<Action>) {
     let title = label(def.name);
-    let draft_id = Id::new(("setting-draft", scope_name(scope), def.name));
+    let field = Field {
+        scope,
+        def,
+        row,
+        draft_id: Id::new(("setting-draft", scope_name(scope), def.name)),
+    };
+    let draft = field.draft(ui);
     let caption = (!row.caption.is_empty()).then_some(row.caption.as_str());
     let error = setting_row(ui, title, caption, |ui| {
-        let error = control(ui, scope, def, row, draft_id, actions);
+        let mut error = draft.as_ref().and_then(|draft| draft.error.clone());
+        let typed = draft.and_then(|draft| draft.text);
+        control(ui, &field, typed.clone(), &mut error, actions);
         if row.resettable && icon_button(ui, Icon::RotateCcw, "Reset to Default").clicked() {
-            ui.data_mut(|data| data.remove::<Draft>(draft_id));
-            actions.push(Action::ResetSetting {
-                scope: scope.clone(),
-                key: def.name.to_owned(),
-            });
+            if let Some(message) = refusal(row, def, &row.fallback) {
+                field.refuse(ui, typed, message, &mut error);
+            } else {
+                field.clear(ui);
+                error = None;
+                actions.push(Action::ResetSetting {
+                    scope: scope.clone(),
+                    key: def.name.to_owned(),
+                });
+            }
         }
         error
     });
@@ -142,60 +187,106 @@ fn setting(ui: &mut Ui, scope: &SettingScope, def: &KeyDef, row: &Row, actions: 
     }
 }
 
+/// One row being drawn: where its draft lives and what it can change.
+struct Field<'a> {
+    scope: &'a SettingScope,
+    def: &'a KeyDef,
+    row: &'a Row,
+    draft_id: Id,
+}
+
+impl Field<'_> {
+    /// The draft of the row. A refusal is dropped once the settings it was
+    /// judged against have changed.
+    fn draft(&self, ui: &Ui) -> Option<Draft> {
+        let mut draft = ui.data(|data| data.get_temp::<Draft>(self.draft_id))?;
+        let basis = self.row.basis();
+        if draft.basis == basis {
+            return Some(draft);
+        }
+        if draft.text.is_none() {
+            self.clear(ui);
+            return None;
+        }
+        draft.error = None;
+        draft.basis = basis;
+        ui.data_mut(|data| data.insert_temp(self.draft_id, draft.clone()));
+        Some(draft)
+    }
+
+    fn clear(&self, ui: &Ui) {
+        ui.data_mut(|data| data.remove::<Draft>(self.draft_id));
+    }
+
+    fn keep(&self, ui: &Ui, text: Option<String>, error: Option<String>) {
+        let draft = Draft {
+            text,
+            error,
+            basis: self.row.basis(),
+        };
+        ui.data_mut(|data| data.insert_temp(self.draft_id, draft));
+    }
+
+    fn refuse(&self, ui: &Ui, typed: Option<String>, message: String, error: &mut Option<String>) {
+        self.keep(ui, typed, Some(message.clone()));
+        *error = Some(message);
+    }
+
+    /// Asks for `value`, unless it breaks a relation between keys in any
+    /// setting it reaches.
+    fn propose(
+        &self,
+        ui: &Ui,
+        value: &Value,
+        typed: Option<String>,
+        error: &mut Option<String>,
+        actions: &mut Vec<Action>,
+    ) {
+        if let Some(message) = refusal(self.row, self.def, value) {
+            self.refuse(ui, typed, message, error);
+            return;
+        }
+        self.clear(ui);
+        *error = None;
+        if *value != self.row.value {
+            actions.push(Action::SetSetting {
+                scope: self.scope.clone(),
+                key: self.def.name.to_owned(),
+                value: value.to_string(),
+            });
+        }
+    }
+}
+
 fn control(
     ui: &mut Ui,
-    scope: &SettingScope,
-    def: &KeyDef,
-    row: &Row,
-    draft_id: Id,
+    field: &Field,
+    typed: Option<String>,
+    error: &mut Option<String>,
     actions: &mut Vec<Action>,
-) -> Option<String> {
-    let title = label(def.name);
-    let set = |actions: &mut Vec<Action>, value: &Value| {
-        actions.push(Action::SetSetting {
-            scope: scope.clone(),
-            key: def.name.to_owned(),
-            value: value.to_string(),
-        });
-    };
-    match (&def.access, &row.value) {
+) {
+    let title = label(field.def.name);
+    match (&field.def.access, &field.row.value) {
         (Access::Bool { .. }, Value::Bool(current)) => {
             let mut on = *current;
             if toggle(ui, &mut on, title).changed() {
-                set(actions, &Value::Bool(on));
+                field.propose(ui, &Value::Bool(on), None, error, actions);
             }
-            None
         }
         (Access::Choice { names, .. }, Value::Choice(current)) => {
-            let mut error = ui
-                .data(|data| data.get_temp::<Draft>(draft_id))
-                .and_then(|draft| draft.error);
-            let shown = choice_label(def.name, current);
-            let combo = egui::ComboBox::from_id_salt(draft_id.with("combo"))
+            let shown = choice_label(field.def.name, current);
+            let combo = egui::ComboBox::from_id_salt(field.draft_id.with("combo"))
                 .selected_text(shown)
                 .width(size::SETTING_COMBO)
                 .show_ui(ui, |ui| {
                     for name in *names {
                         let selected = name == current;
-                        if !ui
-                            .selectable_label(selected, choice_label(def.name, name))
+                        if ui
+                            .selectable_label(selected, choice_label(field.def.name, name))
                             .clicked()
-                            || selected
+                            && !selected
                         {
-                            continue;
-                        }
-                        let value = Value::Choice(name);
-                        if let Some(message) = refusal(row, def, &value) {
-                            let draft = Draft {
-                                text: String::new(),
-                                error: Some(message.clone()),
-                            };
-                            ui.data_mut(|data| data.insert_temp(draft_id, draft));
-                            error = Some(message);
-                        } else {
-                            ui.data_mut(|data| data.remove::<Draft>(draft_id));
-                            error = None;
-                            set(actions, &value);
+                            field.propose(ui, &Value::Choice(name), None, error, actions);
                         }
                     }
                 });
@@ -205,31 +296,35 @@ fn control(
                 info.current_text_value = Some(shown.to_owned());
                 info
             });
-            error
         }
-        _ => text_control(ui, scope, def, row, draft_id, actions),
+        _ => text_control(ui, field, typed, error, actions),
     }
 }
 
-/// The problem between keys that setting `def` to `value` would cause, which
-/// the config refuses to write.
+/// The first relation between keys that setting `def` to `value` would
+/// break in a setting it reaches, as the config would refuse to write it.
 fn refusal(row: &Row, def: &KeyDef, value: &Value) -> Option<String> {
-    let mut next = row.behavior.clone();
-    def.apply(&mut next, value);
-    settings::relation_problem(&next)
-        .filter(|problem| settings::relation_problem(&row.behavior).as_ref() != Some(problem))
+    row.targets
+        .iter()
+        .filter(|target| target.reached)
+        .find_map(|target| {
+            let mut next = target.behavior.clone();
+            def.apply(&mut next, value);
+            settings::relation_problem(&next).filter(|problem| {
+                settings::relation_problem(&target.behavior).as_ref() != Some(problem)
+            })
+        })
 }
 
 fn text_control(
     ui: &mut Ui,
-    scope: &SettingScope,
-    def: &KeyDef,
-    row: &Row,
-    draft_id: Id,
+    field: &Field,
+    typed: Option<String>,
+    error: &mut Option<String>,
     actions: &mut Vec<Action>,
-) -> Option<String> {
-    let title = label(def.name);
-    if let Some(unit) = suffix(def.name) {
+) {
+    let title = label(field.def.name);
+    if let Some(unit) = suffix(field.def.name) {
         let palette = theme::palette(ui.ctx());
         ui.label(
             RichText::new(unit)
@@ -237,47 +332,18 @@ fn text_control(
                 .color(palette.secondary),
         );
     }
-    let draft = ui.data(|data| data.get_temp::<Draft>(draft_id));
-    let mut text = draft
-        .as_ref()
-        .map_or_else(|| row.value.to_string(), |draft| draft.text.clone());
-    let mut error = draft.and_then(|draft| draft.error);
+    let mut text = typed.unwrap_or_else(|| field.row.value.to_string());
     let response = inline_field(ui, title, &mut text, size::SETTING_FIELD);
     if response.changed() {
-        error = None;
-        let draft = Draft {
-            text: text.clone(),
-            error: None,
-        };
-        ui.data_mut(|data| data.insert_temp(draft_id, draft));
+        *error = None;
+        field.keep(ui, Some(text.clone()), None);
     }
     if response.lost_focus() {
-        let parsed = def
-            .parse_text(text.trim())
-            .and_then(|value| refusal(row, def, &value).map_or(Ok(value), Err));
-        match parsed {
-            Ok(value) => {
-                ui.data_mut(|data| data.remove::<Draft>(draft_id));
-                error = None;
-                if value != row.value {
-                    actions.push(Action::SetSetting {
-                        scope: scope.clone(),
-                        key: def.name.to_owned(),
-                        value: value.to_string(),
-                    });
-                }
-            }
-            Err(message) => {
-                error = Some(message.clone());
-                let draft = Draft {
-                    text,
-                    error: Some(message),
-                };
-                ui.data_mut(|data| data.insert_temp(draft_id, draft));
-            }
+        match field.def.parse_text(text.trim()) {
+            Ok(value) => field.propose(ui, &value, Some(text), error, actions),
+            Err(message) => field.refuse(ui, Some(text), message, error),
         }
     }
-    error
 }
 
 fn scope_name(scope: &SettingScope) -> &str {

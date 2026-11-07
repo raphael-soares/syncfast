@@ -332,3 +332,111 @@ fn deleting_the_loser_without_a_winner_is_refused_in_line() {
     harness.get_by_label("conflict_loser \"delete\" needs a conflict_resolve that picks a winner");
     assert!(harness.state().actions.is_empty());
 }
+
+fn defaults_screen() -> impl FnMut(&mut egui::Ui, &ViewModel) -> Vec<Action> + 'static {
+    |ui, vm| ui::options::defaults(ui, vm)
+}
+
+fn with_a_sync_that_waits(max_wait: &str, defaults: &str) -> ViewModel {
+    from_config(
+        &config(defaults, &format!("max_wait = \"{max_wait}\"\n")),
+        None,
+    )
+}
+
+#[test]
+fn a_default_that_breaks_another_sync_is_refused_in_line() {
+    let mut harness = harness(with_a_sync_that_waits("1m", ""), defaults_screen());
+    harness.run();
+
+    type_into(&mut harness, "Wait after changes", "2m");
+    commit(&mut harness);
+
+    harness.get_by_label("max_wait must be at least debounce");
+    assert!(harness.state().actions.is_empty());
+}
+
+#[test]
+fn a_default_unrelated_to_what_another_sync_sets_is_saved() {
+    let mut harness = harness(with_a_sync_that_waits("1m", ""), defaults_screen());
+    harness.run();
+
+    type_into(&mut harness, "Check Drive every", "10m");
+    commit(&mut harness);
+
+    assert_eq!(
+        harness.state().actions,
+        [Action::SetSetting {
+            scope: SettingScope::Defaults,
+            key: "interval".to_owned(),
+            value: "10m".to_owned(),
+        }]
+    );
+}
+
+#[test]
+fn resetting_a_setting_that_would_break_the_sync_is_refused_in_line() {
+    let vm = options(
+        "conflict_resolve = \"none\"",
+        "conflict_resolve = \"newer\"\nconflict_loser = \"delete\"\n",
+    );
+    let mut harness = harness(vm, screen());
+    harness.run();
+
+    harness
+        .get_all_by_label("Reset to Default")
+        .next()
+        .unwrap()
+        .click();
+    harness.run();
+
+    harness.get_by_label("conflict_loser \"delete\" needs a conflict_resolve that picks a winner");
+    assert!(harness.state().actions.is_empty());
+}
+
+#[test]
+fn resetting_a_default_that_would_break_another_sync_is_refused_in_line() {
+    let vm = with_a_sync_that_waits("20s", "debounce = \"10s\"");
+    let mut harness = harness(vm, defaults_screen());
+    harness.run();
+
+    harness.get_by_label("Reset to Default").click();
+    harness.run();
+
+    harness.get_by_label("max_wait must be at least debounce");
+    assert!(harness.state().actions.is_empty());
+}
+
+#[test]
+fn a_refusal_goes_away_when_the_settings_it_was_judged_against_change() {
+    let mut harness = harness(options("", ""), screen());
+    harness.run();
+    type_into(&mut harness, "Longest wait while editing", "10s");
+    commit(&mut harness);
+    harness.get_by_label("max_wait must be at least debounce");
+
+    harness.state_mut().vm = options("", "debounce = \"5s\"\n");
+    harness.run();
+
+    assert!(
+        harness
+            .query_by_label("max_wait must be at least debounce")
+            .is_none()
+    );
+}
+
+#[test]
+fn a_number_field_sits_in_its_row_like_the_switch_above_it() {
+    let mut harness = harness(options("", ""), screen());
+    harness.run();
+
+    let centre = |role, label| harness.get_by_role_and_label(role, label).rect().center().y;
+    let switch = centre(Role::CheckBox, "Watch for changes");
+    let wait = centre(Role::TextInput, "Wait after changes");
+    let longest = centre(Role::TextInput, "Longest wait while editing");
+
+    assert!(
+        ((wait - switch) - (longest - wait)).abs() < 1.0,
+        "{switch} {wait} {longest}"
+    );
+}

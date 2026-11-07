@@ -7,7 +7,7 @@ use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use syncfast_core::config::SettingScope;
 use syncfast_core::state::GateKind;
 use syncfast_gui::gui_state::SettingsPane;
-use syncfast_gui::theme::ThemeChoice;
+use syncfast_gui::theme::{Palette, ThemeChoice};
 use syncfast_gui::ui::settings::AppearanceView;
 use syncfast_gui::ui::{self, AccountStatus, Action, RemoteRow, ViewModel};
 
@@ -553,4 +553,25 @@ fn the_defaults_pane_sits_between_accounts_and_the_app_group() {
 
     assert!(accounts.top() < defaults.top());
     assert!(defaults.top() < harness.get_by_label("App").rect().top());
+}
+
+#[test]
+fn the_defaults_pane_fits_the_minimum_window_in_both_themes() {
+    for palette in [Palette::dark(), Palette::light()] {
+        let size = egui::vec2(760.0, 520.0);
+        let mut harness = harness_in(defaults(), size, palette, screen());
+        harness.run();
+
+        let fits = |rect: egui::Rect| rect.left() >= 0.0 && rect.right() <= size.x;
+        for field in harness.get_all_by_role(egui::accesskit::Role::TextInput) {
+            assert!(fits(field.rect()), "{:?}", field.rect());
+        }
+        for control in harness.get_all_by_label("Reset to Default") {
+            assert!(fits(control.rect()));
+        }
+        for row in ["Check Drive every", "Watch for changes"] {
+            let rect = harness.get_all_by_label(row).next().unwrap().rect();
+            assert!(fits(rect), "{row} sticks out: {rect:?}");
+        }
+    }
 }
