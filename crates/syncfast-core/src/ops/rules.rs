@@ -11,7 +11,10 @@ use super::{DEFAULT_WAIT_SECONDS, OpError, Ops, PairView};
 use crate::config::{Config, Pair, expand_tilde, filter_line_problem};
 use crate::filters::{self, ExclusionSummary, PRESETS};
 use crate::paths::Paths;
-use crate::state::{Gate, GateKind, State};
+use crate::state::{Gate, GateKind, State, lock_pair};
+
+/// How long `after_filters_saved` waits for a running round.
+const LOCK_WAIT: Duration = Duration::from_secs(10);
 
 static TEST_FILES: AtomicU64 = AtomicU64::new(0);
 
@@ -64,8 +67,11 @@ fn check_rules(presets: &[String], rules: &[String]) -> Result<(), OpError> {
 /// had no gate at all.
 ///
 /// # Errors
-/// The state of the sync cannot be read or written.
+/// The sync is running past the wait, or its state cannot be read or written.
 pub async fn after_filters_saved(paths: &Paths, id: &str) -> Result<bool, OpError> {
+    let Some(_lock) = lock_pair(paths, id, LOCK_WAIT).await? else {
+        return Err(OpError::Busy);
+    };
     let mut state = State::load(paths, id).await?;
     match state.gate.as_ref().map(|gate| gate.kind) {
         None => Ok(true),
