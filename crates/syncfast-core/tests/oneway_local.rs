@@ -126,17 +126,21 @@ impl Bed {
     }
 
     async fn confirm(&self, kind: ReviewKind) {
-        let clock = Zoned::now;
-        let reviewed = preview(&self.env(&clock), PAIR, kind).await.unwrap();
-        self.confirm_in(kind, reviewed.mode).await;
+        self.confirm_as(kind, None).await;
     }
 
     async fn confirm_in(&self, kind: ReviewKind, mode: SyncMode) {
+        self.confirm_as(kind, Some(mode)).await;
+    }
+
+    /// Previews once and saves the marker for `mode`, or for the mode the
+    /// preview ran in.
+    async fn confirm_as(&self, kind: ReviewKind, mode: Option<SyncMode>) {
         let clock = Zoned::now;
         let reviewed = preview(&self.env(&clock), PAIR, kind).await.unwrap();
         ConfirmMarker {
             kind,
-            mode,
+            mode: mode.unwrap_or(reviewed.mode),
             filters_hash: reviewed.filters_hash,
         }
         .save(&self.paths, PAIR)
