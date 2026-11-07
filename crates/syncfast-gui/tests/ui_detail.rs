@@ -155,8 +155,12 @@ fn the_mode_chip_never_overlaps_the_subtitle_or_the_actions_in_the_smallest_wind
         .into_iter()
         .fold(f32::INFINITY, f32::min);
 
+    let title_left = harness.get_by_label("Google Drive").rect().left();
+
     assert!(!chip.intersects(subtitle), "{chip:?} {subtitle:?}");
     assert!(chip.right() <= actions_left, "{chip:?} {actions_left}");
+    assert!(chip.left() >= title_left, "{chip:?} {title_left}");
+    assert!(subtitle.width() > 0.0, "{subtitle:?}");
 }
 
 #[test]
@@ -174,10 +178,27 @@ fn a_two_way_sync_has_no_mode_chip_and_a_one_way_list_row_names_its_mode() {
     assert!(upload.query_all_by_label("Upload only").count() >= 1);
     assert!(
         upload
-            .query_all_by_label_contains("Upload only \u{b7} ")
+            .query_all_by_label_contains(" \u{b7} Upload only")
             .count()
             >= 1
     );
+}
+
+#[test]
+fn a_narrow_sidebar_row_puts_the_sync_age_before_the_mode() {
+    let mut vm = view(mirrored(SyncMode::MirrorUp, "/home/ada/Notes"));
+    vm.sidebar_width = 200.0;
+    let harness = harness_sized(vm, egui::vec2(760.0, 520.0));
+
+    let label = harness
+        .get_all_by_label_contains(" \u{b7} Mirror to Drive")
+        .map(|node| node.accesskit_node().label().unwrap_or_default())
+        .find(|label| label.starts_with("Google Drive, "))
+        .expect("the sidebar row");
+    let synced = label.find("Synced").expect("the sync age");
+    let mode = label.find("Mirror to Drive").expect("the mode");
+
+    assert!(synced < mode, "{label}");
 }
 
 #[test]

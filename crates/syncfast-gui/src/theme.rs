@@ -328,6 +328,8 @@ pub mod radius {
     pub const CONTROL: u8 = 6;
     pub const CARD: u8 = 8;
     pub const WINDOW: u8 = 10;
+    /// Fully rounded ends: egui clamps it to half the height.
+    pub const PILL: u8 = u8::MAX;
 }
 
 /// Fixed dimensions, in points.

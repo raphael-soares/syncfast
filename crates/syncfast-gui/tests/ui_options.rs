@@ -835,6 +835,26 @@ fn a_sync_on_never_ask_says_its_safety_is_lowered() {
 }
 
 #[test]
+fn the_download_caption_promises_versions_only_while_versions_are_on() {
+    let mut kept = harness(options("", "mode = \"download\"\n"), screen());
+    let mut not_kept = harness(
+        options("", "mode = \"download\"\nversions = false\n"),
+        screen(),
+    );
+    kept.run();
+    not_kept.run();
+
+    kept.get_by_label_contains("Replaced files are kept as versions.");
+    not_kept.get_by_label_contains("Nothing is ever deleted.");
+    assert_eq!(
+        not_kept
+            .query_all_by_label_contains("Replaced files are kept")
+            .count(),
+        0
+    );
+}
+
+#[test]
 fn the_mode_row_offers_every_mode_and_says_what_the_current_one_does() {
     let mut harness = harness(options("", "mode = \"upload\"\n"), screen());
     harness.run();

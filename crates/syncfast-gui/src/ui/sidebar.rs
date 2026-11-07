@@ -52,7 +52,7 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel) -> Vec<Action> {
                 let subtitle = if mode == SyncMode::Bisync {
                     synced
                 } else {
-                    format!("{} \u{b7} {synced}", options::mode_label(mode.name()))
+                    format!("{synced} \u{b7} {}", options::mode_label(mode.name()))
                 };
                 let row = SidebarRow {
                     icon: Icon::Folder,

@@ -98,7 +98,10 @@ pub fn sync(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
                 reached: true,
             }],
             caption: if def.name == "mode" {
-                mode_caption(pair.effective.behavior.mode.name()).to_owned()
+                mode_caption(
+                    pair.effective.behavior.mode.name(),
+                    pair.effective.behavior.versions,
+                )
             } else if overridden {
                 format!("Overrides the default ({inherited})")
             } else {
@@ -627,16 +630,23 @@ pub fn mode_label(name: &str) -> &str {
 
 /// The caption of the mode row. The mirrors have none: their legend is the
 /// warning under the section.
-fn mode_caption(name: &str) -> &'static str {
+fn mode_caption(name: &str, versions: bool) -> String {
     match name {
         "upload" => {
             "New and changed files on this computer are copied to Drive. Nothing is ever deleted."
+                .to_owned()
         }
         "download" => {
-            "New and changed files on Drive are copied to this computer. Nothing is ever deleted. Replaced files are kept as versions."
+            let caption = "New and changed files on Drive are copied to this computer. Nothing is ever deleted.";
+            if versions {
+                format!("{caption} Replaced files are kept as versions.")
+            } else {
+                caption.to_owned()
+            }
         }
-        "mirror_up" | "mirror_down" => "",
-        _ => "Changes on either side reach the other. Deleted files are deleted on both sides.",
+        "mirror_up" | "mirror_down" => String::new(),
+        _ => "Changes on either side reach the other. Deleted files are deleted on both sides."
+            .to_owned(),
     }
 }
 
