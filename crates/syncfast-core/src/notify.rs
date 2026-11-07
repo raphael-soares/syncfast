@@ -95,7 +95,12 @@ pub fn notice(pair: &Pair, behavior: &Behavior, alert: &Alert) -> Notice {
         },
         Alert::NewConflicts(count) if behavior.conflict_loser == ConflictLoser::Delete => (
             format!("{name}: {count} conflicts resolved"),
-            "The losing version was deleted. Local copies stay in the versions folder.".to_owned(),
+            if behavior.versions {
+                "The losing version was deleted. Local copies stay in the versions folder."
+            } else {
+                "The losing version was deleted and not kept."
+            }
+            .to_owned(),
         ),
         Alert::NewConflicts(count) => (
             format!("{name}: {count} new conflicts"),
@@ -436,6 +441,20 @@ mod tests {
             notice.body,
             "The losing version was deleted. Local copies stay in the versions folder."
         );
+    }
+
+    #[test]
+    fn a_deleted_loser_of_a_sync_without_versions_says_it_was_not_kept() {
+        let behavior = Behavior {
+            conflict_loser: ConflictLoser::Delete,
+            versions: false,
+            ..Behavior::default()
+        };
+
+        let notice = notice(&pair(), &behavior, &Alert::NewConflicts(1));
+
+        assert_eq!(notice.title, "Documents: 1 conflicts resolved");
+        assert_eq!(notice.body, "The losing version was deleted and not kept.");
     }
 
     #[test]

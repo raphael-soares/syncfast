@@ -708,3 +708,13 @@ fn the_warnings_wrap_inside_the_minimum_window_in_both_themes() {
         }
     }
 }
+
+#[test]
+fn the_defaults_panel_warns_about_a_default_that_turns_versions_off() {
+    let vm = options("versions = false\n", "");
+    let mut harness = harness(vm, defaults_screen());
+
+    harness.run();
+
+    harness.get_by_label(NOT_KEPT);
+}
