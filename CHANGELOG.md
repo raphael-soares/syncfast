@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/raphael-soares/syncfast/compare/v0.8.0...v0.9.0) (2026-11-07)
+
+
+### Features
+
+* name conflict losers by path and warn about deleted versions ([#72](https://github.com/raphael-soares/syncfast/issues/72)) ([07610e7](https://github.com/raphael-soares/syncfast/commit/07610e79d60c1d53f38efc47c561bf668d28491c)), closes [#51](https://github.com/raphael-soares/syncfast/issues/51)
+
 ## [0.8.0](https://github.com/raphael-soares/syncfast/compare/v0.7.0...v0.8.0) (2026-11-07)
 
 
