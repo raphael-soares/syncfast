@@ -486,7 +486,7 @@ async fn record_failed_check(
             state,
             &Outcome::Transient,
             exit_code,
-            None,
+            Vec::new(),
             Some(message),
             finished,
         )
@@ -667,6 +667,12 @@ impl Round<'_> {
             .map(Alert::NewConflicts)
             .into_iter()
             .chain(Alert::synced(&summary))
+            .chain(
+                auto_reviewed
+                    .map(|reviewed| reviewed.counts.deleted())
+                    .filter(|deleted| *deleted > 0)
+                    .map(|deleted| Alert::AutoReviewed { deleted }),
+            )
             .collect();
         summary.changes.truncate(STORED_CHANGES);
         state.last_run = Some(LastRun {

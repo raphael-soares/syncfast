@@ -2040,6 +2040,80 @@ async fn automatic_confirms_a_mass_deletion_and_the_remote_loses_the_files() {
     assert_eq!(reviewed.counts.delete_remote, 3);
 }
 
+async fn automatic_review_of_a_mass_deletion(bed: &Bed, notifications: &str) {
+    four_files_synced(bed).await;
+    bed.write_behavior(
+        &format!("review = \"automatic\"\n\n[notifications]\n{notifications}"),
+        "",
+    );
+    delete_three_locally(bed);
+    assert_eq!(
+        bed.run().await,
+        RunReport::Ran {
+            mode: Mode::Normal,
+            outcome: Outcome::TooManyDeletes
+        }
+    );
+    assert_eq!(bed.run().await, ran_ok(Mode::Force));
+}
+
+#[tokio::test]
+async fn an_automatic_review_that_deleted_files_notifies_when_success_is_on() {
+    let Some(bed) = bed() else { return };
+
+    automatic_review_of_a_mass_deletion(&bed, "success = true\n").await;
+
+    assert!(
+        bed.notices
+            .titles()
+            .contains(&"Docs: reviewed automatically".to_owned()),
+        "{:?}",
+        bed.notices.titles()
+    );
+    assert!(
+        bed.notices
+            .bodies()
+            .contains(&"Deleted 3 files after an automatic review.".to_owned()),
+        "{:?}",
+        bed.notices.bodies()
+    );
+}
+
+#[tokio::test]
+async fn an_automatic_review_that_deleted_files_is_silent_when_success_is_off() {
+    let Some(bed) = bed() else { return };
+
+    automatic_review_of_a_mass_deletion(&bed, "success = false\n").await;
+
+    assert!(
+        !bed.notices
+            .titles()
+            .contains(&"Docs: reviewed automatically".to_owned()),
+        "{:?}",
+        bed.notices.titles()
+    );
+}
+
+#[tokio::test]
+async fn an_automatic_review_that_deleted_nothing_is_silent_even_with_success_on() {
+    let Some(bed) = bed() else { return };
+    bed.write_behavior(
+        "review = \"automatic\"\n\n[notifications]\nsuccess = true\n",
+        "",
+    );
+    write(&bed.local, "a.txt", "a");
+
+    assert_eq!(bed.run().await, ran_ok(Mode::Resync));
+
+    assert!(
+        !bed.notices
+            .titles()
+            .contains(&"Docs: reviewed automatically".to_owned()),
+        "{:?}",
+        bed.notices.titles()
+    );
+}
+
 #[tokio::test]
 async fn manual_never_confirms_a_gate_by_itself() {
     let Some(bed) = bed() else { return };

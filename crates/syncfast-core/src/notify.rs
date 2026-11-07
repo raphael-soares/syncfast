@@ -57,7 +57,7 @@ impl Policy {
             Alert::Gate { .. } => self.needs_action,
             Alert::NewConflicts(_) => self.conflicts,
             Alert::Failing(_) => self.failures_after > 0,
-            Alert::Synced { .. } => self.success,
+            Alert::Synced { .. } | Alert::AutoReviewed { .. } => self.success,
         }
     }
 
@@ -787,6 +787,7 @@ mod tests {
         assert!(policy.allows(&Alert::NewConflicts(1)));
         assert!(policy.allows(&Alert::Failing("x".into())));
         assert!(!policy.allows(&Alert::synced(&summary(1, 0, 0, 0)).unwrap()));
+        assert!(!policy.allows(&Alert::AutoReviewed { deleted: 1 }));
     }
 
     #[test]
@@ -802,6 +803,7 @@ mod tests {
         assert!(!off.allows(&Alert::NewConflicts(1)));
         assert!(!off.allows(&Alert::Failing("x".into())));
         assert!(off.allows(&Alert::synced(&summary(1, 0, 0, 0)).unwrap()));
+        assert!(off.allows(&Alert::AutoReviewed { deleted: 1 }));
     }
 
     #[test]

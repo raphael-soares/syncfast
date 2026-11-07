@@ -14,7 +14,7 @@ Open Settings with `Ctrl+,` or from the tray menu. It is a dialog over the windo
   - **Needs action** is on by default: a sync is waiting for a review, a resync or another decision.
   - **Conflicts** is on by default: a round kept two versions of a file.
   - **Failures** is the number of failed rounds in a row before the "Failing" notice appears (3 by default). 0 turns that notice off; the sync still shows as Failing in the list after 3 failed rounds.
-  - **Success** is off by default. When on, a round that changed files says how many were uploaded, downloaded and deleted.
+  - **Success** is off by default. When on, a round that changed files says how many were uploaded, downloaded and deleted. It also tells when syncfast confirmed a review by itself and the round deleted files.
 - **Appearance**: **Theme** is System, Light, Dark or one of your theme files.
 
 The same keys are available from the command line (`syncfast settings`) and to agents; see [agents.md](../agents.md).
