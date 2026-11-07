@@ -1,0 +1,18 @@
+{"time":"2026-11-07T12:32:47.637885252-03:00","level":"info","msg":"Setting --ignore-listing-checksum as neither --checksum nor --compare checksum are set.","source":"bisync/compare.go:90"}
+{"time":"2026-11-07T12:32:47.638054765-03:00","level":"info","msg":"Bisyncing with Comparison Settings: \n{\n\t\"Modtime\": true,\n\t\"Size\": true,\n\t\"Checksum\": false,\n\t\"HashType1\": 0,\n\t\"HashType2\": 0,\n\t\"NoSlowHash\": false,\n\t\"SlowHashSyncOnly\": false,\n\t\"SlowHashDetected\": true,\n\t\"DownloadHash\": false\n}\n","source":"bisync/compare.go:108"}
+{"time":"2026-11-07T12:32:47.638217605-03:00","level":"info","msg":"lock file renewed for 2m0s. New expiration: 2026-11-07 12:34:47.638165405 -0300 -03 m=+120.841592936","source":"bisync/lockfile.go:91"}
+{"time":"2026-11-07T12:32:47.638511125-03:00","level":"info","msg":"Synching Path1 \"/tmp/tmp.xPJXfVVpbL/local/\" with Path2 \"Raphael{0ywRR}:syncfast-gdocs-spike/export_new_local_import/\"","source":"bisync/operations.go:238"}
+{"time":"2026-11-07T12:32:47.638824811-03:00","level":"info","msg":"Building Path1 and Path2 listings","source":"bisync/operations.go:310"}
+{"time":"2026-11-07T12:32:48.084263355-03:00","level":"info","msg":"Path1 checking for diffs","source":"bisync/operations.go:320"}
+{"time":"2026-11-07T12:32:48.084406522-03:00","level":"info","msg":"Path2 checking for diffs","source":"bisync/operations.go:328"}
+{"time":"2026-11-07T12:32:48.084478407-03:00","level":"info","msg":"- Path2             File changed: time (newer)                  - fresh.docx","source":"bisync/deltas.go:232"}
+{"time":"2026-11-07T12:32:48.08451378-03:00","level":"info","msg":"Path2:    1 changes:    0 new,    1 modified,    0 deleted","source":"bisync/deltas.go:126"}
+{"time":"2026-11-07T12:32:48.084535929-03:00","level":"info","msg":"(Modified:    1 newer,    0 older)","source":"bisync/deltas.go:145"}
+{"time":"2026-11-07T12:32:48.084556535-03:00","level":"info","msg":"Applying changes","source":"bisync/operations.go:381"}
+{"time":"2026-11-07T12:32:48.084651727-03:00","level":"info","msg":"- Path2             Queue copy to Path1                         - /tmp/tmp.xPJXfVVpbL/local/fresh.docx","source":"bisync/deltas.go:475"}
+{"time":"2026-11-07T12:32:48.084682851-03:00","level":"info","msg":"- Path2             Do queued copies to                         - Path1","source":"bisync/deltas.go:487"}
+{"time":"2026-11-07T12:32:49.241706605-03:00","level":"info","msg":"Copied (Rcat, replaced existing)","size":6486,"object":"fresh.docx","objectType":"*drive.documentObject","source":"operations/copy.go:382"}
+{"time":"2026-11-07T12:32:49.242032929-03:00","level":"info","msg":"Updating listings","source":"bisync/operations.go:395"}
+{"time":"2026-11-07T12:32:49.24254013-03:00","level":"info","msg":"Validating listings for Path1 \"/tmp/tmp.xPJXfVVpbL/local/\" vs Path2 \"Raphael{0ywRR}:syncfast-gdocs-spike/export_new_local_import/\"","source":"bisync/operations.go:434"}
+{"time":"2026-11-07T12:32:49.24265534-03:00","level":"info","msg":"Bisync successful","source":"bisync/operations.go:218"}
+{"time":"2026-11-07T12:32:49.242731772-03:00","level":"notice","msg":"\nTransferred:   \t    6.334 KiB / 6.334 KiB, 100%, 0 B/s, ETA -\nChecks:                11 / 11, 100%, Listed 11\nTransferred:            2 / 2, 100%\nElapsed time:         1.6s\n\n","stats":{"bytes":6486,"checks":11,"deletedDirs":0,"deletes":0,"elapsedTime":1.603740369,"errors":0,"eta":null,"fatalError":false,"listed":11,"renames":0,"retryError":false,"serverSideCopies":0,"serverSideCopyBytes":0,"serverSideMoveBytes":0,"serverSideMoves":0,"speed":0,"totalBytes":6486,"totalChecks":11,"totalTransfers":2,"transferTime":0.895494109,"transfers":2},"source":"accounting/stats.go:549"}
