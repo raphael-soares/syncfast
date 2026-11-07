@@ -19,6 +19,7 @@ use syncfast_core::filters::ExclusionSummary;
 use syncfast_core::flatpak;
 use syncfast_core::network::{Network as _, NetworkManager};
 use syncfast_core::notify::Notice;
+use syncfast_core::ops::first_round_confirmed;
 use syncfast_core::paths::Paths;
 use syncfast_core::preview::Preview;
 use syncfast_core::rclone::Rclone;
@@ -756,11 +757,7 @@ fn spawn_sync(context: &Arc<Context>, ids: Vec<String>) {
 /// Starts a round of each sync; the error joins the reason of every one
 /// that could not start.
 async fn start_rounds(ids: &[String]) -> Result<(), String> {
-    let trigger: Arc<dyn Trigger> = trigger_for(
-        SystemdMode::from_env(),
-        current_cli()?,
-        Arc::new(UserSystemctl::detect()),
-    );
+    let trigger = round_trigger()?;
     let mut failures = Vec::new();
     for id in ids {
         if let Err(reason) = trigger.start(id).await {
@@ -772,6 +769,29 @@ async fn start_rounds(ids: &[String]) -> Result<(), String> {
     } else {
         Err(failures.join("; "))
     }
+}
+
+fn round_trigger() -> Result<Arc<dyn Trigger>, String> {
+    Ok(trigger_for(
+        SystemdMode::from_env(),
+        current_cli()?,
+        Arc::new(UserSystemctl::detect()),
+    ))
+}
+
+/// Whether the first round of a sync at `automatic` review confirmed it;
+/// a round that cannot start is reported and leaves the review to the user.
+async fn first_round_confirms(context: &Context, id: &str) -> bool {
+    let confirmed = match round_trigger() {
+        Ok(trigger) => first_round_confirmed(&context.paths, &*trigger, id)
+            .await
+            .map_err(|err| err.to_string()),
+        Err(text) => Err(text),
+    };
+    confirmed.unwrap_or_else(|text| {
+        fail(context, text);
+        false
+    })
 }
 
 fn spawn_sync_all(context: &Arc<Context>) {
@@ -994,12 +1014,8 @@ fn spawn_create_sync(context: &Arc<Context>, new: NewSync) {
                 if let Err(text) = apply_config(&context.paths).await {
                     fail(&context, text);
                 }
-                let confirmed_automatically = review == ReviewLevel::Automatic;
-                if confirmed_automatically
-                    && let Err(text) = start_rounds(std::slice::from_ref(&id)).await
-                {
-                    fail(&context, text);
-                }
+                let confirmed_automatically =
+                    review == ReviewLevel::Automatic && first_round_confirms(&context, &id).await;
                 Ok(CreatedSync {
                     id,
                     confirmed_automatically,

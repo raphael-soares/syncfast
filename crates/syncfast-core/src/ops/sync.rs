@@ -7,9 +7,11 @@ use tokio::time::Instant;
 
 use super::{OpError, Ops, PairView};
 use crate::bisync::{Mode, Outcome};
+use crate::paths::Paths;
 use crate::run::RunReport;
 use crate::run_decision::SkipReason;
 use crate::state::{GateKind, State, is_running};
+use crate::watch::Trigger;
 
 const POLL: Duration = Duration::from_millis(200);
 /// How long a started round may take to show a sign of life (its lock or a
@@ -117,12 +119,8 @@ impl Signs {
         }
     }
 
-    async fn read(ops: &Ops, id: &str) -> Option<Self> {
-        State::load(&ops.paths, id)
-            .await
-            .ok()
-            .as_ref()
-            .map(Self::of)
+    async fn read(paths: &Paths, id: &str) -> Option<Self> {
+        State::load(paths, id).await.ok().as_ref().map(Self::of)
     }
 }
 
@@ -152,11 +150,11 @@ impl Ops {
         let deadline = Instant::now() + wait;
         let mut started = Vec::with_capacity(ids.len());
         for id in &ids {
-            started.push(self.trigger_round(id).await?);
+            started.push(trigger_round(&self.paths, &*self.trigger, id).await?);
         }
         let mut rounds = Vec::with_capacity(ids.len());
         for (id, before) in ids.iter().zip(started) {
-            let finished = self.await_round(id, before.as_ref(), deadline).await;
+            let finished = await_round(&self.paths, id, before.as_ref(), deadline).await;
             rounds.push(SyncReport {
                 sync: self.pair_view(id).await?,
                 finished,
@@ -165,44 +163,60 @@ impl Ops {
         Ok(SyncRounds { rounds })
     }
 
-    /// [`Ops::trigger_round`] and [`Ops::await_round`] for one sync;
-    /// whether the round ended in time.
     pub(crate) async fn start_round(&self, id: &str, wait: Duration) -> Result<bool, OpError> {
-        let deadline = Instant::now() + wait;
-        let before = self.trigger_round(id).await?;
-        Ok(self.await_round(id, before.as_ref(), deadline).await)
+        start_round(&self.paths, &*self.trigger, id, wait).await
     }
+}
 
-    /// Starts the round and returns the state it started from.
-    async fn trigger_round(&self, id: &str) -> Result<Option<Signs>, OpError> {
-        let before = Signs::read(self, id).await;
-        self.trigger.start(id).await.map_err(OpError::Failed)?;
-        Ok(before)
+/// Starts a round of the sync `id` and waits up to `wait` for it; whether
+/// the round ended in time.
+///
+/// # Errors
+/// The round cannot be started.
+pub(crate) async fn start_round(
+    paths: &Paths,
+    trigger: &dyn Trigger,
+    id: &str,
+    wait: Duration,
+) -> Result<bool, OpError> {
+    let deadline = Instant::now() + wait;
+    let before = trigger_round(paths, trigger, id).await?;
+    Ok(await_round(paths, id, before.as_ref(), deadline).await)
+}
+
+/// Starts the round and returns the state it started from.
+async fn trigger_round(
+    paths: &Paths,
+    trigger: &dyn Trigger,
+    id: &str,
+) -> Result<Option<Signs>, OpError> {
+    let before = Signs::read(paths, id).await;
+    trigger.start(id).await.map_err(OpError::Failed)?;
+    Ok(before)
+}
+
+/// Waits until the round that started from `before` has ended or
+/// `deadline` passes. A round shows itself by taking its lock or by
+/// changing the state; one that does neither within [`GRACE`] had
+/// nothing to do (paused, held for review).
+async fn await_round(paths: &Paths, id: &str, before: Option<&Signs>, deadline: Instant) -> bool {
+    if Instant::now() >= deadline {
+        return false;
     }
-
-    /// Waits until the round that started from `before` has ended or
-    /// `deadline` passes. A round shows itself by taking its lock or by
-    /// changing the state; one that does neither within [`GRACE`] had
-    /// nothing to do (paused, held for review).
-    async fn await_round(&self, id: &str, before: Option<&Signs>, deadline: Instant) -> bool {
+    let grace = (Instant::now() + GRACE).min(deadline);
+    let mut seen_running = false;
+    loop {
+        let running = is_running(paths, id);
+        seen_running |= running;
+        if !running {
+            let changed = Signs::read(paths, id).await.as_ref() != before;
+            if seen_running || changed || Instant::now() >= grace {
+                return true;
+            }
+        }
         if Instant::now() >= deadline {
             return false;
         }
-        let grace = (Instant::now() + GRACE).min(deadline);
-        let mut seen_running = false;
-        loop {
-            let running = is_running(&self.paths, id);
-            seen_running |= running;
-            if !running {
-                let changed = Signs::read(self, id).await.as_ref() != before;
-                if seen_running || changed || Instant::now() >= grace {
-                    return true;
-                }
-            }
-            if Instant::now() >= deadline {
-                return false;
-            }
-            tokio::time::sleep(POLL).await;
-        }
+        tokio::time::sleep(POLL).await;
     }
 }

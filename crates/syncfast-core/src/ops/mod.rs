@@ -39,6 +39,7 @@ pub use explore::{
 };
 pub use pairs::{
     AddedSync, ApplyFailureView, ApplyView, InvalidSync, NewSync, RemovedSync, Toggled,
+    first_round_confirmed,
 };
 pub use review::{ConfirmedReview, ReviewView};
 pub use rules::{FilterTestView, FiltersSaved, FolderCount, after_filters_saved};
