@@ -11,10 +11,11 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use jiff::{SignedDuration, Zoned};
-use syncfast_core::behavior::SyncMode;
+use syncfast_core::behavior::{ReviewLevel, SyncMode};
 use syncfast_core::bisync::{Fault, Outcome, ReviewKind, RoundMode};
 use syncfast_core::network::{BoxFuture, Network};
 use syncfast_core::notify::{Notice, Notifier};
@@ -35,10 +36,19 @@ impl Network for Online {
     }
 }
 
-struct Silent;
+#[derive(Default)]
+struct Notices(Mutex<Vec<String>>);
 
-impl Notifier for Silent {
-    fn notify(&self, _notice: &Notice) {}
+impl Notifier for Notices {
+    fn notify(&self, notice: &Notice) {
+        self.0.lock().unwrap().push(notice.title.clone());
+    }
+}
+
+impl Notices {
+    fn titles(&self) -> Vec<String> {
+        self.0.lock().unwrap().clone()
+    }
 }
 
 struct Bed {
@@ -49,6 +59,7 @@ struct Bed {
     local: PathBuf,
     remote: PathBuf,
     online: Online,
+    notices: Notices,
 }
 
 #[allow(clippy::print_stderr)]
@@ -88,6 +99,7 @@ fn bed(mode: &str) -> Option<Bed> {
         local,
         remote,
         online: Online(AtomicBool::new(true)),
+        notices: Notices::default(),
         paths,
         _dir: dir,
     };
@@ -114,7 +126,7 @@ impl Bed {
             paths: &self.paths,
             rclone: &self.rclone,
             network: &self.online,
-            notifier: &Silent,
+            notifier: &self.notices,
             clock,
             forward_signals: true,
         }
@@ -442,6 +454,75 @@ async fn more_deletions_than_max_delete_stops_at_too_many_deletes_and_the_confir
     assert_eq!(confirmed, ran_ok(RoundMode::Force));
     assert_eq!(names(&bed.remote), ["file-08.txt", "file-09.txt"]);
     assert!(bed.state().await.gate.is_none());
+}
+
+/// Ten files synced, eight deleted at the source: past the default cap.
+async fn mirror_up_past_the_cap(level: &str) -> Option<Bed> {
+    let bed = bed("mirror_up")?;
+    for name in numbered(10) {
+        write(&bed.local, &name, &name);
+    }
+    bed.first_sync().await;
+    bed.set_mode("mirror_up", level, "");
+    for name in numbered(8) {
+        fs::remove_file(bed.local.join(name)).unwrap();
+    }
+    Some(bed)
+}
+
+#[tokio::test]
+async fn a_mirror_past_max_delete_confirms_itself_in_the_same_run_at_automatic() {
+    let Some(bed) = mirror_up_past_the_cap("automatic").await else {
+        return;
+    };
+
+    let report = bed.run().await;
+
+    assert_eq!(report, ran_ok(RoundMode::Force));
+    assert_eq!(names(&bed.remote), ["file-08.txt", "file-09.txt"]);
+    let state = bed.state().await;
+    assert!(state.gate.is_none());
+    let reviewed = state.last_run.and_then(|last| last.auto_reviewed).unwrap();
+    assert_eq!(reviewed.gate, GateKind::TooManyDeletes);
+    assert_eq!(reviewed.level, ReviewLevel::Automatic);
+    assert!(
+        bed.notices.titles().is_empty(),
+        "{:?}",
+        bed.notices.titles()
+    );
+}
+
+#[tokio::test]
+async fn a_mirror_past_max_delete_still_waits_at_deletions_and_manual() {
+    for (level, checked) in [
+        ("manual", None),
+        ("deletions", Some(ReviewLevel::Deletions)),
+    ] {
+        let Some(bed) = mirror_up_past_the_cap(level).await else {
+            return;
+        };
+
+        let report = bed.run().await;
+
+        assert_eq!(
+            report,
+            RunReport::Ran {
+                mode: RoundMode::Normal,
+                outcome: Outcome::TooManyDeletes
+            },
+            "{level}"
+        );
+        assert!(names(&bed.remote).len() >= 5, "{level}");
+        let gate = bed.state().await.gate.unwrap();
+        assert_eq!(gate.kind, GateKind::TooManyDeletes, "{level}");
+        assert_eq!(gate.auto_checked, checked, "{level}");
+        assert_eq!(
+            bed.notices.titles().len(),
+            1,
+            "{level}: {:?}",
+            bed.notices.titles()
+        );
+    }
 }
 
 #[tokio::test]

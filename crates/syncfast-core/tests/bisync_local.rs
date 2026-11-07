@@ -710,6 +710,35 @@ async fn changing_the_filters_sets_the_gate_and_syncs_nothing() {
 }
 
 #[tokio::test]
+async fn changing_the_filters_replaces_an_attention_gate_with_the_filters_gate() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "base.txt", "base");
+    bed.first_sync().await;
+    let full = fake_rclone(
+        &bed,
+        r#"{"level":"error","msg":"googleapi: Error 403: storageQuotaExceeded"}"#,
+        1,
+    );
+    bed.run_with(&full).await;
+    assert_eq!(
+        bed.state().await.gate.map(|gate| gate.kind),
+        Some(GateKind::NeedsAttention)
+    );
+    bed.write_config(true, &["- *.skip"]);
+
+    let report = bed.run().await;
+
+    assert_eq!(
+        report,
+        RunReport::GateSet(GateKind::NeedsReviewFiltersChanged)
+    );
+    assert_eq!(
+        bed.state().await.gate.map(|gate| gate.kind),
+        Some(GateKind::NeedsReviewFiltersChanged)
+    );
+}
+
+#[tokio::test]
 async fn a_folder_with_a_git_repo_is_left_out_of_the_first_sync_and_listed_in_the_review() {
     let Some(bed) = bed() else { return };
     write(&bed.local, "school/proj/main.c", "int main;");
@@ -2022,18 +2051,11 @@ async fn a_mass_deletion_gate_confirms_itself_at_deletions_once_the_preview_dele
 }
 
 #[tokio::test]
-async fn automatic_confirms_a_mass_deletion_and_the_remote_loses_the_files() {
+async fn automatic_confirms_a_mass_deletion_in_the_same_run_and_the_remote_loses_the_files() {
     let Some(bed) = bed() else { return };
     four_files_synced(&bed).await;
     review_at(&bed, "automatic");
     delete_three_locally(&bed);
-    assert_eq!(
-        bed.run().await,
-        RunReport::Ran {
-            mode: RoundMode::Normal,
-            outcome: Outcome::TooManyDeletes
-        }
-    );
 
     let report = bed.run().await;
 
@@ -2043,7 +2065,139 @@ async fn automatic_confirms_a_mass_deletion_and_the_remote_loses_the_files() {
     assert!(state.gate.is_none());
     let reviewed = state.last_run.and_then(|last| last.auto_reviewed).unwrap();
     assert_eq!(reviewed.gate, GateKind::TooManyDeletes);
+    assert_eq!(reviewed.level, ReviewLevel::Automatic);
     assert_eq!(reviewed.counts.delete_remote, 3);
+    assert!(
+        bed.notices.titles().is_empty(),
+        "{:?}",
+        bed.notices.titles()
+    );
+}
+
+#[tokio::test]
+async fn deletions_holds_a_mass_deletion_in_the_same_run_and_tells_the_user_once() {
+    let Some(bed) = bed() else { return };
+    four_files_synced(&bed).await;
+    review_at(&bed, "deletions");
+    delete_three_locally(&bed);
+
+    let report = bed.run().await;
+
+    assert_eq!(
+        report,
+        RunReport::Ran {
+            mode: RoundMode::Normal,
+            outcome: Outcome::TooManyDeletes
+        }
+    );
+    assert_eq!(names(&bed.remote), ["a.txt", "b.txt", "c.txt", "d.txt"]);
+    let gate = bed.state().await.gate.unwrap();
+    assert_eq!(gate.kind, GateKind::TooManyDeletes);
+    assert_eq!(gate.auto_checked, Some(ReviewLevel::Deletions));
+    assert_eq!(bed.notices.titles().len(), 1, "{:?}", bed.notices.titles());
+    assert_eq!(bed.run().await, RunReport::Skipped(SkipReason::Gated));
+    assert_eq!(bed.notices.titles().len(), 1);
+}
+
+/// An rclone whose plain round is stopped by `capped`; the dry run says
+/// `dry_failure` and fails, or passes with nothing to change; a forced
+/// round passes.
+fn capped_rclone(bed: &Bed, capped: &str, dry_failure: Option<&str>) -> Rclone {
+    let script = bed.paths.state_home.join("fake-cap.sh");
+    let dry = match dry_failure {
+        Some(msg) => format!(r#"echo '{{"level":"error","msg":"{msg}"}}' >> "$file"; exit 1"#),
+        None => "exit 0".to_owned(),
+    };
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = listremotes ]; then echo 'testremote:'; exit 0; fi\n\
+             dry=no\nforce=no\nwhile [ $# -gt 0 ]; do\n\
+             if [ \"$1\" = --log-file ]; then file=\"$2\"; fi\n\
+             if [ \"$1\" = --dry-run ]; then dry=yes; fi\n\
+             if [ \"$1\" = --force ]; then force=yes; fi\nshift; done\n\
+             if [ $dry = yes ]; then {dry}; fi\n\
+             if [ $force = yes ]; then exit 0; fi\n\
+             echo '{{\"level\":\"error\",\"msg\":\"{capped}\"}}' >> \"$file\"; exit 1\n"
+        ),
+    )
+    .unwrap();
+    let mut mode = fs::metadata(&script).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut mode, 0o755);
+    fs::set_permissions(&script, mode).unwrap();
+    Rclone::new(script)
+}
+
+#[tokio::test]
+async fn a_failed_dry_run_at_the_delete_cap_leaves_the_gate_announced_and_counts_a_failure() {
+    let Some(bed) = bed() else { return };
+    four_files_synced(&bed).await;
+    review_at(&bed, "automatic");
+    let rclone = capped_rclone(
+        &bed,
+        "too many deletes (>50%, 3 of 4)",
+        Some("drive quota exceeded"),
+    );
+
+    let report = bed.run_with(&rclone).await;
+
+    assert_eq!(
+        report,
+        RunReport::Ran {
+            mode: RoundMode::Normal,
+            outcome: Outcome::TooManyDeletes
+        }
+    );
+    let state = bed.state().await;
+    let gate = state.gate.unwrap();
+    assert_eq!(gate.kind, GateKind::TooManyDeletes);
+    assert!(gate.auto_checked.is_none());
+    assert_eq!(state.consecutive_failures, 1);
+    assert_eq!(bed.notices.titles().len(), 1, "{:?}", bed.notices.titles());
+    assert_eq!(names(&bed.remote), ["a.txt", "b.txt", "c.txt", "d.txt"]);
+}
+
+#[tokio::test]
+async fn automatic_confirms_an_all_files_changed_stop_in_the_same_run_without_telling_the_user() {
+    let Some(bed) = bed() else { return };
+    four_files_synced(&bed).await;
+    review_at(&bed, "automatic");
+    let rclone = capped_rclone(&bed, "Safety abort: all files were changed", None);
+
+    let report = bed.run_with(&rclone).await;
+
+    assert_eq!(report, ran_ok(RoundMode::Force));
+    let state = bed.state().await;
+    assert!(state.gate.is_none());
+    let reviewed = state.last_run.unwrap().auto_reviewed.unwrap();
+    assert_eq!(reviewed.gate, GateKind::AllFilesChanged);
+    assert_eq!(reviewed.level, ReviewLevel::Automatic);
+    assert!(
+        bed.notices.titles().is_empty(),
+        "{:?}",
+        bed.notices.titles()
+    );
+}
+
+#[tokio::test]
+async fn manual_holds_an_all_files_changed_stop_and_tells_the_user_once() {
+    let Some(bed) = bed() else { return };
+    four_files_synced(&bed).await;
+    review_at(&bed, "manual");
+    let rclone = capped_rclone(&bed, "Safety abort: all files were changed", None);
+
+    let report = bed.run_with(&rclone).await;
+
+    assert_eq!(
+        report,
+        RunReport::Ran {
+            mode: RoundMode::Normal,
+            outcome: Outcome::AllFilesChanged
+        }
+    );
+    let gate = bed.state().await.gate.unwrap();
+    assert_eq!(gate.kind, GateKind::AllFilesChanged);
+    assert_eq!(bed.notices.titles().len(), 1, "{:?}", bed.notices.titles());
 }
 
 async fn automatic_review_of_a_mass_deletion(bed: &Bed, notifications: &str) {
@@ -2053,13 +2207,6 @@ async fn automatic_review_of_a_mass_deletion(bed: &Bed, notifications: &str) {
         "",
     );
     delete_three_locally(bed);
-    assert_eq!(
-        bed.run().await,
-        RunReport::Ran {
-            mode: RoundMode::Normal,
-            outcome: Outcome::TooManyDeletes
-        }
-    );
     assert_eq!(bed.run().await, ran_ok(RoundMode::Force));
 }
 
