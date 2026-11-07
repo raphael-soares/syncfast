@@ -270,7 +270,7 @@ fn settings_json_lists_every_key_with_its_origin_and_default() {
     assert_eq!(defaults.json()["scope"], "defaults");
     assert_eq!(defaults.json()["settings"].as_array().unwrap().len(), 20);
     assert_eq!(defaults.json()["lowered_safety"], serde_json::json!([]));
-    assert_eq!(of_sync.json()["settings"].as_array().unwrap().len(), 14);
+    assert_eq!(of_sync.json()["settings"].as_array().unwrap().len(), 15);
     assert_eq!(of_sync.json()["scope"], "docs");
     assert_eq!(
         of_sync.json()["settings"][1],
@@ -327,6 +327,40 @@ fn settings_set_writes_defaults_or_the_sync_and_reset_takes_it_back() {
         !after.contains("debounce =") && !after.contains("interval ="),
         "{after}"
     );
+}
+
+#[test]
+fn the_mode_is_a_per_sync_setting_and_an_agent_only_moves_it_to_safer_modes() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs();
+
+    let in_defaults = bed.run(&["settings", "set", "mode", "upload"]);
+    let mirror = bed.run(&["settings", "set", "mode", "mirror_up", "--sync", "docs"]);
+    let download = bed.run(&[
+        "settings", "set", "mode", "download", "--sync", "docs", "--json",
+    ]);
+    let shown = bed.run(&["settings", "--sync", "docs", "--json"]);
+    let reset = bed.run(&["settings", "reset", "mode", "--sync", "docs", "--json"]);
+
+    assert_eq!(in_defaults.code, 2, "{}", in_defaults.stderr);
+    assert!(
+        in_defaults
+            .stderr
+            .contains("mode is set per sync, not in [defaults]"),
+        "{}",
+        in_defaults.stderr
+    );
+    assert_eq!(mirror.code, 4, "{}", mirror.stderr);
+    assert_eq!(download.code, 0, "{}", download.stderr);
+    assert_eq!(download.json()["setting"]["value"], "download");
+    let rows = shown.json()["settings"].as_array().unwrap().clone();
+    let limit_upload = rows
+        .iter()
+        .find(|row| row["key"] == "limit_upload")
+        .unwrap();
+    assert_eq!(limit_upload["applies"], false);
+    assert_eq!(reset.code, 0, "{}", reset.stderr);
+    assert_eq!(reset.json()["setting"]["value"], "bisync");
 }
 
 #[test]

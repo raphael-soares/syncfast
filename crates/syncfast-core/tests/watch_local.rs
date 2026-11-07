@@ -674,3 +674,38 @@ async fn turning_watch_off_for_one_sync_stops_only_that_sync() {
     assert_eq!(triggers_of(&run.recorder, "docs"), 0);
     run.stop().await;
 }
+
+#[tokio::test]
+async fn watch_ignores_the_sync_when_the_mode_is_download_or_mirror_down() {
+    for mode in ["download", "mirror_down"] {
+        let run = start_using(Behavior::for_pair, |bed| {
+            bed.write_config_text(&two_syncs(bed, &format!("mode = \"{mode}\"\n")));
+        })
+        .await;
+
+        write(&run.local("docs"), "a.txt");
+        write(&run.local("notes"), "a.txt");
+        let notes = wait_for_id(&run.recorder, "notes", Duration::from_secs(9)).await;
+        sleep(Duration::from_secs(1)).await;
+
+        assert!(notes, "{mode}");
+        assert_eq!(triggers_of(&run.recorder, "docs"), 0, "{mode}");
+        run.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn watch_keeps_the_sync_in_upload_and_mirror_up() {
+    for mode in ["upload", "mirror_up"] {
+        let run = start_using(Behavior::for_pair, |bed| {
+            bed.write_config_text(&two_syncs(bed, &format!("mode = \"{mode}\"\n")));
+        })
+        .await;
+
+        write(&run.local("docs"), "a.txt");
+        let docs = wait_for_id(&run.recorder, "docs", Duration::from_secs(9)).await;
+
+        assert!(docs, "{mode}");
+        run.stop().await;
+    }
+}

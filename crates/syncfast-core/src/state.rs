@@ -13,7 +13,7 @@ use std::time::Duration;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use crate::behavior::ReviewLevel;
+use crate::behavior::{ReviewLevel, SyncMode};
 use crate::bisync::{Fault, ReviewKind};
 use crate::bisync_log::RunSummary;
 use crate::config::Pair;
@@ -54,6 +54,7 @@ pub enum StateError {
 pub enum GateKind {
     NeedsReviewFirstRun,
     NeedsReviewFiltersChanged,
+    NeedsReviewModeChanged,
     NeedsReviewCriticalError,
     TooManyDeletes,
     AllFilesChanged,
@@ -71,6 +72,7 @@ impl GateKind {
         match self {
             Self::NeedsReviewFirstRun => "needs_review_first_run",
             Self::NeedsReviewFiltersChanged => "needs_review_filters_changed",
+            Self::NeedsReviewModeChanged => "needs_review_mode_changed",
             Self::NeedsReviewCriticalError => "needs_review_critical_error",
             Self::TooManyDeletes => "too_many_deletes",
             Self::AllFilesChanged => "all_files_changed",
@@ -87,6 +89,7 @@ impl GateKind {
             self,
             Self::NeedsReviewFirstRun
                 | Self::NeedsReviewFiltersChanged
+                | Self::NeedsReviewModeChanged
                 | Self::NeedsReviewCriticalError
         )
     }
@@ -163,12 +166,29 @@ pub struct State {
     pub last_success: Option<Timestamp>,
     pub last_attempt: Option<Timestamp>,
     pub applied_filters_hash: Option<String>,
+    /// The sync mode the last good round ran in. Absent from files written
+    /// before the modes existed; see [`State::synced_mode`].
+    pub applied_mode: Option<SyncMode>,
+    /// Files the destination held after the last good round of a mirror;
+    /// the base of its `--max-delete` cap.
+    pub dest_files: Option<u64>,
     pub conflicts_pending: u32,
     pub last_run: Option<LastRun>,
     pub notified: Vec<String>,
 }
 
 impl State {
+    /// The mode of the last good round: the one recorded, or two-way for a
+    /// sync that did round before modes existed.
+    #[must_use]
+    pub fn synced_mode(&self) -> Option<SyncMode> {
+        match (self.applied_mode, &self.applied_filters_hash) {
+            (Some(mode), _) => Some(mode),
+            (None, Some(_)) => Some(SyncMode::Bisync),
+            (None, None) => None,
+        }
+    }
+
     /// A pair that has never synced: waiting for its first review.
     #[must_use]
     pub fn first_run(now: Timestamp) -> Self {
@@ -228,11 +248,14 @@ impl State {
 }
 
 /// What the user confirmed in the review. The GUI writes it; the next run
-/// consumes it, but only while `filters_hash` still matches the filters.
+/// consumes it, but only while `filters_hash` still matches the filters and
+/// the sync still has the `mode` it was reviewed in.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConfirmMarker {
     pub kind: ReviewKind,
     pub filters_hash: String,
+    #[serde(default)]
+    pub mode: SyncMode,
 }
 
 impl ConfirmMarker {
@@ -364,23 +387,33 @@ pub(crate) fn try_lock(paths: &Paths, path: PathBuf) -> Result<Option<File>, Sta
 
 /// Keeps the [`RUNS_KEPT`] newest `.jsonl` logs in the pair's `runs/`
 /// folder (names are timestamps, so the highest names are the newest) and
-/// deletes the rest, then the preview logs older than [`PREVIEWS_KEPT`]. A
-/// log that cannot be deleted is a warning, not a stop. A missing folder is
-/// fine.
+/// deletes the rest with the `.changes` report of each, then the preview
+/// logs older than [`PREVIEWS_KEPT`]. A file that cannot be deleted is a
+/// warning, not a stop. A missing folder is fine.
 ///
 /// # Errors
 /// The runs folder cannot be listed.
 pub async fn prune_runs(paths: &Paths, pair_id: &str) -> Result<(), StateError> {
     let dir = paths.runs_dir(pair_id);
-    let mut names: Vec<OsString> = file_names(&dir)
-        .await?
-        .into_iter()
-        .filter(|name| is_jsonl(name))
-        .collect();
-    names.sort();
-    let excess = names.len().saturating_sub(RUNS_KEPT);
-    for name in names.into_iter().take(excess) {
+    let files = file_names(&dir).await?;
+    let mut logs: Vec<&OsString> = files.iter().filter(|name| is_jsonl(name)).collect();
+    logs.sort();
+    let excess = logs.len().saturating_sub(RUNS_KEPT);
+    for name in logs.drain(..excess) {
         remove_or_warn(&dir.join(name)).await;
+    }
+    let kept: Vec<&str> = logs
+        .iter()
+        .filter_map(|name| name.to_str()?.strip_suffix(".jsonl"))
+        .collect();
+    for name in &files {
+        let stem = name
+            .to_str()
+            .filter(|text| text.ends_with(".changes"))
+            .and_then(|text| text.split('.').next());
+        if stem.is_some_and(|stem| !kept.contains(&stem)) {
+            remove_or_warn(&dir.join(name)).await;
+        }
     }
     prune_previews(&paths.pair_state_dir(pair_id)).await;
     Ok(())
@@ -625,6 +658,8 @@ mod tests {
             last_success: Some(at("2026-01-01T10:00:00Z")),
             last_attempt: Some(at("2026-01-01T11:00:00Z")),
             applied_filters_hash: Some("abc".into()),
+            applied_mode: Some(SyncMode::MirrorUp),
+            dest_files: Some(12),
             conflicts_pending: 4,
             last_run: Some(LastRun {
                 started: at("2026-01-01T11:00:00Z"),
@@ -717,6 +752,8 @@ mod tests {
                 "last_success": null,
                 "last_attempt": null,
                 "applied_filters_hash": null,
+                "applied_mode": null,
+                "dest_files": null,
                 "conflicts_pending": 0,
                 "last_run": null,
                 "notified": []
@@ -746,11 +783,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_marker_written_before_the_modes_existed_is_a_bisync_marker() {
+        let (_dir, paths) = temp_paths();
+        let file = paths.confirm_file("drive");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, r#"{"kind":"resync","filters_hash":"f00"}"#).unwrap();
+
+        let loaded = ConfirmMarker::load(&paths, "drive").await.unwrap().unwrap();
+
+        assert_eq!(loaded.mode, SyncMode::Bisync);
+    }
+
+    #[tokio::test]
     async fn the_marker_round_trips_and_is_removed() {
         let (_dir, paths) = temp_paths();
         let marker = ConfirmMarker {
             kind: ReviewKind::Force,
             filters_hash: "f00".into(),
+            mode: SyncMode::MirrorUp,
         };
 
         assert_eq!(ConfirmMarker::load(&paths, "drive").await.unwrap(), None);
@@ -763,7 +813,7 @@ mod tests {
         assert_eq!(loaded, Some(marker));
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&text).unwrap(),
-            serde_json::json!({ "kind": "force", "filters_hash": "f00" })
+            serde_json::json!({ "kind": "force", "filters_hash": "f00", "mode": "mirror_up" })
         );
         assert_eq!(after, None);
     }
@@ -942,6 +992,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_pruned_run_takes_its_changes_report_with_it() {
+        let (_dir, paths) = temp_paths();
+        make_runs(&paths, 51);
+        let runs = paths.runs_dir("drive");
+        for stamp in ["20260101-000000", "20260101-000001", "20260101-000050"] {
+            std::fs::write(runs.join(format!("{stamp}.mirror_up.changes")), "+ a\n").unwrap();
+        }
+
+        prune_runs(&paths, "drive").await.unwrap();
+
+        assert!(!runs.join("20260101-000000.mirror_up.changes").exists());
+        assert!(runs.join("20260101-000001.mirror_up.changes").exists());
+        assert!(runs.join("20260101-000050.mirror_up.changes").exists());
+    }
+
+    #[tokio::test]
     async fn pruning_a_pair_without_runs_is_fine() {
         let (_dir, paths) = temp_paths();
 
@@ -1069,6 +1135,7 @@ mod tests {
         for kind in [
             GateKind::NeedsReviewFirstRun,
             GateKind::NeedsReviewFiltersChanged,
+            GateKind::NeedsReviewModeChanged,
             GateKind::NeedsReviewCriticalError,
             GateKind::TooManyDeletes,
             GateKind::AllFilesChanged,
@@ -1246,6 +1313,10 @@ mod tests {
                 "needs_review_filters_changed",
             ),
             (
+                GateKind::NeedsReviewModeChanged,
+                "needs_review_mode_changed",
+            ),
+            (
                 GateKind::NeedsReviewCriticalError,
                 "needs_review_critical_error",
             ),
@@ -1262,5 +1333,23 @@ mod tests {
             assert_eq!(kind.as_str(), name);
             assert_eq!(kind.notified_key(), format!("gate:{name}"));
         }
+    }
+
+    #[test]
+    fn the_synced_mode_is_the_recorded_one_or_two_way_for_a_sync_that_predates_modes() {
+        let never = State::default();
+        let legacy = State {
+            applied_filters_hash: Some("abc".into()),
+            ..State::default()
+        };
+        let recorded = State {
+            applied_filters_hash: Some("abc".into()),
+            applied_mode: Some(SyncMode::Upload),
+            ..State::default()
+        };
+
+        assert_eq!(never.synced_mode(), None);
+        assert_eq!(legacy.synced_mode(), Some(SyncMode::Bisync));
+        assert_eq!(recorded.synced_mode(), Some(SyncMode::Upload));
     }
 }

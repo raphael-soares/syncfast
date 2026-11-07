@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use fastframe_shell::Waker;
-use syncfast_core::behavior::ReviewLevel;
+use syncfast_core::behavior::{ReviewLevel, SyncMode};
 use syncfast_core::bisync::ReviewKind;
 use syncfast_core::config::{Config, SettingScope};
 use syncfast_core::conflicts::{Conflict, Resolution};
@@ -141,6 +141,7 @@ pub enum Command {
     ConfirmReview {
         pair_id: String,
         kind: ReviewKind,
+        mode: SyncMode,
         filters_hash: String,
     },
     /// The saved client ID and secret of a Drive remote.
@@ -441,8 +442,8 @@ async fn run(
                     Command::CreateSync(new) => spawn_create_sync(&context, new),
                     Command::Preview { pair_id, kind } => spawn_preview(&context, pair_id, kind),
                     Command::CancelPreview => abort_preview(&context),
-                    Command::ConfirmReview { pair_id, kind, filters_hash } => {
-                        spawn_confirm_review(&context, pair_id, kind, filters_hash);
+                    Command::ConfirmReview { pair_id, kind, mode, filters_hash } => {
+                        spawn_confirm_review(&context, pair_id, kind, mode, filters_hash);
                     }
                     Command::LoadCredentials(name) => spawn_load_credentials(&context, name),
                     Command::ConnectAccount(request) => spawn_connect(&context, request),
@@ -1059,6 +1060,7 @@ fn spawn_confirm_review(
     context: &Arc<Context>,
     pair_id: String,
     kind: ReviewKind,
+    mode: SyncMode,
     filters_hash: String,
 ) {
     let context = Arc::clone(context);
@@ -1066,7 +1068,8 @@ fn spawn_confirm_review(
         context.emitter.clone(),
         "confirming the review",
         async move {
-            match sheet_io::confirm_review(&context.paths, &pair_id, kind, filters_hash).await {
+            match sheet_io::confirm_review(&context.paths, &pair_id, kind, mode, filters_hash).await
+            {
                 Ok(()) => spawn_sync(&context, vec![pair_id]),
                 Err(text) => fail(&context, text),
             }

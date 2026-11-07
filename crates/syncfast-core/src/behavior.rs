@@ -135,6 +135,58 @@ impl ResyncMode {
     }
 }
 
+/// What a sync does with the two sides. Everything but `Bisync` is one-way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncMode {
+    #[default]
+    Bisync,
+    Upload,
+    Download,
+    MirrorUp,
+    MirrorDown,
+}
+
+named!(SyncMode {
+    Bisync => "bisync",
+    Upload => "upload",
+    Download => "download",
+    MirrorUp => "mirror_up",
+    MirrorDown => "mirror_down",
+});
+
+impl SyncMode {
+    /// Makes the destination equal to the source, deleting what the source
+    /// does not have.
+    #[must_use]
+    pub fn is_mirror(self) -> bool {
+        matches!(self, Self::MirrorUp | Self::MirrorDown)
+    }
+
+    #[must_use]
+    pub fn is_one_way(self) -> bool {
+        self != Self::Bisync
+    }
+
+    /// The computer is where changes start, so watching its folder is useful.
+    #[must_use]
+    pub fn local_is_source(self) -> bool {
+        matches!(self, Self::Bisync | Self::Upload | Self::MirrorUp)
+    }
+
+    /// Data goes from the computer to the cloud.
+    #[must_use]
+    pub fn uploads(self) -> bool {
+        self.local_is_source()
+    }
+
+    /// Data goes from the cloud to the computer.
+    #[must_use]
+    pub fn downloads(self) -> bool {
+        matches!(self, Self::Bisync | Self::Download | Self::MirrorDown)
+    }
+}
+
 /// How much of a review syncfast confirms by itself, safest first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -225,6 +277,7 @@ pub struct Behavior {
     /// Percentage for `--max-delete`.
     pub max_delete: u8,
     pub resync_mode: ResyncMode,
+    pub mode: SyncMode,
     pub empty_dirs: bool,
     pub review: ReviewLevel,
     /// App-wide: which notifications a round may send.
@@ -265,6 +318,7 @@ impl Default for Behavior {
             google_docs: GoogleDocs::Skip,
             max_delete: 50,
             resync_mode: ResyncMode::Newer,
+            mode: SyncMode::Bisync,
             empty_dirs: true,
             review: ReviewLevel::Deletions,
             notifications: Policy::default(),
@@ -340,6 +394,33 @@ pub fn format_duration(duration: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sync_mode_has_its_toml_name_and_its_direction() {
+        let table = [
+            (SyncMode::Bisync, "bisync", false, false, true, true),
+            (SyncMode::Upload, "upload", false, true, true, false),
+            (SyncMode::Download, "download", false, true, false, true),
+            (SyncMode::MirrorUp, "mirror_up", true, true, true, false),
+            (SyncMode::MirrorDown, "mirror_down", true, true, false, true),
+        ];
+
+        for (mode, name, mirror, one_way, uploads, downloads) in table {
+            assert_eq!(mode.name(), name);
+            assert_eq!(SyncMode::from_name(name), Some(mode));
+            assert_eq!(mode.is_mirror(), mirror, "{name}");
+            assert_eq!(mode.is_one_way(), one_way, "{name}");
+            assert_eq!(mode.uploads(), uploads, "{name}");
+            assert_eq!(mode.local_is_source(), uploads, "{name}");
+            assert_eq!(mode.downloads(), downloads, "{name}");
+        }
+        assert_eq!(SyncMode::from_name("two_way"), None);
+        assert_eq!(SyncMode::default(), SyncMode::Bisync);
+        assert_eq!(
+            SyncMode::NAMES,
+            ["bisync", "upload", "download", "mirror_up", "mirror_down"]
+        );
+    }
 
     #[test]
     fn default_has_the_phase_one_values() {

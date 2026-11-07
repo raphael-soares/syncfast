@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
 use jiff::{SignedDuration, Timestamp, Zoned};
-use syncfast_core::behavior::ReviewLevel;
-use syncfast_core::bisync::{Fault, Mode, Outcome, ReviewKind};
+use syncfast_core::behavior::{ReviewLevel, SyncMode};
+use syncfast_core::bisync::{Fault, Outcome, ReviewKind, RoundMode};
 use syncfast_core::bisync_log::ChangeKind;
 use syncfast_core::network::{BoxFuture, Network};
 use syncfast_core::notify::{Notice, Notifier};
@@ -172,6 +172,7 @@ impl Bed {
         ConfirmMarker {
             kind,
             filters_hash: reviewed.filters_hash,
+            mode: SyncMode::Bisync,
         }
         .save(&self.paths, PAIR)
         .await
@@ -229,6 +230,7 @@ impl Bed {
         ConfirmMarker {
             kind: ReviewKind::Resync,
             filters_hash: reviewed.filters_hash,
+            mode: SyncMode::Bisync,
         }
         .save(&self.paths, PAIR)
         .await
@@ -237,7 +239,7 @@ impl Bed {
         assert_eq!(
             report,
             RunReport::Ran {
-                mode: Mode::Resync,
+                mode: RoundMode::Resync,
                 outcome: Outcome::Ok
             }
         );
@@ -348,6 +350,7 @@ async fn first_round_waits_for_review_then_a_confirmed_resync_equalizes_both_sid
     ConfirmMarker {
         kind: ReviewKind::Resync,
         filters_hash: reviewed.filters_hash,
+        mode: SyncMode::Bisync,
     }
     .save(&bed.paths, PAIR)
     .await
@@ -357,7 +360,7 @@ async fn first_round_waits_for_review_then_a_confirmed_resync_equalizes_both_sid
     assert_eq!(
         confirmed,
         RunReport::Ran {
-            mode: Mode::Resync,
+            mode: RoundMode::Resync,
             outcome: Outcome::Ok
         }
     );
@@ -404,7 +407,7 @@ async fn new_local_file_is_uploaded_and_counted() {
     assert_eq!(
         report,
         RunReport::Ran {
-            mode: Mode::Normal,
+            mode: RoundMode::Normal,
             outcome: Outcome::Ok
         }
     );
@@ -430,7 +433,7 @@ async fn new_local_file_in_a_pair_that_started_empty_on_both_sides_reaches_the_r
     assert_eq!(
         report,
         RunReport::Ran {
-            mode: Mode::Resync,
+            mode: RoundMode::Resync,
             outcome: Outcome::Ok
         }
     );
@@ -448,7 +451,7 @@ async fn new_local_file_in_a_pair_that_started_empty_on_both_sides_reaches_the_r
     assert_eq!(
         bed.run().await,
         RunReport::Ran {
-            mode: Mode::Normal,
+            mode: RoundMode::Normal,
             outcome: Outcome::Ok
         },
         "later rounds are normal again"
@@ -472,7 +475,7 @@ async fn same_file_changed_on_both_sides_keeps_the_newer_and_leaves_a_conflict_c
     assert_eq!(
         report,
         RunReport::Ran {
-            mode: Mode::Normal,
+            mode: RoundMode::Normal,
             outcome: Outcome::Ok
         }
     );
@@ -504,7 +507,7 @@ async fn file_replaced_on_the_remote_keeps_the_old_local_version_in_versions() {
     assert_eq!(
         report,
         RunReport::Ran {
-            mode: Mode::Normal,
+            mode: RoundMode::Normal,
             outcome: Outcome::Ok
         }
     );
@@ -538,7 +541,7 @@ async fn deleting_most_files_locally_stops_at_the_gate_until_a_forced_round_is_c
     assert_eq!(
         report,
         RunReport::Ran {
-            mode: Mode::Normal,
+            mode: RoundMode::Normal,
             outcome: Outcome::TooManyDeletes
         }
     );
@@ -568,6 +571,7 @@ async fn deleting_most_files_locally_stops_at_the_gate_until_a_forced_round_is_c
     ConfirmMarker {
         kind: ReviewKind::Force,
         filters_hash: reviewed.filters_hash,
+        mode: SyncMode::Bisync,
     }
     .save(&bed.paths, PAIR)
     .await
@@ -577,7 +581,7 @@ async fn deleting_most_files_locally_stops_at_the_gate_until_a_forced_round_is_c
     assert_eq!(
         confirmed,
         RunReport::Ran {
-            mode: Mode::Force,
+            mode: RoundMode::Force,
             outcome: Outcome::Ok
         }
     );
@@ -600,7 +604,7 @@ async fn an_emptied_local_folder_needs_attention_at_once_and_the_remote_keeps_ev
     let report = bed.run().await;
 
     let RunReport::Ran {
-        mode: Mode::Normal,
+        mode: RoundMode::Normal,
         outcome: Outcome::NeedsAttention { fault, detail },
     } = report
     else {
@@ -636,7 +640,7 @@ async fn editing_the_only_file_stops_at_the_gate_until_a_forced_round_is_confirm
     assert_eq!(
         report,
         RunReport::Ran {
-            mode: Mode::Normal,
+            mode: RoundMode::Normal,
             outcome: Outcome::AllFilesChanged
         }
     );
@@ -654,6 +658,7 @@ async fn editing_the_only_file_stops_at_the_gate_until_a_forced_round_is_confirm
     ConfirmMarker {
         kind: ReviewKind::Force,
         filters_hash: reviewed.filters_hash,
+        mode: SyncMode::Bisync,
     }
     .save(&bed.paths, PAIR)
     .await
@@ -663,7 +668,7 @@ async fn editing_the_only_file_stops_at_the_gate_until_a_forced_round_is_confirm
     assert_eq!(
         confirmed,
         RunReport::Ran {
-            mode: Mode::Force,
+            mode: RoundMode::Force,
             outcome: Outcome::Ok
         }
     );
@@ -739,7 +744,7 @@ async fn a_git_init_in_a_synced_folder_holds_the_sync_for_review_and_deletes_not
     assert_eq!(
         confirmed,
         RunReport::Ran {
-            mode: Mode::Resync,
+            mode: RoundMode::Resync,
             outcome: Outcome::Ok
         }
     );
@@ -774,7 +779,7 @@ async fn missing_local_folder_sets_the_gate_and_the_next_round_resumes_when_it_i
     assert_eq!(
         back,
         RunReport::Ran {
-            mode: Mode::Normal,
+            mode: RoundMode::Normal,
             outcome: Outcome::Ok
         }
     );
@@ -826,7 +831,7 @@ async fn pending_first_review_survives_the_local_folder_going_away_and_coming_ba
     assert_eq!(
         bed.run().await,
         RunReport::Ran {
-            mode: Mode::Resync,
+            mode: RoundMode::Resync,
             outcome: Outcome::Ok
         }
     );
@@ -1086,7 +1091,7 @@ async fn auth_failure_sets_the_account_gate_and_names_the_account() {
     assert_eq!(
         report,
         RunReport::Ran {
-            mode: Mode::Normal,
+            mode: RoundMode::Normal,
             outcome: Outcome::AuthError
         }
     );
@@ -1135,7 +1140,7 @@ async fn a_fault_sets_the_attention_gate_once_and_the_next_good_round_clears_it(
         assert_eq!(
             report,
             RunReport::Ran {
-                mode: Mode::Normal,
+                mode: RoundMode::Normal,
                 outcome: Outcome::NeedsAttention {
                     fault: Fault::Quota,
                     detail: "googleapi: Error 403: storageQuotaExceeded".to_owned()
@@ -1160,7 +1165,7 @@ async fn a_fault_sets_the_attention_gate_once_and_the_next_good_round_clears_it(
     assert_eq!(
         recovered,
         RunReport::Ran {
-            mode: Mode::Normal,
+            mode: RoundMode::Normal,
             outcome: Outcome::Ok
         }
     );
@@ -1190,7 +1195,7 @@ async fn a_confirmed_first_sync_that_needs_attention_keeps_the_failure_and_resum
             matches!(
                 report,
                 RunReport::Ran {
-                    mode: Mode::Resync,
+                    mode: RoundMode::Resync,
                     outcome: Outcome::NeedsAttention {
                         fault: Fault::Quota,
                         ..
@@ -1218,7 +1223,7 @@ async fn a_confirmed_first_sync_that_needs_attention_keeps_the_failure_and_resum
     assert_eq!(
         recovered,
         RunReport::Ran {
-            mode: Mode::Resync,
+            mode: RoundMode::Resync,
             outcome: Outcome::Ok
         }
     );
@@ -1343,7 +1348,7 @@ async fn config_error_of_a_pair_that_never_synced_leaves_the_first_review_pendin
     assert_eq!(
         bed.run().await,
         RunReport::Ran {
-            mode: Mode::Resync,
+            mode: RoundMode::Resync,
             outcome: Outcome::Ok
         }
     );
@@ -1368,7 +1373,7 @@ async fn config_error_of_a_synced_pair_clears_itself_once_the_config_is_valid() 
     assert_eq!(
         fixed,
         RunReport::Ran {
-            mode: Mode::Normal,
+            mode: RoundMode::Normal,
             outcome: Outcome::Ok
         }
     );
@@ -1399,6 +1404,7 @@ async fn marker_with_an_old_filters_hash_is_discarded_and_the_gate_holds() {
     ConfirmMarker {
         kind: ReviewKind::Resync,
         filters_hash: "hash-of-other-filters".to_owned(),
+        mode: SyncMode::Bisync,
     }
     .save(&bed.paths, PAIR)
     .await
@@ -1423,7 +1429,7 @@ async fn marker_survives_a_transient_failure_and_is_deleted_once_a_gate_is_set()
     assert_eq!(
         transient,
         RunReport::Ran {
-            mode: Mode::Resync,
+            mode: RoundMode::Resync,
             outcome: Outcome::Transient
         }
     );
@@ -1443,7 +1449,7 @@ async fn marker_survives_a_transient_failure_and_is_deleted_once_a_gate_is_set()
     assert_eq!(
         gated,
         RunReport::Ran {
-            mode: Mode::Resync,
+            mode: RoundMode::Resync,
             outcome: Outcome::TooManyDeletes
         }
     );
@@ -1493,7 +1499,7 @@ async fn a_successful_round_prunes_expired_versions_and_old_run_logs() {
     assert_eq!(
         report,
         RunReport::Ran {
-            mode: Mode::Normal,
+            mode: RoundMode::Normal,
             outcome: Outcome::Ok
         }
     );
@@ -1561,7 +1567,7 @@ async fn failed_preview_reports_the_last_error_and_deletes_its_log() {
     assert!(leftovers.is_empty(), "{leftovers:?}");
 }
 
-fn ran_ok(mode: Mode) -> RunReport {
+fn ran_ok(mode: RoundMode) -> RunReport {
     RunReport::Ran {
         mode,
         outcome: Outcome::Ok,
@@ -1582,7 +1588,7 @@ async fn a_syncs_own_max_delete_lets_a_mass_deletion_through() {
 
     let report = bed.run().await;
 
-    assert_eq!(report, ran_ok(Mode::Normal));
+    assert_eq!(report, ran_ok(RoundMode::Normal));
     assert_eq!(names(&bed.remote), ["d.txt"]);
 }
 
@@ -1601,7 +1607,7 @@ async fn a_defaults_max_delete_applies_to_a_sync_that_sets_none() {
     assert_eq!(
         report,
         RunReport::Ran {
-            mode: Mode::Normal,
+            mode: RoundMode::Normal,
             outcome: Outcome::TooManyDeletes
         }
     );
@@ -1620,7 +1626,7 @@ async fn a_sync_with_versions_off_keeps_no_old_version() {
 
     let report = bed.run().await;
 
-    assert_eq!(report, ran_ok(Mode::Normal));
+    assert_eq!(report, ran_ok(RoundMode::Normal));
     assert_eq!(read(&bed.local, "a.txt"), "version two, longer");
     assert!(bed.versions_holding("a.txt").is_empty());
 }
@@ -1640,7 +1646,7 @@ async fn a_defaults_conflict_rule_applies_unless_the_sync_sets_its_own() {
 
         let report = bed.run().await;
 
-        assert_eq!(report, ran_ok(Mode::Normal));
+        assert_eq!(report, ran_ok(RoundMode::Normal));
         let winner = if local_wins {
             "local edit"
         } else {
@@ -1663,7 +1669,7 @@ async fn a_sync_that_keeps_versions_longer_does_not_lose_old_ones() {
 
     let report = bed.run().await;
 
-    assert_eq!(report, ran_ok(Mode::Normal));
+    assert_eq!(report, ran_ok(RoundMode::Normal));
     assert!(versions.join("20200101-000000/old.txt").exists());
 }
 
@@ -1685,7 +1691,7 @@ async fn a_numbered_loser_is_kept_beside_the_winner_on_both_sides() {
 
     let report = bed.run().await;
 
-    assert_eq!(report, ran_ok(Mode::Normal));
+    assert_eq!(report, ran_ok(RoundMode::Normal));
     for side in [&bed.local, &bed.remote] {
         assert_eq!(read(side, "doc.txt"), "remote edit, newer");
         assert_eq!(read(side, "doc.txt.conflict1"), "local edit");
@@ -1701,7 +1707,7 @@ async fn a_loser_named_by_path_is_kept_as_path1_and_counted_as_pending() {
 
     let report = bed.run().await;
 
-    assert_eq!(report, ran_ok(Mode::Normal));
+    assert_eq!(report, ran_ok(RoundMode::Normal));
     for side in [&bed.local, &bed.remote] {
         assert_eq!(names(side), ["doc.txt", "doc.txt.path1", "untouched.txt"]);
         assert_eq!(read(side, "doc.txt"), "remote edit, newer");
@@ -1721,7 +1727,7 @@ async fn without_a_winner_both_copies_are_renamed_by_path_and_the_original_is_go
 
     let report = bed.run().await;
 
-    assert_eq!(report, ran_ok(Mode::Normal));
+    assert_eq!(report, ran_ok(RoundMode::Normal));
     for side in [&bed.local, &bed.remote] {
         assert_eq!(
             names(side),
@@ -1741,7 +1747,7 @@ async fn a_deleted_loser_leaves_one_file_and_the_local_copy_goes_to_versions() {
 
     let report = bed.run().await;
 
-    assert_eq!(report, ran_ok(Mode::Normal));
+    assert_eq!(report, ran_ok(RoundMode::Normal));
     for side in [&bed.local, &bed.remote] {
         assert_eq!(names(side), ["doc.txt", "untouched.txt"]);
         assert_eq!(read(side, "doc.txt"), "remote edit, newer");
@@ -1769,7 +1775,7 @@ async fn a_deleted_loser_with_versions_off_is_not_kept_anywhere() {
 
     let report = bed.run().await;
 
-    assert_eq!(report, ran_ok(Mode::Normal));
+    assert_eq!(report, ran_ok(RoundMode::Normal));
     assert_eq!(names(&bed.local), ["doc.txt", "untouched.txt"]);
     assert_eq!(read(&bed.local, "doc.txt"), "remote edit, newer");
     assert!(bed.versions_holding("doc.txt").is_empty());
@@ -1790,7 +1796,7 @@ async fn a_pathname_sync_does_not_count_a_leftover_numbered_copy_as_missing() {
 
     let report = bed.run().await;
 
-    assert_eq!(report, ran_ok(Mode::Normal));
+    assert_eq!(report, ran_ok(RoundMode::Normal));
     assert_eq!(bed.state().await.conflicts_pending, 1);
 }
 
@@ -1803,7 +1809,7 @@ async fn a_num_sync_does_not_count_path_files_as_conflicts() {
 
     let report = bed.run().await;
 
-    assert_eq!(report, ran_ok(Mode::Normal));
+    assert_eq!(report, ran_ok(RoundMode::Normal));
     assert_eq!(bed.state().await.conflicts_pending, 0);
 }
 
@@ -1819,7 +1825,7 @@ async fn prune_runs_with_versions_off() {
 
     let report = bed.run().await;
 
-    assert_eq!(report, ran_ok(Mode::Normal));
+    assert_eq!(report, ran_ok(RoundMode::Normal));
     assert!(!versions.join("20200101-000000").exists());
 }
 
@@ -1839,7 +1845,7 @@ async fn the_sync_retention_decides_which_version_folders_go() {
 
     let report = bed.run().await;
 
-    assert_eq!(report, ran_ok(Mode::Normal));
+    assert_eq!(report, ran_ok(RoundMode::Normal));
     assert!(!versions.join(folder).exists());
 }
 
@@ -1894,7 +1900,7 @@ async fn a_first_run_confirms_itself_at_automatic_and_says_so_in_the_last_round(
 
     let report = bed.run().await;
 
-    assert_eq!(report, ran_ok(Mode::Resync));
+    assert_eq!(report, ran_ok(RoundMode::Resync));
     assert_eq!(read(&bed.remote, "a.txt"), "a");
     let state = bed.state().await;
     assert!(state.gate.is_none());
@@ -1920,7 +1926,7 @@ async fn a_filters_change_confirms_itself_at_deletions_when_the_preview_deletes_
 
     let report = bed.run().await;
 
-    assert_eq!(report, ran_ok(Mode::Resync));
+    assert_eq!(report, ran_ok(RoundMode::Resync));
     assert_eq!(names(&bed.remote), ["base.txt", "new.txt"]);
     let state = bed.state().await;
     assert!(state.gate.is_none());
@@ -1960,7 +1966,7 @@ async fn mass_deletions_are_held_at_deletions_checked_once_and_checked_again_at_
     assert_eq!(
         bed.run().await,
         RunReport::Ran {
-            mode: Mode::Normal,
+            mode: RoundMode::Normal,
             outcome: Outcome::TooManyDeletes
         }
     );
@@ -1980,7 +1986,7 @@ async fn mass_deletions_are_held_at_deletions_checked_once_and_checked_again_at_
     );
 
     review_at(&bed, "automatic");
-    assert_eq!(bed.run().await, ran_ok(Mode::Force));
+    assert_eq!(bed.run().await, ran_ok(RoundMode::Force));
     assert!(bed.state().await.gate.is_none());
 }
 
@@ -1992,7 +1998,7 @@ async fn a_mass_deletion_gate_confirms_itself_at_deletions_once_the_preview_dele
     assert_eq!(
         bed.run().await,
         RunReport::Ran {
-            mode: Mode::Normal,
+            mode: RoundMode::Normal,
             outcome: Outcome::TooManyDeletes
         }
     );
@@ -2002,7 +2008,7 @@ async fn a_mass_deletion_gate_confirms_itself_at_deletions_once_the_preview_dele
 
     let report = bed.run().await;
 
-    assert_eq!(report, ran_ok(Mode::Force));
+    assert_eq!(report, ran_ok(RoundMode::Force));
     assert_eq!(names(&bed.remote), ["a.txt", "b.txt", "c.txt", "d.txt"]);
     let reviewed = bed
         .state()
@@ -2024,14 +2030,14 @@ async fn automatic_confirms_a_mass_deletion_and_the_remote_loses_the_files() {
     assert_eq!(
         bed.run().await,
         RunReport::Ran {
-            mode: Mode::Normal,
+            mode: RoundMode::Normal,
             outcome: Outcome::TooManyDeletes
         }
     );
 
     let report = bed.run().await;
 
-    assert_eq!(report, ran_ok(Mode::Force));
+    assert_eq!(report, ran_ok(RoundMode::Force));
     assert_eq!(names(&bed.remote), ["d.txt"]);
     let state = bed.state().await;
     assert!(state.gate.is_none());
@@ -2050,11 +2056,11 @@ async fn automatic_review_of_a_mass_deletion(bed: &Bed, notifications: &str) {
     assert_eq!(
         bed.run().await,
         RunReport::Ran {
-            mode: Mode::Normal,
+            mode: RoundMode::Normal,
             outcome: Outcome::TooManyDeletes
         }
     );
-    assert_eq!(bed.run().await, ran_ok(Mode::Force));
+    assert_eq!(bed.run().await, ran_ok(RoundMode::Force));
 }
 
 #[tokio::test]
@@ -2103,7 +2109,7 @@ async fn an_automatic_review_that_deleted_nothing_is_silent_even_with_success_on
     );
     write(&bed.local, "a.txt", "a");
 
-    assert_eq!(bed.run().await, ran_ok(Mode::Resync));
+    assert_eq!(bed.run().await, ran_ok(RoundMode::Resync));
 
     assert!(
         !bed.notices
@@ -2122,7 +2128,7 @@ async fn manual_never_confirms_a_gate_by_itself() {
     assert_eq!(
         bed.run().await,
         RunReport::Ran {
-            mode: Mode::Normal,
+            mode: RoundMode::Normal,
             outcome: Outcome::TooManyDeletes
         }
     );
@@ -2154,7 +2160,7 @@ async fn an_emptied_local_folder_needs_attention_at_every_review_level() {
             matches!(
                 report,
                 RunReport::Ran {
-                    mode: Mode::Normal,
+                    mode: RoundMode::Normal,
                     outcome: Outcome::NeedsAttention {
                         fault: Fault::LocalEmpty,
                         ..
@@ -2189,5 +2195,5 @@ async fn a_failed_dry_run_leaves_the_gate_unchecked_and_counts_as_a_failure() {
     assert!(gate.auto_checked.is_none());
     assert!(names(&bed.remote).is_empty());
 
-    assert_eq!(bed.run().await, ran_ok(Mode::Resync));
+    assert_eq!(bed.run().await, ran_ok(RoundMode::Resync));
 }

@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use super::views::{load_state, review_kind};
 use super::{OpError, Ops, PairView};
+use crate::behavior::SyncMode;
 use crate::bisync::ReviewKind;
 use crate::bisync_log::Change;
 use crate::filters;
@@ -26,6 +27,8 @@ static CLOCK: fn() -> Zoned = Zoned::now;
 #[derive(Debug, Serialize, Deserialize)]
 struct StoredReview {
     kind: ReviewKind,
+    #[serde(default)]
+    mode: SyncMode,
     filters_hash: String,
     shown: Timestamp,
     changes: Vec<Change>,
@@ -34,8 +37,10 @@ struct StoredReview {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ReviewView {
     pub sync_id: String,
-    /// `First sync`, `Filters changed`, `Sync stopped after an error`,
-    /// `Many files would be deleted` or `Every file changed`.
+    pub mode: SyncMode,
+    /// `First sync`, `Filters changed`, `Sync mode changed`,
+    /// `Sync stopped after an error`, `Many files would be deleted` or
+    /// `Every file changed`.
     pub reason: &'static str,
     pub kind: ReviewKind,
     /// Pass this to `review confirm`.
@@ -65,6 +70,7 @@ fn reason(gate: GateKind) -> &'static str {
     match gate {
         GateKind::NeedsReviewFirstRun => "First sync",
         GateKind::NeedsReviewFiltersChanged => "Filters changed",
+        GateKind::NeedsReviewModeChanged => "Sync mode changed",
         GateKind::NeedsReviewCriticalError => "Sync stopped after an error",
         GateKind::TooManyDeletes => "Many files would be deleted",
         _ => "Every file changed",
@@ -79,7 +85,7 @@ impl Ops {
     /// No such sync, the sync waits for no review, a round is running
     /// ([`OpError::Busy`]), or the dry run fails.
     pub async fn show_review(&self, id: &str) -> Result<ReviewView, OpError> {
-        self.find_pair(id).await?;
+        let (_, behavior) = self.find_pair_and_behavior(id).await?;
         let state = load_state(self, id).await;
         let gate = state.gate.map(|gate| gate.kind);
         let Some((gate, kind)) = gate.and_then(|gate| review_kind(gate).map(|kind| (gate, kind)))
@@ -99,6 +105,7 @@ impl Ops {
         let found = preview(&env, id, kind).await?;
         let stored = StoredReview {
             kind,
+            mode: behavior.mode,
             filters_hash: found.filters_hash,
             shown: Timestamp::now(),
             changes: found.summary.changes,
@@ -119,6 +126,7 @@ impl Ops {
         changes.truncate(SHOWN_CHANGES);
         Ok(ReviewView {
             sync_id: id.to_owned(),
+            mode: behavior.mode,
             reason: reason(gate),
             kind,
             filters_hash: stored.filters_hash,
@@ -173,7 +181,7 @@ impl Ops {
         filters_hash: &str,
         wait: Duration,
     ) -> Result<ConfirmedReview, OpError> {
-        let pair = self.find_pair(id).await?;
+        let (pair, behavior) = self.find_pair_and_behavior(id).await?;
         let state = load_state(self, id).await;
         let Some(kind) = state.gate.and_then(|gate| review_kind(gate.kind)) else {
             return Err(OpError::Invalid(
@@ -201,8 +209,14 @@ impl Ops {
                     .to_owned(),
             ));
         }
+        if shown.mode != behavior.mode {
+            return Err(OpError::ReviewNotShown(
+                "the sync mode changed after the review was shown; show it again".to_owned(),
+            ));
+        }
         ConfirmMarker {
             kind,
+            mode: behavior.mode,
             filters_hash: shown.filters_hash,
         }
         .save(&self.paths, id)

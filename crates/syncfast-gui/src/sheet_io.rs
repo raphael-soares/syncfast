@@ -7,7 +7,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use jiff::Zoned;
-use syncfast_core::behavior::{Behavior, ReviewLevel};
+use syncfast_core::behavior::{Behavior, ReviewLevel, SyncMode};
 use syncfast_core::bisync::{Fault, ReviewKind, fault_of};
 use syncfast_core::config::{Config, Pair, expand_tilde, split_remote};
 use syncfast_core::network::NetworkManager;
@@ -168,12 +168,17 @@ pub async fn confirm_review(
     paths: &Paths,
     pair_id: &str,
     kind: ReviewKind,
+    mode: SyncMode,
     filters_hash: String,
 ) -> Result<(), String> {
-    ConfirmMarker { kind, filters_hash }
-        .save(paths, pair_id)
-        .await
-        .map_err(|e| e.to_string())
+    ConfirmMarker {
+        kind,
+        filters_hash,
+        mode,
+    }
+    .save(paths, pair_id)
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// The saved `client_id` and `client_secret` of `name`, to start the sign-in
@@ -568,16 +573,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = paths_in(dir.path());
 
-        confirm_review(&paths, "notes", ReviewKind::Force, "abc".into())
-            .await
-            .unwrap();
+        confirm_review(
+            &paths,
+            "notes",
+            ReviewKind::Force,
+            SyncMode::MirrorUp,
+            "abc".into(),
+        )
+        .await
+        .unwrap();
 
         let marker = ConfirmMarker::load(&paths, "notes").await.unwrap();
         assert_eq!(
             marker,
             Some(ConfirmMarker {
                 kind: ReviewKind::Force,
-                filters_hash: "abc".into()
+                filters_hash: "abc".into(),
+                mode: SyncMode::MirrorUp,
             })
         );
     }
@@ -942,9 +954,15 @@ mod tests {
             .save(&paths, id)
             .await
             .unwrap();
-            confirm_review(&paths, id, ReviewKind::Resync, "hash".into())
-                .await
-                .unwrap();
+            confirm_review(
+                &paths,
+                id,
+                ReviewKind::Resync,
+                SyncMode::Bisync,
+                "hash".into(),
+            )
+            .await
+            .unwrap();
         }
         let rclone = fake_rclone(dir.path(), "exit 0");
 
@@ -1101,9 +1119,15 @@ mod tests {
             .save(&paths, id)
             .await
             .unwrap();
-            confirm_review(&paths, id, ReviewKind::Resync, "hash".into())
-                .await
-                .unwrap();
+            confirm_review(
+                &paths,
+                id,
+                ReviewKind::Resync,
+                SyncMode::Bisync,
+                "hash".into(),
+            )
+            .await
+            .unwrap();
         }
 
         let moved = rename_account(&paths, "gdrive", "personal", ACCOUNT_LOCK_TIMEOUT)

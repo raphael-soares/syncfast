@@ -113,6 +113,22 @@ impl Alert {
     }
 }
 
+/// Why a round stopped for deleting too much. A mirror says what it had
+/// already deleted (`detail`): `--max-delete` removes files up to the cap
+/// before it stops.
+pub(crate) fn too_many_deletes_text(behavior: &Behavior, detail: &str) -> String {
+    let percent = behavior.max_delete;
+    if !behavior.mode.is_mirror() {
+        return format!("More than {percent}% of the files would be deleted.");
+    }
+    let done = if detail.is_empty() {
+        "Nothing was deleted yet."
+    } else {
+        detail
+    };
+    format!("The mirror would delete more than {percent}% of the files. {done}")
+}
+
 #[must_use]
 pub fn notice(pair: &Pair, behavior: &Behavior, alert: &Alert) -> Notice {
     let name = &pair.name;
@@ -126,6 +142,10 @@ pub fn notice(pair: &Pair, behavior: &Behavior, alert: &Alert) -> Notice {
                 format!("{name}: review needed"),
                 "Review the first sync before it starts.".to_owned(),
             ),
+            GateKind::NeedsReviewModeChanged => (
+                format!("{name}: review needed"),
+                "Sync mode changed. Review what will change.".to_owned(),
+            ),
             GateKind::NeedsReviewFiltersChanged => (
                 format!("{name}: review needed"),
                 "Filters changed. Review what will sync.".to_owned(),
@@ -137,8 +157,8 @@ pub fn notice(pair: &Pair, behavior: &Behavior, alert: &Alert) -> Notice {
             GateKind::TooManyDeletes => (
                 format!("{name}: many deletions"),
                 format!(
-                    "More than {}% of the files would be deleted. Review before continuing.",
-                    behavior.max_delete
+                    "{} Review before continuing.",
+                    too_many_deletes_text(behavior, detail)
                 ),
             ),
             GateKind::AllFilesChanged => (
@@ -232,6 +252,7 @@ pub fn attention_body(fault: Option<Fault>, detail: &str) -> &'static str {
         Some(Fault::Permission) => "No permission to a file or folder on Google Drive.",
         Some(Fault::RemoteMissing) => "The folder on Google Drive is missing.",
         Some(Fault::LocalEmpty) => "The folder is empty. If it is on a drive, mount it.",
+        Some(Fault::RemoteEmpty) => "The folder on Google Drive is empty. Nothing was changed.",
         Some(Fault::Auth) | None => "Syncing keeps failing. Open syncfast for details.",
     }
 }
@@ -442,6 +463,31 @@ mod tests {
         assert_eq!(
             notice.body,
             "More than 20% of the files would be deleted. Review before continuing."
+        );
+    }
+
+    #[test]
+    fn a_stopped_mirror_says_what_it_had_already_deleted() {
+        let behavior = Behavior {
+            mode: crate::behavior::SyncMode::MirrorUp,
+            max_delete: 20,
+            ..Behavior::default()
+        };
+        let partial =
+            "2 files were already deleted before the stop. Versions are off, so they are not kept.";
+
+        let with = notice(&pair(), &behavior, &gate(GateKind::TooManyDeletes, partial));
+        let without = notice(&pair(), &behavior, &gate(GateKind::TooManyDeletes, ""));
+
+        assert_eq!(
+            with.body,
+            format!(
+                "The mirror would delete more than 20% of the files. {partial} Review before continuing."
+            )
+        );
+        assert_eq!(
+            without.body,
+            "The mirror would delete more than 20% of the files. Nothing was deleted yet. Review before continuing."
         );
     }
 

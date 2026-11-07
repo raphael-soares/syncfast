@@ -52,6 +52,25 @@ fn prune_entry(entry: &std::fs::DirEntry, cutoff: DateTime) -> io::Result<()> {
     Ok(())
 }
 
+fn cutoff(keep_days: u32, now: &Zoned) -> io::Result<DateTime> {
+    now.datetime()
+        .checked_sub(SignedDuration::from_secs(
+            i64::from(keep_days) * SECS_PER_DAY,
+        ))
+        .map_err(io::Error::other)
+}
+
+/// The names of `names` that are dated folders older than `keep_days`. Used
+/// for versions that live on a remote, where age is also read from the name.
+pub(crate) fn expired(names: &[String], keep_days: u32, now: &Zoned) -> io::Result<Vec<String>> {
+    let cutoff = cutoff(keep_days, now)?;
+    Ok(names
+        .iter()
+        .filter(|name| parse_stamp(name).is_some_and(|stamp| stamp < cutoff))
+        .cloned()
+        .collect())
+}
+
 /// How many dated folders could not be examined or deleted; each is
 /// warned about and the rest are still pruned.
 fn prune_blocking(root: &Path, keep_days: u32, now: &Zoned) -> io::Result<u32> {
@@ -60,12 +79,7 @@ fn prune_blocking(root: &Path, keep_days: u32, now: &Zoned) -> io::Result<u32> {
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(0),
         Err(err) => return Err(err),
     };
-    let cutoff = now
-        .datetime()
-        .checked_sub(SignedDuration::from_secs(
-            i64::from(keep_days) * SECS_PER_DAY,
-        ))
-        .map_err(io::Error::other)?;
+    let cutoff = cutoff(keep_days, now)?;
     let mut failures = 0;
     for entry in entries {
         let outcome = entry.and_then(|entry| {
@@ -133,6 +147,22 @@ mod tests {
 
     fn exists(paths: &Paths, relative: &str) -> bool {
         paths.versions_dir("p").join(relative).exists()
+    }
+
+    #[test]
+    fn expired_names_are_the_dated_ones_older_than_the_keep_days() {
+        let names: Vec<String> = [
+            "20260228-115959",
+            "20260301-120000",
+            "notes",
+            "20260101-000000x",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+
+        let old = expired(&names, 30, &now()).unwrap();
+
+        assert_eq!(old, ["20260228-115959"]);
     }
 
     #[tokio::test]

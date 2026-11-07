@@ -10,6 +10,7 @@ use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 
 use serde::Deserialize;
+use tokio::io::{AsyncBufReadExt as _, BufReader};
 use tokio::process::{Child, Command};
 
 use crate::flatpak;
@@ -440,6 +441,80 @@ impl Rclone {
         })
     }
 
+    /// Whether `source` holds a file that `filters` (a `--filter-from` file)
+    /// lets through. It reads the first name `lsf` prints and stops rclone,
+    /// so a large source costs one step of the listing, not all of it.
+    ///
+    /// # Errors
+    /// rclone cannot run, cannot list the source or does not answer in time.
+    pub async fn has_files(
+        &self,
+        source: &str,
+        filters: &Path,
+        skip_gdocs: bool,
+    ) -> Result<bool, RcloneError> {
+        let mut args = vec![
+            OsString::from("lsf"),
+            "-R".into(),
+            "--files-only".into(),
+            "--filter-from".into(),
+            filters.as_os_str().to_owned(),
+        ];
+        if skip_gdocs {
+            args.push("--drive-skip-gdocs".into());
+        }
+        args.extend(["--".into(), source.into()]);
+        let mut child = self
+            .command(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(RcloneError::Spawn)?;
+        let stdout = child.stdout.take().ok_or(RcloneError::BadOutput("lsf"))?;
+        let mut names = BufReader::new(stdout).lines();
+        let first = tokio::time::timeout(SHORT_CALL_TIMEOUT, async {
+            while let Some(name) = names.next_line().await? {
+                if !name.is_empty() {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })
+        .await;
+        match first {
+            Ok(Ok(true)) => Ok(true),
+            Ok(Ok(false)) => {
+                let output = child.wait_with_output().await.map_err(RcloneError::Spawn)?;
+                if output.status.success() {
+                    return Ok(false);
+                }
+                Err(RcloneError::Failed {
+                    command: "lsf",
+                    detail: last_line(&output.stderr).unwrap_or_else(|| exit_detail(output.status)),
+                })
+            }
+            Ok(Err(err)) => Err(RcloneError::Spawn(err)),
+            Err(_) => Err(RcloneError::Failed {
+                command: "lsf",
+                detail: format!("no answer within {} seconds", SHORT_CALL_TIMEOUT.as_secs()),
+            }),
+        }
+    }
+
+    /// Deletes `path` and everything in it.
+    ///
+    /// # Errors
+    /// rclone cannot run or fails.
+    pub async fn purge(&self, path: &str) -> Result<(), RcloneError> {
+        self.output(
+            "purge",
+            ["purge", "--", path].map(OsString::from).to_vec(),
+            true,
+        )
+        .await
+        .map(drop)
+    }
+
     /// `rclone <command> <flags> -- <source> <destination>`, where
     /// `command` is `copy`, `copyto`, `move` or `moveto`.
     ///
@@ -863,6 +938,92 @@ type = local
         std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         Rclone::new(path)
+    }
+
+    #[tokio::test]
+    async fn has_files_is_true_as_soon_as_the_first_name_is_read_without_waiting_for_the_listing() {
+        let dir = tempfile::tempdir().unwrap();
+        let rclone = fake_rclone(dir.path(), "echo first.txt; sleep 30");
+        let started = std::time::Instant::now();
+
+        let found = rclone
+            .has_files("local:", Path::new("filters.txt"), false)
+            .await
+            .unwrap();
+
+        assert!(found);
+        assert!(started.elapsed() < Duration::from_secs(20));
+    }
+
+    #[tokio::test]
+    async fn has_files_is_false_for_a_listing_with_no_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let rclone = fake_rclone(dir.path(), "exit 0");
+
+        let found = rclone
+            .has_files("local:", Path::new("filters.txt"), false)
+            .await
+            .unwrap();
+
+        assert!(!found);
+    }
+
+    #[tokio::test]
+    async fn has_files_reports_a_listing_that_fails_with_the_last_line_of_its_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let rclone = fake_rclone(dir.path(), "echo 'boom' >&2; exit 3");
+
+        let error = rclone
+            .has_files("local:", Path::new("filters.txt"), false)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.to_string(), "rclone lsf failed: boom");
+    }
+
+    #[tokio::test]
+    async fn has_files_passes_the_filters_and_the_source_to_lsf() {
+        let dir = tempfile::tempdir().unwrap();
+        let rclone = fake_rclone(dir.path(), "echo \"$@\" > \"$0.args\"; exit 0");
+
+        rclone
+            .has_files("gdrive:Docs", Path::new("/f/filters.txt"), false)
+            .await
+            .unwrap();
+
+        let args = std::fs::read_to_string(dir.path().join("fake-rclone.args")).unwrap();
+        assert_eq!(
+            args.trim(),
+            "lsf -R --files-only --filter-from /f/filters.txt -- gdrive:Docs"
+        );
+    }
+
+    #[tokio::test]
+    async fn has_files_skips_google_docs_when_the_sync_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let rclone = fake_rclone(dir.path(), "echo \"$@\" > \"$0.args\"; exit 0");
+
+        rclone
+            .has_files("gdrive:Docs", Path::new("/f/filters.txt"), true)
+            .await
+            .unwrap();
+
+        let args = std::fs::read_to_string(dir.path().join("fake-rclone.args")).unwrap();
+        assert_eq!(
+            args.trim(),
+            "lsf -R --files-only --filter-from /f/filters.txt --drive-skip-gdocs -- gdrive:Docs"
+        );
+    }
+
+    #[tokio::test]
+    async fn purge_names_the_folder_after_the_separator() {
+        let dir = tempfile::tempdir().unwrap();
+        let rclone = fake_rclone(dir.path(), "echo \"$@\" > \"$0.args\"; exit 0");
+
+        rclone.purge("gdrive:.syncfast-versions/p/x").await.unwrap();
+
+        let args = std::fs::read_to_string(dir.path().join("fake-rclone.args")).unwrap();
+        assert_eq!(args.trim(), "purge -- gdrive:.syncfast-versions/p/x");
     }
 
     #[tokio::test]

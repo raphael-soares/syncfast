@@ -45,8 +45,8 @@ Rules: a changed filter or an error holds the sync for a new review. A sync held
 files would be deleted is for the user to confirm. A first sync of a large folder can take \
 longer than the wait: the round goes on by itself, read status later. get_settings shows how a \
 sync behaves and where each value comes from; set_setting and reset_setting change it, except \
-what lowers safety (a larger max_delete, versions off, conflict_loser delete, review moving towards \
-automatic): that is for the user.";
+what lowers safety (a larger max_delete, versions off, conflict_loser delete, a switch to a mirror mode, \
+review moving towards automatic): that is for the user.";
 
 /// The MCP server: one tool per operation.
 #[derive(Clone)]
@@ -593,7 +593,7 @@ impl SyncfastMcp {
     }
 
     #[tool(
-        description = "Set one behavior setting of a sync, or of the defaults when `sync` is absent. `value` is a JSON boolean, whole number or string (`\"30s\"`, `\"newer\"`). Refused with `This setting lowers safety (...). Change it in syncfast.` when it raises max_delete, turns versions off, sets conflict_loser to delete or moves review towards automatic: those are for the user. Nothing changes when it is refused.",
+        description = "Set one behavior setting of a sync, or of the defaults when `sync` is absent. `value` is a JSON boolean, whole number or string (`\"30s\"`, `\"newer\"`). Refused with `This setting lowers safety (...). Change it in syncfast.` when it raises max_delete, turns versions off, sets conflict_loser to delete, switches the mode to a mirror or moves review towards automatic: those are for the user. Nothing changes when it is refused.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,

@@ -1,6 +1,7 @@
 //! The right side of the window: toolbar, status card and the tabs.
 
 use egui::{Frame, Margin, RichText, Ui};
+use syncfast_core::behavior::SyncMode;
 use syncfast_core::bisync_log::Progress;
 use syncfast_core::notify::attention_body;
 use syncfast_core::state::{DisplayStatus, GateKind};
@@ -10,7 +11,7 @@ use super::format::{progress_fraction, progress_line};
 use super::menu::{self, Tone};
 use super::relative::synced;
 use super::widgets::{
-    BadgeSize, ButtonKind, button_with_icon, icon_button, inline_error, primary_button,
+    BadgeSize, ButtonKind, button_with_icon, chip, icon_button, inline_error, primary_button,
     progress_bar, segmented, status_badge, toolbar,
 };
 use super::{Action, PairRow, ViewModel, activity, conflicts, filters, options};
@@ -89,32 +90,44 @@ fn padded<R>(ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> R {
 
 fn pair_detail(ui: &mut Ui, vm: &ViewModel, pair: &PairRow, palette: &Palette) -> Vec<Action> {
     let mut actions = Vec::new();
-    let subtitle = format!("{} ↔ {}", pair.local.display(), pair.remote);
+    let sync_mode = pair.effective.behavior.mode;
+    let arrow = match sync_mode {
+        SyncMode::Bisync => "\u{2194}",
+        SyncMode::Upload | SyncMode::MirrorUp => "\u{2192}",
+        SyncMode::Download | SyncMode::MirrorDown => "\u{2190}",
+    };
+    let subtitle = format!("{} {arrow} {}", pair.local.display(), pair.remote);
     toolbar(ui, &pair.name, &subtitle, |ui| {
         let more = icon_button(ui, Icon::Ellipsis, "More");
         more_menu(&more, pair, palette, &mut actions);
         pause_button(ui, pair, &mut actions);
         sync_button(ui, pair, &mut actions);
+        if sync_mode != SyncMode::Bisync {
+            chip(ui, options::mode_label(sync_mode.name()));
+        }
     });
     padded(ui, |ui| {
         status_card(ui, pair, vm.now, palette, &mut actions);
     });
+    let tabs = tabs_of(sync_mode);
+    let tab = if tabs.contains(&vm.tab) {
+        vm.tab
+    } else {
+        DetailTab::default()
+    };
     padded(ui, |ui| {
         ui.add_space(space::L);
-        let selected = DetailTab::ALL
-            .iter()
-            .position(|tab| *tab == vm.tab)
-            .unwrap_or(0);
-        let labels = DetailTab::ALL.map(DetailTab::label);
+        let selected = tabs.iter().position(|shown| *shown == tab).unwrap_or(0);
+        let labels: Vec<&str> = tabs.iter().map(|shown| shown.label()).collect();
         if let Some(index) = segmented(ui, selected, &labels) {
-            actions.push(Action::SelectTab(DetailTab::ALL[index]));
+            actions.push(Action::SelectTab(tabs[index]));
         }
         ui.add_space(space::S);
     });
     padded(ui, |ui| {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
-            .show(ui, |ui| match vm.tab {
+            .show(ui, |ui| match tab {
                 DetailTab::Activity => actions.extend(activity::show(ui, vm)),
                 DetailTab::Conflicts => actions.extend(conflicts::show(ui, vm)),
                 DetailTab::Filters => actions.extend(filters::show(ui, vm)),
@@ -122,6 +135,14 @@ fn pair_detail(ui: &mut Ui, vm: &ViewModel, pair: &PairRow, palette: &Palette) -
             });
     });
     actions
+}
+
+/// Conflicts only exist in a two-way sync.
+fn tabs_of(mode: SyncMode) -> Vec<DetailTab> {
+    DetailTab::ALL
+        .into_iter()
+        .filter(|tab| *tab != DetailTab::Conflicts || mode == SyncMode::Bisync)
+        .collect()
 }
 
 fn sync_button(ui: &mut Ui, pair: &PairRow, actions: &mut Vec<Action>) {
@@ -191,12 +212,21 @@ fn card_text(pair: &PairRow, now: jiff::Timestamp) -> CardText {
             GateKind::NeedsReviewFirstRun
             | GateKind::NeedsReviewFiltersChanged
             | GateKind::NeedsReviewCriticalError
+            | GateKind::NeedsReviewModeChanged
             | GateKind::TooManyDeletes
-            | GateKind::AllFilesChanged => CardText {
-                phrase: "Review what will change before syncing resumes.".to_owned(),
-                detail: None,
-                button: Some(("Review…", Action::OpenReview(pair.id.clone()))),
-            },
+            | GateKind::AllFilesChanged => {
+                let review = "Review what will change before syncing resumes.";
+                let stopped = gate == GateKind::TooManyDeletes && !pair.gate_detail.is_empty();
+                CardText {
+                    phrase: if stopped {
+                        format!("{} {review}", pair.gate_detail)
+                    } else {
+                        review.to_owned()
+                    },
+                    detail: None,
+                    button: Some(("Review…", Action::OpenReview(pair.id.clone()))),
+                }
+            }
             GateKind::AuthError => CardText {
                 phrase: format!(
                     "Reconnect \"{}\" in Settings > Accounts.",

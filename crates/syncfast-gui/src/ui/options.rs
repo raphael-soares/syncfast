@@ -14,7 +14,8 @@ use super::{Action, ViewModel};
 use crate::icons::Icon;
 use crate::theme::{self, display_name, size, space};
 
-const SECTIONS: [(&str, &[&str]); 7] = [
+const SECTIONS: [(&str, &[&str]); 8] = [
+    ("Mode", &["mode"]),
     ("Schedule", &["watch", "debounce", "max_wait", "interval"]),
     ("Bandwidth", &["limit_upload", "limit_download"]),
     ("Conflicts", &["conflict_resolve", "conflict_loser"]),
@@ -46,6 +47,8 @@ struct Row {
     resettable: bool,
     /// The control can be used.
     enabled: bool,
+    /// The key does something in the mode of the sync.
+    applies: bool,
     /// File names of the user's themes, for the theme selector.
     themes: Vec<String>,
 }
@@ -94,13 +97,19 @@ pub fn sync(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
                 behavior: pair.effective.behavior.clone(),
                 reached: true,
             }],
-            caption: if overridden {
+            caption: if def.name == "mode" {
+                mode_caption(
+                    pair.effective.behavior.mode.name(),
+                    pair.effective.behavior.versions,
+                )
+            } else if overridden {
                 format!("Overrides the default ({inherited})")
             } else {
                 format!("Default: {inherited}")
             },
             resettable: overridden,
             enabled: true,
+            applies: (def.applies_to)(pair.effective.behavior.mode),
             themes: Vec::new(),
         }
     })
@@ -141,6 +150,7 @@ pub fn defaults(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
             caption: notes.join(" \u{b7} "),
             resettable: set,
             enabled: true,
+            applies: true,
             themes: Vec::new(),
         }
     })
@@ -205,6 +215,7 @@ fn app_row(vm: &ViewModel, def: &KeyDef) -> Row {
         caption: lines.join("\n"),
         resettable: vm.defaults_overrides.contains(def.name),
         enabled,
+        applies: true,
         themes: vm.appearance.themes.clone(),
     }
 }
@@ -228,6 +239,7 @@ fn sections(
             .iter()
             .filter_map(|name| lookup(name))
             .filter(|def| !(def.per_sync_only && *scope == SettingScope::Defaults))
+            .filter(|def| row(def).applies)
             .collect();
         if defs.is_empty() {
             continue;
@@ -272,6 +284,9 @@ fn sections(
 
 /// What the chosen value of a section means, said in line under its rows.
 fn note(section: &str, value_of: &dyn Fn(&str) -> Option<Value>) -> Option<&'static str> {
+    if section == "Mode" {
+        return Some("Changing the mode holds this sync for a review.");
+    }
     match (section, value_of("review")) {
         ("Review", Some(Value::Choice("manual"))) => {
             Some("Every first sync, filter change, mode change and mass deletion waits for you.")
@@ -288,6 +303,14 @@ fn warnings(section: &str, value_of: &dyn Fn(&str) -> Option<Value>) -> Vec<Stri
     let is = |name: &str, wanted: Value| value_of(name) == Some(wanted);
     let kept = !is("versions", Value::Bool(false));
     match section {
+        "Mode" if is("mode", Value::Choice("mirror_up")) => vec![format!(
+            "Drive becomes an exact copy of this folder. Files that exist only on Drive are deleted there{} An empty folder is never mirrored.",
+            kept_clause(&is, value_of)
+        )],
+        "Mode" if is("mode", Value::Choice("mirror_down")) => vec![format!(
+            "This folder becomes an exact copy of Drive. Files that exist only on this computer are deleted{} An empty folder on Drive is never mirrored.",
+            kept_clause(&is, value_of)
+        )],
         "Conflicts" if is("conflict_loser", Value::Choice("delete")) => {
             let message = match value_of("versions_keep_days") {
                 Some(days) if kept => format!(
@@ -306,6 +329,23 @@ fn warnings(section: &str, value_of: &dyn Fn(&str) -> Option<Value>) -> Vec<Stri
                 .to_owned(),
         ],
         _ => Vec::new(),
+    }
+}
+
+/// How a mirror says what happens to the files it deletes: kept for the
+/// versions period, or not kept at all.
+fn kept_clause(
+    is: &dyn Fn(&str, Value) -> bool,
+    value_of: &dyn Fn(&str) -> Option<Value>,
+) -> String {
+    match value_of("versions_keep_days") {
+        Some(days) if !is("versions", Value::Bool(false)) => {
+            format!(
+                " and kept as versions for {}.",
+                value_label("versions_keep_days", &days)
+            )
+        }
+        _ => " and not kept.".to_owned(),
     }
 }
 
@@ -571,6 +611,7 @@ fn label(key: &str) -> &'static str {
         "review" => "Review",
         "resync_mode" => "When a first sync finds different files",
         "empty_dirs" => "Sync empty folders",
+        "mode" => "Mode",
         "notifications.needs_action" => "Needs action",
         "notifications.conflicts" => "Conflicts",
         FAILURES_AFTER => "Failures",
@@ -578,6 +619,34 @@ fn label(key: &str) -> &'static str {
         AUTOSTART => "Start syncfast when you log in",
         "app.theme" => "Theme",
         _ => "",
+    }
+}
+
+/// The name of a sync mode as the chip and the selector show it.
+#[must_use]
+pub fn mode_label(name: &str) -> &str {
+    choice_label("mode", name)
+}
+
+/// The caption of the mode row. The mirrors have none: their legend is the
+/// warning under the section.
+fn mode_caption(name: &str, versions: bool) -> String {
+    match name {
+        "upload" => {
+            "New and changed files on this computer are copied to Drive. Nothing is ever deleted."
+                .to_owned()
+        }
+        "download" => {
+            let caption = "New and changed files on Drive are copied to this computer. Nothing is ever deleted.";
+            if versions {
+                format!("{caption} Replaced files are kept as versions.")
+            } else {
+                caption.to_owned()
+            }
+        }
+        "mirror_up" | "mirror_down" => String::new(),
+        _ => "Changes on either side reach the other. Deleted files are deleted on both sides."
+            .to_owned(),
     }
 }
 
@@ -604,6 +673,11 @@ fn theme_label(name: &str) -> String {
 
 fn choice_label<'a>(key: &str, name: &'a str) -> &'a str {
     match (key, name) {
+        ("mode", "bisync") => "Two-way",
+        ("mode", "upload") => "Upload only",
+        ("mode", "download") => "Download only",
+        ("mode", "mirror_up") => "Mirror to Drive",
+        ("mode", "mirror_down") => "Mirror to this computer",
         ("review", "manual") => "Ask every time",
         ("review", "deletions") => "Ask only for deletions",
         ("review", "automatic") => "Never ask",

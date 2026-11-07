@@ -8,8 +8,9 @@ use std::path::{Component, Path, PathBuf};
 use serde::Deserialize;
 use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, TableLike, Value};
 
-use crate::behavior::Behavior;
+use crate::behavior::{Behavior, SyncMode};
 use crate::filters;
+use crate::oneway;
 use crate::paths::Paths;
 use crate::settings::{self, Effective, Origin, Overrides};
 
@@ -339,6 +340,11 @@ impl Config {
                 }
             })
             .collect();
+        let occupied: Vec<Vec<String>> = self
+            .pairs
+            .iter()
+            .map(|pair| occupied_remotes(pair, &Behavior::for_pair(&defaults, pair)))
+            .collect();
         for (i, pair) in self.pairs.iter().enumerate() {
             if !candidates[i] {
                 continue;
@@ -355,7 +361,7 @@ impl Config {
             messages[i] = if let Some((_, other)) = local_overlap {
                 Some(format!("local folder overlaps \"{}\"", other.name))
             } else if let Some((_, other)) =
-                others().find(|(_, other)| remotes_overlap(&pair.remote, &other.remote))
+                others().find(|&(j, _)| occupy_the_same_files(&occupied[i], &occupied[j]))
             {
                 Some(format!("remote folder overlaps \"{}\"", other.name))
             } else {
@@ -1005,7 +1011,19 @@ fn problem_before_overlap(
     if let Some(problem) = pair.overrides.problem() {
         return Some(problem.to_owned());
     }
-    settings::relation_problem(&Behavior::for_pair(defaults, pair))
+    let behavior = Behavior::for_pair(defaults, pair);
+    if let Some(problem) = settings::relation_problem(&behavior) {
+        return Some(problem);
+    }
+    if behavior.mode == SyncMode::MirrorUp
+        && behavior.versions
+        && split_remote(&pair.remote).is_some_and(|(_, path)| segments(path).is_empty())
+    {
+        return Some(
+            "mirror_up with versions needs a folder on the account, not its root".to_owned(),
+        );
+    }
+    None
 }
 
 /// Checks that run after the overlap checks, in spec order.
@@ -1038,6 +1056,23 @@ pub fn filter_line_problem(number: usize, line: &str) -> Option<String> {
         return Some(format!("filter line {number} must be a single line"));
     }
     None
+}
+
+/// The remote folders a sync occupies: its own, and for a `mirror_up` with
+/// versions the folder where the replaced and deleted files are kept.
+fn occupied_remotes(pair: &Pair, behavior: &Behavior) -> Vec<String> {
+    let mut occupied = vec![pair.remote.clone()];
+    if behavior.mode == SyncMode::MirrorUp
+        && behavior.versions
+        && let Some(versions) = oneway::remote_versions_dir(&pair.remote, &pair.id)
+    {
+        occupied.push(versions);
+    }
+    occupied
+}
+
+fn occupy_the_same_files(a: &[String], b: &[String]) -> bool {
+    a.iter().any(|a| b.iter().any(|b| remotes_overlap(a, b)))
 }
 
 /// True when two `account:folder` remotes cover the same files: same
@@ -1490,6 +1525,67 @@ mod tests {
                 "remote folder overlaps \"Gamma\"",
                 "remote folder overlaps \"Alpha\"",
             ]
+        );
+    }
+
+    #[test]
+    fn mirror_up_with_versions_needs_a_folder_not_the_account_root() {
+        let at_root = single_problem("mode = \"mirror_up\"\n");
+        let in_a_folder = messages(&config(&[format!(
+            "{}mode = \"mirror_up\"\n",
+            pair_block("drive", "Drive", "/data/Drive", "gdrive:Notes")
+        )]));
+
+        assert_eq!(
+            at_root,
+            ["mirror_up with versions needs a folder on the account, not its root"]
+        );
+        assert!(in_a_folder.is_empty());
+        assert!(single_problem("mode = \"mirror_up\"\nversions = false\n").is_empty());
+        assert!(single_problem("mode = \"upload\"\n").is_empty());
+        assert!(single_problem("mode = \"mirror_down\"\n").is_empty());
+    }
+
+    #[test]
+    fn a_mirror_up_sync_occupies_the_versions_folder_for_overlap() {
+        let pairs = |extra: &str| {
+            config(&[
+                format!(
+                    "{}{extra}",
+                    pair_block("a", "Alpha", "/data/a", "gdrive:Notes")
+                ),
+                pair_block("b", "Beta", "/data/b", "gdrive:.syncfast-versions/a"),
+                pair_block("c", "Gamma", "/data/c", "gdrive:.syncfast-versions/other"),
+            ])
+        };
+
+        assert_eq!(
+            messages(&pairs("mode = \"mirror_up\"\n")),
+            [
+                "remote folder overlaps \"Beta\"",
+                "remote folder overlaps \"Alpha\"",
+            ]
+        );
+        assert!(messages(&pairs("")).is_empty());
+        assert!(messages(&pairs("mode = \"mirror_up\"\nversions = false\n")).is_empty());
+        assert!(messages(&pairs("mode = \"upload\"\n")).is_empty());
+    }
+
+    #[test]
+    fn unknown_mode_value() {
+        assert_eq!(
+            single_problem("mode = \"two_way\"\n"),
+            [
+                "unknown value \"two_way\" for mode: use bisync, upload, download, mirror_up or mirror_down"
+            ]
+        );
+    }
+
+    #[test]
+    fn mode_in_defaults_is_rejected_with_a_clear_message() {
+        assert_eq!(
+            global_error("version = 2\n[defaults]\nmode = \"upload\"\n"),
+            "config.toml: [defaults]: mode is set per sync, not in [defaults]"
         );
     }
 

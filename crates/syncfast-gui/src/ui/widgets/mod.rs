@@ -3,6 +3,7 @@
 
 mod alert;
 mod button;
+mod chip;
 mod dialog;
 mod empty_state;
 mod folder_tree;
@@ -26,6 +27,7 @@ pub use alert::{AlertButton, alert};
 pub use button::{
     ButtonKind, button_with_icon, destructive_button, primary_button, secondary_button,
 };
+pub use chip::chip;
 pub use dialog::dialog;
 pub use empty_state::empty_state;
 pub use folder_tree::{FolderNode, FolderTree, NodeState, TreeAction, folder_tree};

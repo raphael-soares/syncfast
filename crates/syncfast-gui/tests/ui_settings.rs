@@ -508,6 +508,20 @@ fn a_default_that_was_changed_says_what_it_replaces_and_how_many_syncs_override_
 }
 
 #[test]
+fn the_defaults_pane_has_no_mode_row_because_the_mode_is_set_per_sync() {
+    let mut harness = harness(defaults(), screen());
+    harness.run();
+
+    assert!(harness.query_by_label("Sync mode").is_none());
+    assert!(harness.query_by_label("Mode").is_none());
+    assert!(
+        harness
+            .query_by_label("Changing the mode holds this sync for a review.")
+            .is_none()
+    );
+}
+
+#[test]
 fn resetting_a_default_asks_to_reset_it_in_the_defaults() {
     let mut harness = harness(defaults(), screen());
     harness.run();

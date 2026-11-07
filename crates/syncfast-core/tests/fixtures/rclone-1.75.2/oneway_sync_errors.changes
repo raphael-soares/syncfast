@@ -1,0 +1,4 @@
+- extra.txt
++ locked.txt
++ ok.txt
+! locked.txt

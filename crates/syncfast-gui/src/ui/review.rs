@@ -88,6 +88,7 @@ pub fn subtitle(gate: GateKind) -> &'static str {
         GateKind::NeedsReviewFirstRun => "First sync",
         GateKind::NeedsReviewFiltersChanged => "Filters changed",
         GateKind::NeedsReviewCriticalError => "Sync stopped after an error",
+        GateKind::NeedsReviewModeChanged => "Sync mode changed",
         GateKind::TooManyDeletes => "Many files would be deleted",
         GateKind::AllFilesChanged => "Every file changed",
         _ => "Review changes",

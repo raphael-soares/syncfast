@@ -1,11 +1,12 @@
 //! The list of syncs on the left.
 
 use egui::{Frame, Margin, RichText};
+use syncfast_core::behavior::SyncMode;
 
 use super::menu;
 use super::relative::synced;
 use super::widgets::{SidebarRow, icon_button, sidebar_row};
-use super::{Action, ViewModel};
+use super::{Action, ViewModel, options};
 use crate::gui_state::{SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
 use crate::icons::Icon;
 use crate::theme::{self, space};
@@ -46,7 +47,13 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel) -> Vec<Action> {
         ui.add_space(space::S);
         egui::ScrollArea::vertical().show(ui, |ui| {
             for pair in &vm.pairs {
-                let subtitle = synced(vm.now, pair.last_success);
+                let synced = synced(vm.now, pair.last_success);
+                let mode = pair.effective.behavior.mode;
+                let subtitle = if mode == SyncMode::Bisync {
+                    synced
+                } else {
+                    format!("{synced} \u{b7} {}", options::mode_label(mode.name()))
+                };
                 let row = SidebarRow {
                     icon: Icon::Folder,
                     title: &pair.name,
