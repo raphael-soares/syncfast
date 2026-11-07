@@ -69,35 +69,66 @@ struct Screen {
 }
 
 fn harness(vm: ViewModel) -> Harness<'static, Screen> {
-    let mut harness = Harness::builder()
-        .with_size(egui::vec2(960.0, 640.0))
-        .build_ui_state(
-            |ui, screen: &mut Screen| {
-                if !screen.themed {
-                    theme::install_with(
-                        ui.ctx(),
-                        &Palette::dark(),
-                        fastframe_text::TextRendering::platform_default(),
-                    );
-                    screen.themed = true;
-                    ui.ctx().request_repaint();
-                    return;
-                }
-                let actions = ui::root(ui, &screen.vm);
-                screen.actions.extend(actions);
-            },
-            Screen {
-                vm,
-                actions: Vec::new(),
-                themed: false,
-            },
-        );
+    harness_sized(vm, egui::vec2(960.0, 640.0))
+}
+
+fn harness_sized(vm: ViewModel, size: egui::Vec2) -> Harness<'static, Screen> {
+    let mut harness = Harness::builder().with_size(size).build_ui_state(
+        |ui, screen: &mut Screen| {
+            if !screen.themed {
+                theme::install_with(
+                    ui.ctx(),
+                    &Palette::dark(),
+                    fastframe_text::TextRendering::platform_default(),
+                );
+                screen.themed = true;
+                ui.ctx().request_repaint();
+                return;
+            }
+            let actions = ui::root(ui, &screen.vm);
+            screen.actions.extend(actions);
+        },
+        Screen {
+            vm,
+            actions: Vec::new(),
+            themed: false,
+        },
+    );
     harness.run_steps(4);
     harness
 }
 
 fn disabled(harness: &Harness<'_, Screen>, label: &str) -> bool {
     harness.get_by_label(label).accesskit_node().is_disabled()
+}
+
+#[test]
+fn a_long_sync_path_is_cut_short_before_the_actions_in_the_smallest_window() {
+    let local =
+        "/home/ada/Documents/Projects/Archive/2025/Quarterly Reports/Finance and Accounting";
+    let mut vm = view(PairRow {
+        local: local.into(),
+        ..pair(DisplayStatus::UpToDate)
+    });
+    vm.sidebar_width = 200.0;
+    let harness = harness_sized(vm, egui::vec2(760.0, 520.0));
+    let subtitle = format!("{local} ↔ gdrive:Notes");
+
+    let subtitle_right = harness.get_by_label(&subtitle).rect().right();
+    let title_right = harness.get_by_label("Google Drive").rect().right();
+    let actions_left = ["More", "Pause", "Sync Now"]
+        .map(|label| harness.get_by_label(label).rect().left())
+        .into_iter()
+        .fold(f32::INFINITY, f32::min);
+
+    assert!(
+        subtitle_right <= actions_left,
+        "{subtitle_right} > {actions_left}"
+    );
+    assert!(
+        title_right <= actions_left,
+        "{title_right} > {actions_left}"
+    );
 }
 
 fn syncing_progress(total_transfers: u64) -> Progress {
