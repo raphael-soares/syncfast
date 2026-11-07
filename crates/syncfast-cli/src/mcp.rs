@@ -525,7 +525,7 @@ impl SyncfastMcp {
     }
 
     #[tool(
-        description = "The conflicts of a sync: files that changed on both sides, with the newer kept and the other saved as `<name>.conflictN`. Each has its size and date, current and conflicted.",
+        description = "The conflicts of a sync: files that changed on both sides, with the loser saved as `<name>.conflictN` (or `<name>.path1`/`<name>.path2` when the sync names losers by path). Each has its size and date, current and conflicted.",
         annotations(read_only_hint = true)
     )]
     async fn list_conflicts(&self, Parameters(args): Parameters<IdArgs>) -> CallToolResult {

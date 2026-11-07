@@ -115,6 +115,7 @@ h1.caption{font-size:15px;font-weight:600;color:var(--secondary);margin:0 0 -28p
   <symbol id="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></symbol>
   <symbol id="eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></symbol>
   <symbol id="alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></symbol>
+  <symbol id="triangle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4M12 17h.01"/></symbol>
   <symbol id="pause" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></symbol>
   <symbol id="more" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></symbol>
   <symbol id="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 18 6-6-6-6"/></symbol>
@@ -334,8 +335,13 @@ h1.caption{font-size:15px;font-weight:600;color:var(--secondary);margin:0 0 -28p
     <div class="sec-title">Bandwidth</div>
     <div class="srow"><div class="lab">Limit uploads to<div class="cap">Overrides the default (Unlimited)</div></div><div class="ctl"><button class="iconbtn" title="Reset to Default"><svg class="ico"><use href="#rotate"/></svg></button><span class="fld">2M</span><span class="unit"></span></div></div>
     <div class="srow"><div class="lab">Limit downloads to<div class="cap">Default: Unlimited</div></div><div class="ctl"><span class="fld hint">Unlimited</span><span class="unit"></span></div></div>
+    <div class="sec-title">Conflicts</div>
+    <div class="srow"><div class="lab">When both sides change<div class="cap">Default: Newer wins</div></div><div class="ctl"><span class="cmb">Newer wins<svg class="ico"><use href="#chevd"/></svg></span></div></div>
+    <div class="srow"><div class="lab">The losing version<div class="cap">Overrides the default (Rename as .conflictN)</div></div><div class="ctl"><button class="iconbtn" title="Reset to Default"><svg class="ico"><use href="#rotate"/></svg></button><span class="cmb">Delete<svg class="ico"><use href="#chevd"/></svg></span></div></div>
+    <div class="warn-row" style="margin-top:8px"><svg class="ico" style="color:var(--warning);margin-top:1px"><use href="#triangle"/></svg><div class="callout" style="color:var(--text)">The losing version is deleted and not kept.</div></div>
     <div class="sec-title">Versions</div>
     <div class="srow"><div class="lab">Keep replaced files<div class="cap">Overrides the default (On)</div></div><div class="ctl"><button class="iconbtn" title="Reset to Default"><svg class="ico"><use href="#rotate"/></svg></button><span class="tgl"></span></div></div>
+    <div class="warn-row" style="margin-top:8px"><svg class="ico" style="color:var(--warning);margin-top:1px"><use href="#triangle"/></svg><div class="callout" style="color:var(--text)">Files replaced or deleted on this computer are not kept.</div></div>
     <div class="sec-title">Deletions</div>
     <div class="srow"><div class="lab">Stop when more than this share would be deleted<div class="cap">Default: 50%</div></div><div class="ctl"><span class="fld">50</span><span class="unit">%</span></div></div>
     <div class="err" style="margin-top:6px"><svg class="ico"><use href="#alert"/></svg>max_delete must be between 1 and 100</div>

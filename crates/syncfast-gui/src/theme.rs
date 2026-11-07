@@ -36,6 +36,18 @@ pub struct Palette {
 }
 
 impl Palette {
+    /// The tinted background of an in-line warning.
+    #[must_use]
+    pub fn warning_fill(&self) -> Color32 {
+        self.warning.gamma_multiply(0.08)
+    }
+
+    /// The border of an in-line warning.
+    #[must_use]
+    pub fn warning_border(&self) -> Color32 {
+        self.warning.gamma_multiply(0.25)
+    }
+
     #[must_use]
     pub const fn dark() -> Self {
         Self {

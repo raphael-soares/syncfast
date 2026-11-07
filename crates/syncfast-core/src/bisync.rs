@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use jiff::Zoned;
 use serde::{Deserialize, Serialize};
 
-use crate::behavior::{Bandwidth, Behavior, GoogleDocs};
+use crate::behavior::{Bandwidth, Behavior, ConflictLoser, GoogleDocs};
 use crate::bisync_log::LogLine;
 use crate::config::Pair;
 use crate::paths::Paths;
@@ -159,9 +159,14 @@ pub fn bisync_args(
         behavior.conflict_resolve.rclone_value().into(),
         "--conflict-loser".into(),
         behavior.conflict_loser.rclone_value().into(),
+    ];
+    if behavior.conflict_loser == ConflictLoser::Pathname {
+        args.extend(["--conflict-suffix".into(), "path".into()]);
+    }
+    args.extend([
         "--max-delete".into(),
         behavior.max_delete.to_string().into(),
-    ];
+    ]);
     if behavior.empty_dirs {
         args.push("--create-empty-src-dirs".into());
     }
@@ -333,7 +338,7 @@ mod tests {
     use jiff::tz::{self, TimeZone};
 
     use super::*;
-    use crate::behavior::{ConflictLoser, ConflictResolve, ResyncMode};
+    use crate::behavior::{ConflictResolve, ResyncMode};
     use crate::bisync_log::fixtures::{exit_code, fixture, fixture_path};
 
     fn now() -> Zoned {
@@ -544,6 +549,80 @@ mod tests {
         assert_eq!(value_of("--resync-mode"), "path2");
     }
 
+    fn value_after(args: &[String], flag: &str) -> Option<String> {
+        let at = args.iter().position(|arg| arg == flag)?;
+        args.get(at + 1).cloned()
+    }
+
+    #[test]
+    fn each_conflict_resolve_value_reaches_rclone_under_its_own_name() {
+        for (resolve, flag) in [
+            (ConflictResolve::None, "none"),
+            (ConflictResolve::Newer, "newer"),
+            (ConflictResolve::Older, "older"),
+            (ConflictResolve::Larger, "larger"),
+            (ConflictResolve::Smaller, "smaller"),
+            (ConflictResolve::Local, "path1"),
+            (ConflictResolve::Remote, "path2"),
+        ] {
+            let behavior = Behavior {
+                conflict_resolve: resolve,
+                ..Behavior::default()
+            };
+
+            let args = args(&behavior, Mode::Normal);
+
+            assert_eq!(
+                value_after(&args, "--conflict-resolve").as_deref(),
+                Some(flag)
+            );
+        }
+    }
+
+    #[test]
+    fn a_pathname_loser_adds_the_path_suffix_and_the_others_add_none() {
+        for (loser, suffix) in [
+            (ConflictLoser::Num, None),
+            (ConflictLoser::Pathname, Some("path")),
+            (ConflictLoser::Delete, None),
+        ] {
+            let behavior = Behavior {
+                conflict_loser: loser,
+                ..Behavior::default()
+            };
+
+            let args = args(&behavior, Mode::Normal);
+
+            assert_eq!(
+                value_after(&args, "--conflict-loser").as_deref(),
+                Some(loser.rclone_value())
+            );
+            assert_eq!(value_after(&args, "--conflict-suffix").as_deref(), suffix);
+        }
+    }
+
+    #[test]
+    fn versions_false_passes_no_backup_dir() {
+        let behavior = Behavior {
+            versions: false,
+            ..Behavior::default()
+        };
+
+        let args = args(&behavior, Mode::Normal);
+
+        assert!(!args.iter().any(|arg| arg.starts_with("--backup-dir")));
+    }
+
+    #[test]
+    fn the_retention_days_never_reach_rclone() {
+        let behavior = Behavior {
+            versions_keep_days: 7,
+            ..Behavior::default()
+        };
+
+        assert_eq!(args(&behavior, Mode::Normal), expected(RUN_LOG, &[]));
+    }
+
     #[test]
     fn switched_off_behaviors_drop_their_flags() {
         let behavior = Behavior {
@@ -584,6 +663,26 @@ mod tests {
         let workdir = workdir_with(&[]);
 
         assert_eq!(classify_fixture("upload", workdir.path()), Outcome::Ok);
+    }
+
+    #[test]
+    fn every_conflict_fixture_is_an_ok_run() {
+        let workdir = workdir_with(&[]);
+
+        for name in [
+            "conflict",
+            "conflict_none",
+            "conflict_pathname",
+            "conflict_pathname_none",
+            "conflict_delete",
+            "conflict_local_wins",
+        ] {
+            assert_eq!(
+                classify_fixture(name, workdir.path()),
+                Outcome::Ok,
+                "{name}"
+            );
+        }
     }
 
     #[test]

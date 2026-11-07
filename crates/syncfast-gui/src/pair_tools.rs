@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use jiff::Zoned;
 use syncfast_core::config::{Config, Pair, SettingScope};
-use syncfast_core::conflicts::{self, Conflict, Resolution};
+use syncfast_core::conflicts::{self, Conflict, Naming, Resolution};
 use syncfast_core::filters::{self, DirMatcher, ExclusionSummary};
 use syncfast_core::ops;
 use syncfast_core::paths::Paths;
@@ -25,6 +25,11 @@ async fn find_pair(paths: &Paths, id: &str) -> Result<Pair, String> {
         .ok_or_else(|| format!("there is no sync with id \"{id}\""))
 }
 
+async fn naming_of(paths: &Paths, pair: &Pair) -> Result<Naming, String> {
+    let config = Config::load(paths).await.map_err(|err| err.to_string())?;
+    Ok(Naming::from(config.effective(pair).behavior.conflict_loser))
+}
+
 /// The conflicts in the sync's local folder. A folder that is not there has
 /// none.
 ///
@@ -33,10 +38,11 @@ async fn find_pair(paths: &Paths, id: &str) -> Result<Pair, String> {
 /// be listed.
 pub async fn scan_conflicts(paths: &Paths, id: &str) -> Result<Vec<Conflict>, String> {
     let pair = find_pair(paths, id).await?;
+    let naming = naming_of(paths, &pair).await?;
     let matcher = DirMatcher::new(&filters::render_live(&pair).await.text);
     let local = pair.local;
     let scanned = tokio::task::spawn_blocking(move || {
-        conflicts::list_conflicts(&local, &matcher).map_err(|err| (local, err))
+        conflicts::list_conflicts(&local, &matcher, naming).map_err(|err| (local, err))
     })
     .await
     .map_err(|err| err.to_string())?;
@@ -62,10 +68,18 @@ pub async fn resolve_conflict(
     resolution: Resolution,
 ) -> Result<(), String> {
     let pair = find_pair(paths, id).await?;
+    let naming = naming_of(paths, &pair).await?;
     let versions = paths.versions_dir(id);
     tokio::task::spawn_blocking(move || {
-        conflicts::resolve(&pair.local, &conflict, resolution, &versions, &Zoned::now())
-            .map_err(|err| format!("cannot settle {}: {err}", conflict.display()))
+        conflicts::resolve(
+            &pair.local,
+            &conflict,
+            naming,
+            resolution,
+            &versions,
+            &Zoned::now(),
+        )
+        .map_err(|err| format!("cannot settle {}: {err}", conflict.display()))
     })
     .await
     .map_err(|err| err.to_string())?
@@ -267,6 +281,35 @@ mod tests {
 
         let listed: Vec<_> = found.iter().map(|conflict| conflict.path.clone()).collect();
         assert_eq!(listed, vec![PathBuf::from("a.md.conflict1")]);
+    }
+
+    #[tokio::test]
+    async fn scan_lists_path_files_only_when_the_sync_names_losers_by_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir.path().join("notes");
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::write(local.join("a.md.path1"), "x").unwrap();
+        let paths = paths(dir.path());
+        write_config(&paths, &local);
+
+        let by_number = scan_conflicts(&paths, "notes").await.unwrap();
+        let text = std::fs::read_to_string(paths.config_file()).unwrap();
+        std::fs::write(
+            paths.config_file(),
+            format!(
+                "{}conflict_loser = \"pathname\"\n",
+                text.replace("version = 1", "version = 2")
+            ),
+        )
+        .unwrap();
+        let by_path = scan_conflicts(&paths, "notes").await.unwrap();
+
+        assert!(by_number.is_empty());
+        let listed: Vec<_> = by_path
+            .iter()
+            .map(|conflict| conflict.path.clone())
+            .collect();
+        assert_eq!(listed, vec![PathBuf::from("a.md.path1")]);
     }
 
     #[tokio::test]

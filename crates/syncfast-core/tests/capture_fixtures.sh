@@ -140,6 +140,26 @@ put "$root/local/doc.txt" "local edit" "$mid"
 put "$root/remote/doc.txt" "remote edit, newer" "$new"
 capture conflict
 
+# Both sides edited after the first run; only the conflict flags differ.
+both_edited() {
+  setup
+  put "$root/local/doc.txt" "base" "$old"
+  put "$root/local/keep.txt" "unchanged" "$old"
+  prepare
+  put "$root/local/doc.txt" "local edit" "$mid"
+  put "$root/remote/doc.txt" "remote edit, newer" "$new"
+}
+both_edited
+capture conflict_none --conflict-resolve none
+both_edited
+capture conflict_pathname --conflict-resolve newer --conflict-loser pathname --conflict-suffix path
+both_edited
+capture conflict_pathname_none --conflict-resolve none --conflict-loser pathname --conflict-suffix path
+both_edited
+capture conflict_delete --conflict-resolve newer --conflict-loser delete
+both_edited
+capture conflict_local_wins --conflict-resolve path1
+
 setup
 put "$root/local/doc.txt" "base" "$old"
 put "$root/local/keep.txt" "unchanged" "$old"

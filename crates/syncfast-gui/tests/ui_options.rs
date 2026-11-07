@@ -627,3 +627,94 @@ fn the_defaults_have_the_bandwidth_section_but_no_summary() {
     assert!(harness.query_all_by_label("Limit uploads to").count() >= 1);
     assert!(harness.query_by_label_contains("Syncs every").is_none());
 }
+
+const DELETED_AND_KEPT: &str = "The losing version is deleted. On this computer it stays in the versions folder for 30 days; on Drive it goes to the trash.";
+const DELETED_AND_LOST: &str = "The losing version is deleted and not kept.";
+const NOT_KEPT: &str = "Files replaced or deleted on this computer are not kept.";
+
+fn shows(vm: ViewModel, label: &str) -> bool {
+    let mut harness = harness(vm, screen());
+    harness.run();
+    harness.query_by_label(label).is_some()
+}
+
+#[test]
+fn a_deleted_loser_warns_that_it_stays_in_the_versions_folder_and_goes_to_the_drive_trash() {
+    assert!(shows(
+        options("", "conflict_loser = \"delete\"\n"),
+        DELETED_AND_KEPT
+    ));
+    assert!(!shows(
+        options("", "conflict_loser = \"delete\"\n"),
+        NOT_KEPT
+    ));
+}
+
+#[test]
+fn the_deleted_loser_warning_names_the_days_the_sync_keeps_versions() {
+    let vm = options("", "conflict_loser = \"delete\"\nversions_keep_days = 7\n");
+
+    assert!(shows(
+        vm,
+        "The losing version is deleted. On this computer it stays in the versions folder for 7 days; on Drive it goes to the trash."
+    ));
+}
+
+#[test]
+fn a_deleted_loser_without_versions_warns_that_nothing_is_kept() {
+    let vm = options("", "conflict_loser = \"delete\"\nversions = false\n");
+
+    assert!(shows(vm.clone(), DELETED_AND_LOST));
+    assert!(shows(vm.clone(), NOT_KEPT));
+    assert!(!shows(vm, DELETED_AND_KEPT));
+}
+
+#[test]
+fn turning_versions_off_warns_in_its_section() {
+    assert!(shows(options("", "versions = false\n"), NOT_KEPT));
+}
+
+#[test]
+fn the_built_in_settings_show_no_warning() {
+    for label in [DELETED_AND_KEPT, DELETED_AND_LOST, NOT_KEPT] {
+        assert!(!shows(options("", ""), label), "{label}");
+    }
+}
+
+#[test]
+fn the_defaults_panel_warns_about_a_default_that_deletes_the_loser() {
+    let vm = options("conflict_loser = \"delete\"\n", "");
+    let mut harness = harness(vm, defaults_screen());
+
+    harness.run();
+
+    harness.get_by_label(DELETED_AND_KEPT);
+}
+
+#[test]
+fn the_warnings_wrap_inside_the_minimum_window_in_both_themes() {
+    for palette in [Palette::dark(), Palette::light()] {
+        let size = egui::vec2(760.0, 520.0);
+        let vm = options("", "conflict_loser = \"delete\"\nversions = false\n");
+        let mut harness = harness_in(vm, size, palette, ui::detail::show);
+        harness.run();
+
+        for label in [DELETED_AND_LOST, NOT_KEPT] {
+            let rect = harness.get_all_by_label(label).next().unwrap().rect();
+            assert!(
+                rect.left() >= 0.0 && rect.right() <= size.x,
+                "{label}: {rect:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_defaults_panel_warns_about_a_default_that_turns_versions_off() {
+    let vm = options("versions = false\n", "");
+    let mut harness = harness(vm, defaults_screen());
+
+    harness.run();
+
+    harness.get_by_label(NOT_KEPT);
+}

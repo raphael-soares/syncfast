@@ -9,7 +9,7 @@ use syncfast_core::behavior::{Bandwidth, Behavior};
 use syncfast_core::config::SettingScope;
 use syncfast_core::settings::{self, Access, KeyDef, Origin, Value};
 
-use super::widgets::{icon_button, inline_error, inline_field, setting_row, toggle};
+use super::widgets::{icon_button, inline_error, inline_field, setting_row, toggle, warning_row};
 use super::{Action, ViewModel};
 use crate::icons::Icon;
 use crate::theme::{self, size, space};
@@ -164,8 +164,35 @@ fn sections(
         for def in defs {
             setting(ui, scope, def, &row(def), &mut actions);
         }
+        let value_of = |name: &str| settings::key(name).map(|def| row(def).value);
+        for message in warnings(title, &value_of) {
+            ui.add_space(space::S);
+            warning_row(ui, &message);
+        }
     }
     actions
+}
+
+/// What the values of a section put at risk, said in line under its rows.
+fn warnings(section: &str, value_of: &dyn Fn(&str) -> Option<Value>) -> Vec<String> {
+    let is = |name: &str, wanted: Value| value_of(name) == Some(wanted);
+    let kept = !is("versions", Value::Bool(false));
+    match section {
+        "Conflicts" if is("conflict_loser", Value::Choice("delete")) => {
+            let message = match value_of("versions_keep_days") {
+                Some(days) if kept => format!(
+                    "The losing version is deleted. On this computer it stays in the versions folder for {}; on Drive it goes to the trash.",
+                    value_label("versions_keep_days", &days)
+                ),
+                _ => "The losing version is deleted and not kept.".to_owned(),
+            };
+            vec![message]
+        }
+        "Versions" if !kept => {
+            vec!["Files replaced or deleted on this computer are not kept.".to_owned()]
+        }
+        _ => Vec::new(),
+    }
 }
 
 fn setting(ui: &mut Ui, scope: &SettingScope, def: &KeyDef, row: &Row, actions: &mut Vec<Action>) {

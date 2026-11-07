@@ -7,7 +7,7 @@ use std::time::Duration;
 use fastframe_instance::Slot;
 use fastframe_notifications::{App, Client, Event, Notification};
 
-use crate::behavior::Behavior;
+use crate::behavior::{Behavior, ConflictLoser};
 use crate::bisync::{FAILED_TO_BISYNC, Fault, failure_msgs, fault_of};
 use crate::bisync_log::{Level, LogLine};
 use crate::config::{Pair, split_remote};
@@ -93,6 +93,15 @@ pub fn notice(pair: &Pair, behavior: &Behavior, alert: &Alert) -> Notice {
                 attention_body(*fault, detail).to_owned(),
             ),
         },
+        Alert::NewConflicts(count) if behavior.conflict_loser == ConflictLoser::Delete => (
+            format!("{name}: {count} conflicts resolved"),
+            if behavior.versions {
+                "The losing version was deleted. Local copies stay in the versions folder."
+            } else {
+                "The losing version was deleted and not kept."
+            }
+            .to_owned(),
+        ),
         Alert::NewConflicts(count) => (
             format!("{name}: {count} new conflicts"),
             "Both versions were kept. Open syncfast to resolve.".to_owned(),
@@ -416,6 +425,36 @@ mod tests {
         };
 
         assert_eq!(text(&alert).1, "Google Drive is full.");
+    }
+
+    #[test]
+    fn a_conflict_that_deletes_the_loser_says_so_instead_of_claiming_both_were_kept() {
+        let behavior = Behavior {
+            conflict_loser: ConflictLoser::Delete,
+            ..Behavior::default()
+        };
+
+        let notice = notice(&pair(), &behavior, &Alert::NewConflicts(2));
+
+        assert_eq!(notice.title, "Documents: 2 conflicts resolved");
+        assert_eq!(
+            notice.body,
+            "The losing version was deleted. Local copies stay in the versions folder."
+        );
+    }
+
+    #[test]
+    fn a_deleted_loser_of_a_sync_without_versions_says_it_was_not_kept() {
+        let behavior = Behavior {
+            conflict_loser: ConflictLoser::Delete,
+            versions: false,
+            ..Behavior::default()
+        };
+
+        let notice = notice(&pair(), &behavior, &Alert::NewConflicts(1));
+
+        assert_eq!(notice.title, "Documents: 1 conflicts resolved");
+        assert_eq!(notice.body, "The losing version was deleted and not kept.");
     }
 
     #[test]

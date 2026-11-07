@@ -1294,6 +1294,36 @@ async fn an_agent_cannot_set_conflict_loser_delete() {
 }
 
 #[tokio::test]
+async fn a_conflict_rule_without_a_winner_is_refused_while_the_loser_is_deleted() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs().await;
+    user_sets(
+        &bed,
+        &SettingScope::Sync("docs".into()),
+        "conflict_loser",
+        "delete",
+    )
+    .await;
+    let before = fs::read_to_string(bed.ops.paths.config_file()).unwrap();
+
+    let err = bed
+        .ops
+        .set_setting(Some("docs"), "conflict_resolve", "none")
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        err.to_string(),
+        "conflict_loser \"delete\" needs a conflict_resolve that picks a winner"
+    );
+    assert_eq!(err.exit_code(), 2);
+    assert_eq!(
+        fs::read_to_string(bed.ops.paths.config_file()).unwrap(),
+        before
+    );
+}
+
+#[tokio::test]
 async fn an_agent_can_lower_max_delete() {
     let Some(bed) = bed() else { return };
     bed.synced_docs().await;

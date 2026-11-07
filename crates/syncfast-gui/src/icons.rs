@@ -31,6 +31,7 @@ fastframe_icons::icons! {
         RotateCcw => "rotate-ccw",
         Settings => lucide "settings",
         Trash => lucide "trash-2",
+        TriangleAlert => "triangle-alert",
         User => lucide "user",
         X => lucide "x",
     }
