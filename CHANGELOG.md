@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.1](https://github.com/raphael-soares/syncfast/compare/v0.12.0...v0.12.1) (2026-11-07)
+
+
+### Bug fixes
+
+* confirm a capped round in the same run with Never ask ([#82](https://github.com/raphael-soares/syncfast/issues/82)) ([8940c51](https://github.com/raphael-soares/syncfast/commit/8940c517edfd9eec5d04faa420d1a4c331af6a5c))
+
 ## [0.12.0](https://github.com/raphael-soares/syncfast/compare/v0.11.1...v0.12.0) (2026-11-07)
 
 
