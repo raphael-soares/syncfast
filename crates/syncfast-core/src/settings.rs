@@ -10,7 +10,7 @@ use serde::Serialize;
 use toml_edit::{Item, TableLike};
 
 use crate::behavior::{
-    Bandwidth, Behavior, ConflictLoser, ConflictResolve, ResyncMode, format_duration,
+    Bandwidth, Behavior, ConflictLoser, ConflictResolve, ResyncMode, ReviewLevel, format_duration,
     parse_duration,
 };
 
@@ -114,7 +114,7 @@ macro_rules! choice {
 }
 
 /// In the order the docs and `settings` list them.
-pub static KEYS: [KeyDef; 13] = [
+pub static KEYS: [KeyDef; 14] = [
     KeyDef {
         name: "watch",
         per_sync_only: false,
@@ -234,6 +234,12 @@ pub static KEYS: [KeyDef; 13] = [
             set: |behavior, value| behavior.empty_dirs = value,
         },
         lowers_safety: None,
+    },
+    KeyDef {
+        name: "review",
+        per_sync_only: false,
+        access: choice!(review, ReviewLevel),
+        lowers_safety: Some(|before, after| after.review.is_less_safe_than(before.review)),
     },
 ];
 
@@ -559,6 +565,7 @@ mod tests {
                 "max_delete=50",
                 "resync_mode=newer",
                 "empty_dirs=true",
+                "review=deletions",
             ]
         );
     }
@@ -580,6 +587,7 @@ mod tests {
             ("max_delete", "10"),
             ("resync_mode", "remote"),
             ("empty_dirs", "false"),
+            ("review", "automatic"),
         ] {
             let def = def(name);
             def.apply(&mut behavior, &def.parse_text(value).unwrap());
@@ -601,6 +609,7 @@ mod tests {
                 max_delete: 10,
                 resync_mode: ResyncMode::Remote,
                 empty_dirs: false,
+                review: ReviewLevel::Automatic,
                 ..Behavior::default()
             }
         );
@@ -897,14 +906,43 @@ mod tests {
     }
 
     #[test]
-    fn only_the_three_safety_keys_can_lower_safety() {
+    fn only_the_four_safety_keys_can_lower_safety() {
         let names: Vec<_> = KEYS
             .iter()
             .filter(|def| def.lowers_safety.is_some())
             .map(|def| def.name)
             .collect();
 
-        assert_eq!(names, ["conflict_loser", "versions", "max_delete"]);
+        assert_eq!(
+            names,
+            ["conflict_loser", "versions", "max_delete", "review"]
+        );
+    }
+
+    #[test]
+    fn review_lowers_safety_only_when_it_asks_less_often() {
+        let review = def("review");
+        let at = |review| Behavior {
+            review,
+            ..Behavior::default()
+        };
+        let levels = [
+            ReviewLevel::Manual,
+            ReviewLevel::Deletions,
+            ReviewLevel::Automatic,
+        ];
+
+        for (from, before) in levels.iter().enumerate() {
+            for (to, after) in levels.iter().enumerate() {
+                assert_eq!(
+                    review.lowers(&at(*before), &at(*after)),
+                    to > from,
+                    "{before:?} to {after:?}"
+                );
+            }
+        }
+        assert_eq!(lowered_safety(&at(ReviewLevel::Automatic)), ["review"]);
+        assert!(lowered_safety(&at(ReviewLevel::Manual)).is_empty());
     }
 
     #[test]

@@ -75,6 +75,7 @@ pub async fn after_filters_saved(paths: &Paths, id: &str) -> Result<bool, OpErro
                 since: Timestamp::now(),
                 detail: String::new(),
                 fault: None,
+                auto_checked: None,
             });
             state.save(paths, id).await?;
             Ok(false)

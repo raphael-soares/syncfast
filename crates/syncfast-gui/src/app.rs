@@ -91,6 +91,9 @@ pub struct App {
     runs_key: Option<RunsKey>,
     sheets: Sheets,
     screens: Screens,
+    /// The sync just created needed no review: the welcome says so until
+    /// the snapshot brings the sync in.
+    auto_confirmed_sync: Option<String>,
 }
 
 impl App {
@@ -134,6 +137,7 @@ impl App {
             runs_key: None,
             sheets: Sheets::new(paths.home.clone(), paths.data_dir()),
             screens: Screens::default(),
+            auto_confirmed_sync: None,
         };
         if with_tray {
             app.tray = SyncTray::spawn(waker, app.tray_view());
@@ -338,6 +342,10 @@ impl App {
             | Event::FiltersSaved(_)
             | Event::AccountStatus { .. }) => self.screens.on_event(event),
             other => {
+                if let Event::SyncCreated(Ok(created)) = &other {
+                    self.auto_confirmed_sync =
+                        created.confirmed_automatically.then(|| created.id.clone());
+                }
                 for command in self.sheets.handle_event(&other) {
                     self.backend.send(command);
                 }
@@ -491,6 +499,7 @@ impl App {
         if welcome {
             let view = WelcomeView {
                 has_remote: !vm.remotes.is_empty(),
+                review_confirmed_automatically: self.auto_confirmed_sync.is_some(),
             };
             actions.extend(welcome::show(ui, &view));
         } else {
@@ -867,6 +876,7 @@ mod tests {
                     since: Timestamp::UNIX_EPOCH,
                     detail: String::new(),
                     fault: None,
+                    auto_checked: None,
                 }),
                 ..State::default()
             },
@@ -1047,6 +1057,7 @@ mod tests {
             exit_code: 0,
             summary: RunSummary::default(),
             log_file: "a.jsonl".into(),
+            auto_reviewed: None,
         };
         app.snapshot.pairs[0].state.last_run = Some(run);
         app.load_runs_if_stale();

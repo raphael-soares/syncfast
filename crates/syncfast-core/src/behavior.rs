@@ -3,6 +3,8 @@
 
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+
 use crate::config::Pair;
 
 macro_rules! named {
@@ -132,6 +134,37 @@ impl ResyncMode {
     }
 }
 
+/// How much of a review syncfast confirms by itself, safest first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReviewLevel {
+    Manual,
+    Deletions,
+    Automatic,
+}
+
+named!(ReviewLevel {
+    Manual => "manual",
+    Deletions => "deletions",
+    Automatic => "automatic",
+});
+
+impl ReviewLevel {
+    /// Whether `self` asks the user less often than `other`.
+    #[must_use]
+    pub fn is_less_safe_than(self, other: Self) -> bool {
+        self.safety() < other.safety()
+    }
+
+    fn safety(self) -> u8 {
+        match self {
+            Self::Manual => 2,
+            Self::Deletions => 1,
+            Self::Automatic => 0,
+        }
+    }
+}
+
 /// A speed limit in one direction of a sync's rounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Bandwidth {
@@ -192,6 +225,7 @@ pub struct Behavior {
     pub max_delete: u8,
     pub resync_mode: ResyncMode,
     pub empty_dirs: bool,
+    pub review: ReviewLevel,
 }
 
 impl Default for Behavior {
@@ -211,6 +245,7 @@ impl Default for Behavior {
             max_delete: 50,
             resync_mode: ResyncMode::Newer,
             empty_dirs: true,
+            review: ReviewLevel::Deletions,
         }
     }
 }

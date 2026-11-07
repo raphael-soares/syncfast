@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use super::{OpError, Ops};
 use crate::runs::{self, RunEntry};
-use crate::state::is_running;
+use crate::state::{AutoReviewed, is_running};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RoundView {
@@ -23,6 +23,8 @@ pub struct RoundView {
     pub conflicts_new: Option<u32>,
     /// The newest error line of a round that failed.
     pub detail: Option<String>,
+    /// Set when syncfast confirmed the review this round ran after.
+    pub auto_reviewed: Option<AutoReviewed>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -47,6 +49,7 @@ impl From<&RunEntry> for RoundView {
             deleted_remote: entry.summary.deleted_remote,
             conflicts_new: entry.summary.conflicts_new,
             detail: entry.detail.clone(),
+            auto_reviewed: entry.auto_reviewed,
         }
     }
 }

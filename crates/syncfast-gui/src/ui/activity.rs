@@ -15,6 +15,7 @@ const DURATION_WIDTH: f32 = 60.0;
 const RESULT_WIDTH: f32 = 130.0;
 /// The expanded log scrolls past this height.
 const LOG_MAX_HEIGHT: f32 = 220.0;
+const REVIEWED_AUTOMATICALLY: &str = "Reviewed automatically";
 
 pub fn show(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
     let (Some(pair), Some(runs)) = (vm.selected_pair(), vm.runs.as_ref()) else {
@@ -109,7 +110,12 @@ fn counters(pair: &PairRow, run: &RunEntry) -> String {
     if let Some(detail) = &run.detail {
         return detail.clone();
     }
-    transfer_counts(&run.summary)
+    let counts = transfer_counts(&run.summary);
+    match (&run.auto_reviewed, counts.is_empty()) {
+        (None, _) => counts,
+        (Some(_), true) => REVIEWED_AUTOMATICALLY.to_owned(),
+        (Some(_), false) => format!("{REVIEWED_AUTOMATICALLY}  {counts}"),
+    }
 }
 
 fn transfer_counts(summary: &RunSummary) -> String {

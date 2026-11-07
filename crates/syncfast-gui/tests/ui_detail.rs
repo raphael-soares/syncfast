@@ -6,10 +6,12 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
+use syncfast_core::behavior::ReviewLevel;
 use syncfast_core::bisync::Fault;
 use syncfast_core::bisync_log::{Progress, RunSummary};
+use syncfast_core::preview::ChangeCounts;
 use syncfast_core::runs::RunEntry;
-use syncfast_core::state::{DisplayStatus, GateKind};
+use syncfast_core::state::{AutoReviewed, DisplayStatus, GateKind};
 use syncfast_gui::theme::{self, Palette};
 use syncfast_gui::ui::{self, Action, DetailTab, PairRow, ViewModel};
 
@@ -365,6 +367,7 @@ fn run(id: &str, started: &str, status: DisplayStatus) -> RunEntry {
             changes: Vec::new(),
         },
         detail: None,
+        auto_reviewed: None,
         messages: vec!["Synching Path1".into(), "Bisync successful".into()],
     }
 }
@@ -394,6 +397,24 @@ fn activity_lists_a_round_with_its_time_duration_result_and_counters() {
     harness.get_by_label("4 s");
     harness.get_by_label("↑ 2  ↓ 1  ✕ 3");
     assert!(harness.query_by_label("No activity yet").is_none());
+}
+
+#[test]
+fn activity_says_when_a_round_was_reviewed_automatically_beside_its_counters() {
+    let mut reviewed = run("a", "2026-11-03T11:55:00Z", DisplayStatus::UpToDate);
+    reviewed.auto_reviewed = Some(AutoReviewed {
+        gate: GateKind::TooManyDeletes,
+        level: ReviewLevel::Automatic,
+        counts: ChangeCounts {
+            delete_remote: 3,
+            ..ChangeCounts::default()
+        },
+    });
+    let plain = run("b", "2026-11-03T11:50:00Z", DisplayStatus::UpToDate);
+    let harness = harness(with_runs(vec![reviewed, plain]));
+
+    harness.get_by_label("Reviewed automatically  ↑ 2  ↓ 1  ✕ 3");
+    harness.get_by_label("↑ 2  ↓ 1  ✕ 3");
 }
 
 #[test]

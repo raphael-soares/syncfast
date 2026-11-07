@@ -114,6 +114,7 @@ fn unreadable_state(detail: &str) -> State {
             since: Timestamp::UNIX_EPOCH,
             detail: detail.to_owned(),
             fault: None,
+            auto_checked: None,
         }),
         ..State::default()
     }

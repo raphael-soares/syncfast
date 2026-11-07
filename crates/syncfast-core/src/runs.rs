@@ -8,7 +8,7 @@ use crate::bisync::{Outcome, classify};
 use crate::bisync_log::{LogLine, RunSummary, parse_log, summarize};
 use crate::notify::last_error_message;
 use crate::paths::Paths;
-use crate::state::{DisplayStatus, LastRun, RUNS_KEPT, State};
+use crate::state::{AutoReviewed, DisplayStatus, LastRun, RUNS_KEPT, State};
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, Zoned};
 use serde::Deserialize;
@@ -44,6 +44,8 @@ pub struct RunEntry {
     pub detail: Option<String>,
     /// The last [`MESSAGES_KEPT`] messages of the log, oldest first.
     pub messages: Vec<String>,
+    /// Set on the latest round when syncfast confirmed the review before it.
+    pub auto_reviewed: Option<AutoReviewed>,
 }
 
 impl RunEntry {
@@ -134,6 +136,7 @@ fn entry(file_name: &str, text: &str, known: &Known<'_>) -> RunEntry {
         summary,
         detail,
         messages,
+        auto_reviewed: None,
     }
 }
 
@@ -213,16 +216,18 @@ pub async fn load(paths: &Paths, pair_id: &str, running: bool) -> Arc<[RunEntry]
                 continue;
             }
         };
-        let last = state
+        let latest = state
             .as_ref()
             .and_then(|state| state.last_run.as_ref())
-            .filter(|last| is_log_of(last, &runs, name))
-            .map(|last| (last.exit_code, workdir.as_path()));
+            .filter(|last| is_log_of(last, &runs, name));
+        let last = latest.map(|last| (last.exit_code, workdir.as_path()));
         let known = Known {
             in_progress: running && index == 0 && last.is_none(),
             last,
         };
-        entries.push(entry(name, &text, &known));
+        let mut run = entry(name, &text, &known);
+        run.auto_reviewed = latest.and_then(|last| last.auto_reviewed);
+        entries.push(run);
     }
     entries.into()
 }
@@ -368,6 +373,7 @@ mod tests {
                 exit_code: 0,
                 summary: RunSummary::default(),
                 log_file: paths.runs_dir("p").join("20261103-120000.jsonl"),
+                auto_reviewed: None,
             }),
             ..State::default()
         };

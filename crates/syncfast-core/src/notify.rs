@@ -39,6 +39,11 @@ pub enum Alert {
     NewConflicts(u32),
     /// The newest error line of the log.
     Failing(String),
+    /// A round that followed a review syncfast confirmed by itself and
+    /// deleted `deleted` files.
+    AutoReviewed {
+        deleted: u32,
+    },
 }
 
 #[must_use]
@@ -109,6 +114,13 @@ pub fn notice(pair: &Pair, behavior: &Behavior, alert: &Alert) -> Notice {
         Alert::Failing(message) => (
             format!("{name}: sync failing"),
             format!("Failed {NOTIFY_FAILURES_AFTER} times in a row. {message}"),
+        ),
+        Alert::AutoReviewed { deleted } => (
+            format!("{name}: reviewed automatically"),
+            format!(
+                "Deleted {deleted} {} after an automatic review.",
+                if *deleted == 1 { "file" } else { "files" }
+            ),
         ),
     };
     Notice {
@@ -331,6 +343,21 @@ mod tests {
         assert_eq!(
             notice.body,
             "More than 20% of the files would be deleted. Review before continuing."
+        );
+    }
+
+    #[test]
+    fn an_automatic_review_says_how_many_files_it_deleted() {
+        assert_eq!(
+            text(&Alert::AutoReviewed { deleted: 12 }),
+            (
+                "Documents: reviewed automatically".to_owned(),
+                "Deleted 12 files after an automatic review.".to_owned()
+            )
+        );
+        assert_eq!(
+            text(&Alert::AutoReviewed { deleted: 1 }).1,
+            "Deleted 1 file after an automatic review."
         );
     }
 

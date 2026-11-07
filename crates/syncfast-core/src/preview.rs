@@ -3,11 +3,13 @@
 
 use std::path::PathBuf;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
+use crate::behavior::Behavior;
 use crate::bisync::{Mode, ReviewKind, bisync_args, log_file};
 use crate::bisync_log::{Change, ChangeKind, RunSummary, summarize};
-use crate::filters;
+use crate::config::Pair;
+use crate::filters::{self, FiltersFile};
 use crate::notify::last_error_message;
 use crate::run::{
     PairLookup, RunEnv, RunError, execute, fresh_start, lookup_pair, read_log_or_empty,
@@ -38,7 +40,7 @@ impl Preview {
 }
 
 /// How many changes of each kind a preview found.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChangeCounts {
     pub upload: u32,
     pub download: u32,
@@ -50,6 +52,17 @@ pub struct ChangeCounts {
 }
 
 impl ChangeCounts {
+    /// Files the review would delete, on either side.
+    #[must_use]
+    pub fn deleted(&self) -> u32 {
+        self.delete_local.saturating_add(self.delete_remote)
+    }
+
+    #[must_use]
+    pub fn deletes(&self) -> bool {
+        self.deleted() > 0
+    }
+
     #[must_use]
     pub fn of(changes: &[Change]) -> Self {
         let mut counts = Self::default();
@@ -142,6 +155,18 @@ pub async fn preview(
     let filters_file = filters::write_if_changed(env.paths, &pair)
         .await
         .map_err(RunError::from)?;
+    preview_locked(env, &pair, &behavior, &filters_file, kind).await
+}
+
+/// [`preview`] for a caller that already holds the pair's lock.
+pub(crate) async fn preview_locked(
+    env: &RunEnv<'_>,
+    pair: &Pair,
+    behavior: &Behavior,
+    filters_file: &FiltersFile,
+    kind: ReviewKind,
+) -> Result<Preview, PreviewError> {
+    let pair_id = pair.id.as_str();
     tokio::fs::create_dir_all(env.paths.pair_state_dir(pair_id))
         .await
         .map_err(|source| RunError::Io {
@@ -151,7 +176,7 @@ pub async fn preview(
     let mode = Mode::DryRun(kind);
     let now = fresh_start(env.paths, pair_id, mode, env.now());
     let log_path = log_file(env.paths, pair_id, mode, &now);
-    let args = bisync_args(&pair, &behavior, env.paths, mode, &now);
+    let args = bisync_args(pair, behavior, env.paths, mode, &now);
     let log = PreviewLog(log_path);
     let exit_code = execute(env.rclone, args, env.forward_signals).await?;
     let lines = read_log_or_empty(&log.0).await;
@@ -164,8 +189,8 @@ pub async fn preview(
         return Err(PreviewError::Failed { exit_code, message });
     }
     Ok(Preview {
-        filters_hash: filters_file.hash,
-        excluded_repos: filters_file.git_repos,
+        filters_hash: filters_file.hash.clone(),
+        excluded_repos: filters_file.git_repos.clone(),
         summary: summarize(&lines),
     })
 }
@@ -179,6 +204,25 @@ mod tests {
             kind,
             path: path.to_owned(),
         }
+    }
+
+    #[test]
+    fn only_deleting_on_either_side_counts_as_deleting_files() {
+        let kinds = [
+            ChangeKind::Upload,
+            ChangeKind::Download,
+            ChangeKind::OverwriteLocal,
+            ChangeKind::OverwriteRemote,
+            ChangeKind::Other,
+        ];
+        let harmless: Vec<Change> = kinds.iter().map(|kind| change(*kind, "f")).collect();
+        let local = change(ChangeKind::DeleteLocal, "a");
+        let remote = change(ChangeKind::DeleteRemote, "a");
+
+        assert!(!ChangeCounts::of(&harmless).deletes());
+        assert!(ChangeCounts::of(std::slice::from_ref(&local)).deletes());
+        assert!(ChangeCounts::of(std::slice::from_ref(&remote)).deletes());
+        assert_eq!(ChangeCounts::of(&[local, remote]).deleted(), 2);
     }
 
     #[test]

@@ -45,21 +45,41 @@ const STEPS: [&str; 3] = [
     "Review the first sync",
 ];
 
+const REVIEWED_AUTOMATICALLY: &str = "Review confirmed automatically, so syncing started.";
+
+/// Wide enough for the longest step text.
+const STEP_WIDTH: f32 = 400.0;
+
 /// What decides the three steps and the button. The screen only shows while
-/// there is no sync, so the first step is the only one that can be done.
+/// there is no sync, so the first step is the only one that can be done,
+/// unless the first sync was just created and needed no review.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WelcomeView {
     /// An rclone remote exists: the account step is done.
     pub has_remote: bool,
+    /// The first sync was created and its review level confirmed it
+    /// without the user.
+    pub review_confirmed_automatically: bool,
 }
 
 impl WelcomeView {
     #[must_use]
     pub fn steps(self) -> [StepState; 3] {
-        if self.has_remote {
+        if self.review_confirmed_automatically {
+            [StepState::Done; 3]
+        } else if self.has_remote {
             [StepState::Done, StepState::Current, StepState::Pending]
         } else {
             [StepState::Current, StepState::Pending, StepState::Pending]
+        }
+    }
+
+    #[must_use]
+    pub fn step_texts(self) -> [&'static str; 3] {
+        if self.review_confirmed_automatically {
+            [STEPS[0], STEPS[1], REVIEWED_AUTOMATICALLY]
+        } else {
+            STEPS
         }
     }
 
@@ -119,7 +139,8 @@ pub fn show(ui: &mut Ui, view: &WelcomeView) -> Vec<Action> {
                     );
                 });
                 ui.add_space(space::XL);
-                for (index, (text, state)) in STEPS.iter().zip(view.steps()).enumerate() {
+                for (index, (text, state)) in view.step_texts().iter().zip(view.steps()).enumerate()
+                {
                     step(ui, index + 1, text, state);
                 }
                 ui.add_space(space::XL);
@@ -137,7 +158,7 @@ pub fn show(ui: &mut Ui, view: &WelcomeView) -> Vec<Action> {
 
 fn step(ui: &mut Ui, number: usize, text: &str, state: StepState) {
     let palette = theme::palette(ui.ctx());
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(280.0, 30.0), Sense::hover());
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(STEP_WIDTH, 30.0), Sense::hover());
     response.widget_info(|| {
         egui::WidgetInfo::labeled(
             egui::WidgetType::Label,

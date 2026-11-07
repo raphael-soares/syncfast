@@ -7,6 +7,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use jiff::Zoned;
+use syncfast_core::behavior::{Behavior, ReviewLevel};
 use syncfast_core::bisync::{Fault, ReviewKind, fault_of};
 use syncfast_core::config::{Config, Pair, expand_tilde, split_remote};
 use syncfast_core::network::NetworkManager;
@@ -99,10 +100,15 @@ pub async fn create_local(home: &Path, typed: &str) -> Result<(), String> {
 
 /// Writes the new sync into the config, unless the config would not accept
 /// it: then nothing is written and the error is the config's own message.
+/// Answers how often the new sync asks for a review.
 ///
 /// # Errors
 /// The config cannot be read or written, or rejects the sync.
-pub async fn create_sync(paths: &Paths, rclone: &Rclone, new: NewSync) -> Result<(), String> {
+pub async fn create_sync(
+    paths: &Paths,
+    rclone: &Rclone,
+    new: NewSync,
+) -> Result<ReviewLevel, String> {
     let mut config = Config::load(paths).await.map_err(|e| e.to_string())?;
     let id = new.id.clone();
     let pair = Pair {
@@ -121,10 +127,12 @@ pub async fn create_sync(paths: &Paths, rclone: &Rclone, new: NewSync) -> Result
     if let Some(error) = validation.errors.iter().find(|error| error.pair_id == id) {
         return Err(error.message.clone());
     }
+    let review = Behavior::for_pair(&config.defaults(), &pair).review;
     Config::edit(paths, |config| config.add_pair(pair))
         .await
         .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    Ok(review)
 }
 
 /// The dry run behind the Review sheet.
@@ -368,6 +376,7 @@ pub async fn rename_account(
             since: jiff::Timestamp::now(),
             detail: format!("Account renamed to {to}."),
             fault: None,
+            auto_checked: None,
         });
         state.notified.retain(|key| *key != held.notified_key());
         state.save(paths, id).await.map_err(|e| e.to_string())?;
@@ -593,6 +602,7 @@ mod tests {
                 since: jiff::Timestamp::UNIX_EPOCH,
                 detail: String::new(),
                 fault: None,
+                auto_checked: None,
             })
         };
         for (id, kind) in [
@@ -758,9 +768,11 @@ mod tests {
         let local = dir.path().join("local");
         std::fs::create_dir_all(&local).unwrap();
 
-        create_sync(&paths, &rclone, new_sync("dev", local.clone(), "dev:"))
+        let review = create_sync(&paths, &rclone, new_sync("dev", local.clone(), "dev:"))
             .await
             .unwrap();
+
+        assert_eq!(review, ReviewLevel::Deletions);
 
         let config = Config::load(&paths).await.unwrap();
         let saved = &config.pairs()[0];
@@ -774,6 +786,27 @@ mod tests {
         );
         assert_eq!(saved.presets, ["system_junk"]);
         assert_eq!(saved.filters, ["- *.bak"]);
+    }
+
+    #[tokio::test]
+    async fn a_new_sync_reports_the_review_level_of_the_defaults_it_inherits() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        let Some(rclone) = rclone_with(dir.path(), "[dev]\ntype = local\n") else {
+            return;
+        };
+        write_config(
+            &paths,
+            "version = 2\n\n[defaults]\nreview = \"automatic\"\n",
+        );
+        let local = dir.path().join("local");
+        std::fs::create_dir_all(&local).unwrap();
+
+        let review = create_sync(&paths, &rclone, new_sync("dev", local, "dev:"))
+            .await
+            .unwrap();
+
+        assert_eq!(review, ReviewLevel::Automatic);
     }
 
     #[tokio::test]
@@ -1057,6 +1090,7 @@ mod tests {
                     since: jiff::Timestamp::UNIX_EPOCH,
                     detail: String::new(),
                     fault: None,
+                    auto_checked: None,
                 }),
                 notified: vec![
                     GateKind::NeedsReviewFirstRun.notified_key(),

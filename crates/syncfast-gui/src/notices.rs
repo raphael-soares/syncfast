@@ -139,6 +139,7 @@ mod tests {
                     ..RunSummary::default()
                 },
                 log_file: "run.jsonl".into(),
+                auto_reviewed: None,
             }),
             ..State::default()
         }
@@ -152,6 +153,7 @@ mod tests {
                 since: at(),
                 detail: String::new(),
                 fault: None,
+                auto_checked: None,
             }),
             consecutive_failures: 5,
             ..state_with_conflicts(Some(2))

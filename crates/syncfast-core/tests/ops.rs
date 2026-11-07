@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use jiff::Zoned;
 use serde_json::json;
+use syncfast_core::behavior::ReviewLevel;
 use syncfast_core::config::{Config, SettingScope};
 use syncfast_core::network::{BoxFuture, Network};
 use syncfast_core::notify::{Notice, Notifier};
@@ -20,7 +21,8 @@ use syncfast_core::ops::{
 use syncfast_core::paths::Paths;
 use syncfast_core::rclone::Rclone;
 use syncfast_core::run::{RunEnv, run};
-use syncfast_core::state::try_lock_pair;
+use syncfast_core::run_decision::{AutoReview, auto_review};
+use syncfast_core::state::{GateKind, try_lock_pair};
 use syncfast_core::units::{Systemctl, SystemdMode};
 use syncfast_core::watch::Trigger;
 
@@ -380,6 +382,7 @@ async fn a_review_is_confirmed_once() {
 async fn saving_filters_on_a_synced_sync_holds_it_for_the_review_of_the_new_filters() {
     let Some(bed) = bed() else { return };
     bed.synced_docs().await;
+    user_sets(&bed, &SettingScope::Defaults, "review", "manual").await;
 
     let saved = bed
         .ops
@@ -1118,7 +1121,7 @@ async fn settings_lists_every_key_with_origin_and_default() {
     let of_defaults = bed.ops.settings(None).await.unwrap();
 
     assert_eq!(of_sync.scope, "docs");
-    assert_eq!(of_sync.settings.len(), 13);
+    assert_eq!(of_sync.settings.len(), 14);
     let described = |view: &SettingsView, key: &str| {
         let row = row(view, key);
         (row.value.clone(), row.origin, row.default.clone())
@@ -1335,6 +1338,80 @@ async fn an_agent_can_lower_max_delete() {
         .unwrap();
 
     assert_eq!(changed.setting.value, json!(20));
+}
+
+#[tokio::test]
+async fn an_agent_cannot_set_review_to_automatic() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs().await;
+
+    refused_as_needing_the_user(&bed, Some("docs"), "review", "automatic").await;
+    refused_as_needing_the_user(&bed, None, "review", "automatic").await;
+    user_sets(&bed, &SettingScope::Defaults, "review", "manual").await;
+    refused_as_needing_the_user(&bed, Some("docs"), "review", "deletions").await;
+}
+
+#[tokio::test]
+async fn an_agent_can_raise_review_to_manual() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs().await;
+
+    let changed = bed
+        .ops
+        .set_setting(Some("docs"), "review", "manual")
+        .await
+        .unwrap();
+
+    assert_eq!(changed.setting.value, json!("manual"));
+}
+
+#[tokio::test]
+async fn confirm_review_and_the_automatic_check_use_the_same_deletes_rule() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs().await;
+    for name in ["b.txt", "c.txt", "d.txt"] {
+        fs::remove_file(bed.local().join(name)).unwrap();
+    }
+    bed.ops.sync_now(Some("docs"), WAIT).await.unwrap();
+    let deleting = bed.ops.show_review("docs").await.unwrap();
+    for name in ["b.txt", "c.txt", "d.txt"] {
+        fs::write(bed.local().join(name), name).unwrap();
+    }
+    let keeping = bed.ops.show_review("docs").await.unwrap();
+
+    for (review, by_agent, by_level) in [
+        (&deleting, false, AutoReview::Hold),
+        (&keeping, true, AutoReview::Confirm),
+    ] {
+        assert_eq!(review.agent_can_confirm, by_agent);
+        assert_eq!(
+            auto_review(
+                ReviewLevel::Deletions,
+                GateKind::TooManyDeletes,
+                &review.counts
+            ),
+            by_level
+        );
+    }
+}
+
+#[tokio::test]
+async fn adding_a_sync_at_automatic_review_starts_syncing_and_says_so() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local().join("a.txt"), "hello");
+    user_sets(&bed, &SettingScope::Defaults, "review", "automatic").await;
+
+    let added = bed.ops.add(bed.new_sync()).await.unwrap();
+
+    assert_eq!(
+        added.next_step,
+        "Syncing started: review confirmed automatically."
+    );
+    assert_eq!(added.sync.status, "UpToDate");
+    assert_eq!(
+        fs::read_to_string(bed.remote().join("a.txt")).unwrap(),
+        "hello"
+    );
 }
 
 #[tokio::test]

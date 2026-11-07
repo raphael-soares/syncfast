@@ -251,6 +251,7 @@ mod tests {
                 since: Timestamp::UNIX_EPOCH,
                 detail: String::new(),
                 fault: None,
+                auto_checked: None,
             }),
             ..State::default()
         };

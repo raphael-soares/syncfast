@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use super::views::{load_state, review_kind};
 use super::{OpError, Ops, PairView};
 use crate::bisync::ReviewKind;
-use crate::bisync_log::{Change, ChangeKind};
+use crate::bisync_log::Change;
 use crate::filters;
 use crate::preview::{ChangeCounts, preview};
 use crate::run::RunEnv;
@@ -71,10 +71,6 @@ fn reason(gate: GateKind) -> &'static str {
     }
 }
 
-fn deletes(counts: &ChangeCounts) -> bool {
-    counts.delete_local > 0 || counts.delete_remote > 0
-}
-
 impl Ops {
     /// Dry-runs the review the sync waits for, keeps what it found in
     /// `pairs/<id>/preview.json` and returns it.
@@ -109,7 +105,7 @@ impl Ops {
         };
         self.save_review(id, &stored).await?;
         let counts = ChangeCounts::of(&stored.changes);
-        let deletes_files = deletes(&counts);
+        let deletes_files = counts.deletes();
         let omitted = stored.changes.len().saturating_sub(SHOWN_CHANGES);
         let note = if deletes_files {
             "This review deletes files. Confirm it in syncfast.".to_owned()
@@ -185,12 +181,7 @@ impl Ops {
             ));
         };
         let shown = self.stored_review(id).await?;
-        if shown.changes.iter().any(|change| {
-            matches!(
-                change.kind,
-                ChangeKind::DeleteLocal | ChangeKind::DeleteRemote
-            )
-        }) {
+        if ChangeCounts::of(&shown.changes).deletes() {
             return Err(OpError::DeletesNeedUser);
         }
         if shown.filters_hash != filters_hash {

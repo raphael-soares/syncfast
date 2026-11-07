@@ -268,7 +268,7 @@ fn settings_json_lists_every_key_with_its_origin_and_default() {
 
     assert_eq!(defaults.code, 0, "{}", defaults.stderr);
     assert_eq!(defaults.json()["scope"], "defaults");
-    assert_eq!(defaults.json()["settings"].as_array().unwrap().len(), 13);
+    assert_eq!(defaults.json()["settings"].as_array().unwrap().len(), 14);
     assert_eq!(defaults.json()["lowered_safety"], serde_json::json!([]));
     assert_eq!(of_sync.json()["scope"], "docs");
     assert_eq!(

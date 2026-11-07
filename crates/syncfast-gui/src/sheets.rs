@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use syncfast_core::config::split_remote;
 use syncfast_core::state::GateKind;
 
-use crate::backend::{Command, Event};
+use crate::backend::{Command, CreatedSync, Event};
 use crate::sheet_io::PreviewFailure;
 use crate::ui::account_sheet::{self, AccountAction, AccountMode, AccountState, AccountView};
 use crate::ui::add_sync::{
@@ -392,7 +392,7 @@ impl Sheets {
         }
     }
 
-    fn sync_created(&mut self, result: &Result<String, String>) -> Vec<Command> {
+    fn sync_created(&mut self, result: &Result<CreatedSync, String>) -> Vec<Command> {
         let Current::AddSync(session) = &mut self.current else {
             return Vec::new();
         };
@@ -402,12 +402,16 @@ impl Sheets {
                 session.creating = None;
                 Vec::new()
             }
-            Ok(id) => {
+            Ok(created) => {
                 let Some(new) = session.creating.take() else {
                     return Vec::new();
                 };
+                if created.confirmed_automatically {
+                    self.current = Current::Closed;
+                    return Vec::new();
+                }
                 self.open_review_of(
-                    id.clone(),
+                    created.id.clone(),
                     new.name,
                     &new.remote,
                     GateKind::NeedsReviewFirstRun,
