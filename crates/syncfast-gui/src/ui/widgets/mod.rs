@@ -20,6 +20,7 @@ mod switch;
 mod text_area;
 mod text_field;
 mod toolbar;
+mod warning_row;
 
 pub use alert::{AlertButton, alert};
 pub use button::{
@@ -41,6 +42,7 @@ pub use switch::{switch, toggle};
 pub use text_area::text_area;
 pub use text_field::{inline_field, secret_field, text_field};
 pub use toolbar::toolbar;
+pub use warning_row::warning_row;
 
 use egui::{Color32, Pos2, Rect, Response, Ui, Vec2};
 

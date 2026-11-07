@@ -1,6 +1,7 @@
-//! Finds the `<name>.conflict<N>` files rclone leaves for the loser of a
-//! conflict (`--conflict-loser num`), and settles them: keep the current
-//! file, keep the conflicted copy, or keep both.
+//! Finds the files rclone leaves for the loser of a conflict
+//! (`<name>.conflict<N>`, or `<name>.path1` and `<name>.path2` with
+//! `--conflict-loser pathname`), and settles them: keep the current file,
+//! keep the conflicted copy, or keep both.
 
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -8,25 +9,51 @@ use std::time::SystemTime;
 
 use jiff::{Timestamp, Zoned};
 
+use crate::behavior::ConflictLoser;
 use crate::bisync::stamp;
 use crate::filters::DirMatcher;
 
 const MARKER: &str = ".conflict";
+const PATH_MARKER: &str = ".path";
 
-/// Splits `<original>.conflict<N>` into `<original>` and `<N>`. The
-/// original name must not be empty.
-fn split_conflict_name(name: &str) -> Option<(&str, &str)> {
-    name.rsplit_once(MARKER).filter(|(original, number)| {
+/// The names a sync's conflict files can have. `.conflict<N>` is always
+/// recognised, since an earlier setting may have left some; `.path1` and
+/// `.path2` only when the sync names its losers by path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Naming {
+    Num,
+    Pathname,
+}
+
+impl From<ConflictLoser> for Naming {
+    fn from(loser: ConflictLoser) -> Self {
+        match loser {
+            ConflictLoser::Pathname => Self::Pathname,
+            ConflictLoser::Num | ConflictLoser::Delete => Self::Num,
+        }
+    }
+}
+
+/// Splits `<original>.conflict<N>` (or `<original>.path<1|2>` with
+/// [`Naming::Pathname`]) into `<original>` and the number. The original
+/// name must not be empty.
+fn split_conflict_name(name: &str, naming: Naming) -> Option<(&str, &str)> {
+    let numbered = name.rsplit_once(MARKER).filter(|(original, number)| {
         !original.is_empty()
             && !number.is_empty()
             && number.bytes().all(|byte| byte.is_ascii_digit())
-    })
+    });
+    let by_path = || {
+        name.rsplit_once(PATH_MARKER)
+            .filter(|(original, side)| !original.is_empty() && matches!(*side, "1" | "2"))
+    };
+    numbered.or_else(|| (naming == Naming::Pathname).then(by_path).flatten())
 }
 
-/// True for `<original>.conflict<N>` with a non-empty `<original>`.
+/// True for a conflict file of `naming` with a non-empty original name.
 #[must_use]
-pub fn is_conflict_name(name: &str) -> bool {
-    split_conflict_name(name).is_some()
+pub fn is_conflict_name(name: &str, naming: Naming) -> bool {
+    split_conflict_name(name, naming).is_some()
 }
 
 /// Paths relative to `root`, sorted, of every conflict file in the tree.
@@ -35,7 +62,11 @@ pub fn is_conflict_name(name: &str) -> bool {
 ///
 /// # Errors
 /// A directory cannot be read.
-pub fn find_conflicts(root: &Path, matcher: &DirMatcher) -> io::Result<Vec<PathBuf>> {
+pub fn find_conflicts(
+    root: &Path,
+    matcher: &DirMatcher,
+    naming: Naming,
+) -> io::Result<Vec<PathBuf>> {
     let mut found = Vec::new();
     let mut pending = vec![PathBuf::new()];
     while let Some(rel_dir) = pending.pop() {
@@ -47,7 +78,9 @@ pub fn find_conflicts(root: &Path, matcher: &DirMatcher) -> io::Result<Vec<PathB
                 if !matcher.is_excluded(&rel) {
                     pending.push(rel);
                 }
-            } else if kind.is_file() && is_conflict_name(&entry.file_name().to_string_lossy()) {
+            } else if kind.is_file()
+                && is_conflict_name(&entry.file_name().to_string_lossy(), naming)
+            {
                 found.push(rel);
             }
         }
@@ -113,9 +146,9 @@ fn facts(path: &Path) -> io::Result<FileFacts> {
 /// One conflict as the Conflicts tab lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Conflict {
-    /// The `<name>.conflict<N>` file, relative to the sync's folder.
+    /// The conflict file, relative to the sync's folder.
     pub path: PathBuf,
-    /// The path without the `.conflict<N>` suffix.
+    /// The path without the conflict suffix.
     pub original: PathBuf,
     /// `None` when the original no longer exists.
     pub current: Option<FileFacts>,
@@ -127,10 +160,14 @@ pub struct Conflict {
 ///
 /// # Errors
 /// A directory or a file cannot be read.
-pub fn list_conflicts(root: &Path, matcher: &DirMatcher) -> io::Result<Vec<Conflict>> {
+pub fn list_conflicts(
+    root: &Path,
+    matcher: &DirMatcher,
+    naming: Naming,
+) -> io::Result<Vec<Conflict>> {
     let mut conflicts = Vec::new();
-    for path in find_conflicts(root, matcher)? {
-        let Some(original) = original_path(&path) else {
+    for path in find_conflicts(root, matcher, naming)? {
+        let Some(original) = original_path(&path, naming) else {
             continue;
         };
         let conflicted = match facts(&root.join(&path)) {
@@ -154,9 +191,9 @@ pub fn list_conflicts(root: &Path, matcher: &DirMatcher) -> io::Result<Vec<Confl
 }
 
 /// `a/b.txt.conflict1` gives `a/b.txt`.
-fn original_path(conflict: &Path) -> Option<PathBuf> {
+fn original_path(conflict: &Path, naming: Naming) -> Option<PathBuf> {
     let name = conflict.file_name()?.to_str()?;
-    let (original, _) = split_conflict_name(name)?;
+    let (original, _) = split_conflict_name(name, naming)?;
     Some(conflict.with_file_name(original))
 }
 
@@ -230,11 +267,12 @@ fn copy_without_overwriting(from: &Path, to: &Path) -> io::Result<PathBuf> {
 /// file is never missing and a failed copy leaves everything as it was.
 ///
 /// # Errors
-/// `conflict` is not a relative `<name>.conflict<N>` path under `root`, or a
+/// `conflict` is not a relative conflict file of `naming` under `root`, or a
 /// file cannot be moved or deleted.
 pub fn resolve(
     root: &Path,
     conflict: &Path,
+    naming: Naming,
     resolution: Resolution,
     versions: &Path,
     now: &Zoned,
@@ -250,7 +288,7 @@ pub fn resolve(
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(invalid)?;
-    let (original, number) = split_conflict_name(name).ok_or_else(invalid)?;
+    let (original, number) = split_conflict_name(name, naming).ok_or_else(invalid)?;
     let from = root.join(conflict);
     let dir = from.parent().ok_or_else(invalid)?;
     let current = dir.join(original);
@@ -278,13 +316,13 @@ mod tests {
 
     #[test]
     fn conflict_names_need_an_original_name_and_a_number() {
-        assert!(is_conflict_name("a.txt.conflict1"));
-        assert!(is_conflict_name("a.txt.conflict12"));
-        assert!(is_conflict_name("a.conflict2.conflict3"));
-        assert!(!is_conflict_name("a.txt.conflict"));
-        assert!(!is_conflict_name("a.txt.conflictx"));
-        assert!(!is_conflict_name(".conflict1"));
-        assert!(!is_conflict_name("a.txt"));
+        assert!(is_conflict_name("a.txt.conflict1", Naming::Num));
+        assert!(is_conflict_name("a.txt.conflict12", Naming::Num));
+        assert!(is_conflict_name("a.conflict2.conflict3", Naming::Num));
+        assert!(!is_conflict_name("a.txt.conflict", Naming::Num));
+        assert!(!is_conflict_name("a.txt.conflictx", Naming::Num));
+        assert!(!is_conflict_name(".conflict1", Naming::Num));
+        assert!(!is_conflict_name("a.txt", Naming::Num));
     }
 
     #[test]
@@ -303,7 +341,7 @@ mod tests {
         }
         let matcher = DirMatcher::new("- node_modules/\n");
 
-        let found = find_conflicts(root, &matcher).unwrap();
+        let found = find_conflicts(root, &matcher, Naming::Num).unwrap();
 
         assert_eq!(
             found,
@@ -321,7 +359,7 @@ mod tests {
         std::fs::write(outside.path().join("a.txt.conflict1"), "x").unwrap();
         std::os::unix::fs::symlink(outside.path(), dir.path().join("link")).unwrap();
 
-        let found = find_conflicts(dir.path(), &DirMatcher::new("")).unwrap();
+        let found = find_conflicts(dir.path(), &DirMatcher::new(""), Naming::Num).unwrap();
 
         assert!(found.is_empty());
     }
@@ -394,7 +432,7 @@ mod tests {
         put(dir.path(), "n/a.md.conflict1", "old");
         put(dir.path(), "gone.txt.conflict2", "lost");
 
-        let found = list_conflicts(dir.path(), &DirMatcher::new("")).unwrap();
+        let found = list_conflicts(dir.path(), &DirMatcher::new(""), Naming::Num).unwrap();
 
         assert_eq!(found.len(), 2);
         assert_eq!(found[0].path, PathBuf::from("gone.txt.conflict2"));
@@ -417,6 +455,7 @@ mod tests {
         resolve(
             dir.path(),
             Path::new("n/a.md.conflict1"),
+            Naming::Num,
             Resolution::KeepCurrent,
             versions.path(),
             &at("2026-01-02T15:04:05[UTC]"),
@@ -437,6 +476,7 @@ mod tests {
         resolve(
             dir.path(),
             Path::new("n/a.md.conflict1"),
+            Naming::Num,
             Resolution::KeepConflicted,
             versions.path(),
             &at("2026-01-02T15:04:05[UTC]"),
@@ -459,6 +499,7 @@ mod tests {
         resolve(
             dir.path(),
             Path::new("a.md.conflict1"),
+            Naming::Num,
             Resolution::KeepConflicted,
             versions.path(),
             &at("2026-01-02T15:04:05[UTC]"),
@@ -493,6 +534,7 @@ mod tests {
         resolve(
             dir.path(),
             Path::new("a.md.conflict1"),
+            Naming::Num,
             Resolution::KeepConflicted,
             versions.path(),
             &at("2026-01-02T15:04:05[UTC]"),
@@ -513,6 +555,7 @@ mod tests {
         resolve(
             dir.path(),
             Path::new("a.md.conflict1"),
+            Naming::Num,
             Resolution::KeepConflicted,
             versions.path(),
             &at("2026-01-02T15:04:05[UTC]"),
@@ -534,6 +577,7 @@ mod tests {
         resolve(
             dir.path(),
             Path::new("n/a.md.conflict1"),
+            Naming::Num,
             Resolution::KeepBoth,
             versions.path(),
             &at("2026-01-02T15:04:05[UTC]"),
@@ -557,6 +601,7 @@ mod tests {
             let err = resolve(
                 dir.path(),
                 Path::new(bad),
+                Naming::Num,
                 Resolution::KeepCurrent,
                 versions.path(),
                 &now,
@@ -581,6 +626,7 @@ mod tests {
         resolve(
             dir.path(),
             Path::new("a.md.conflict1"),
+            Naming::Num,
             Resolution::KeepConflicted,
             versions.path(),
             &at("2026-01-02T15:04:05[UTC]"),
@@ -604,6 +650,7 @@ mod tests {
             resolve(
                 dir.path(),
                 Path::new(conflict),
+                Naming::Num,
                 Resolution::KeepConflicted,
                 versions.path(),
                 &now,
@@ -614,5 +661,106 @@ mod tests {
         assert_eq!(read(dir.path(), "a.md"), "third");
         assert_eq!(read(versions.path(), "20260102-150405/a.md"), "first");
         assert_eq!(read(versions.path(), "20260102-150405/a 2.md"), "second");
+    }
+
+    #[test]
+    fn conflict_number_names_are_recognised_whatever_the_naming() {
+        for naming in [Naming::Num, Naming::Pathname] {
+            assert!(is_conflict_name("a.txt.conflict3", naming));
+        }
+    }
+
+    #[test]
+    fn path_names_are_recognised_only_when_the_naming_is_pathname() {
+        for name in ["a.txt.path1", "a.txt.path2"] {
+            assert!(!is_conflict_name(name, Naming::Num), "{name}");
+            assert!(is_conflict_name(name, Naming::Pathname), "{name}");
+        }
+        for name in ["a.txt.path3", "a.txt.path", ".path1", "a.txt.path12"] {
+            assert!(!is_conflict_name(name, Naming::Pathname), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_naming_follows_the_conflict_loser() {
+        assert_eq!(Naming::from(ConflictLoser::Num), Naming::Num);
+        assert_eq!(Naming::from(ConflictLoser::Pathname), Naming::Pathname);
+        assert_eq!(Naming::from(ConflictLoser::Delete), Naming::Num);
+    }
+
+    #[test]
+    fn find_conflicts_lists_path_files_only_for_a_pathname_sync() {
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), "a.txt.path1", "x");
+        put(dir.path(), "n/b.txt.path2", "x");
+        put(dir.path(), "c.txt.conflict3", "x");
+        let matcher = DirMatcher::new("");
+
+        let by_number = find_conflicts(dir.path(), &matcher, Naming::Num).unwrap();
+        let by_path = find_conflicts(dir.path(), &matcher, Naming::Pathname).unwrap();
+
+        assert_eq!(by_number, vec![PathBuf::from("c.txt.conflict3")]);
+        assert_eq!(
+            by_path,
+            vec![
+                PathBuf::from("a.txt.path1"),
+                PathBuf::from("c.txt.conflict3"),
+                PathBuf::from("n/b.txt.path2"),
+            ]
+        );
+    }
+
+    #[test]
+    fn list_conflicts_of_a_pathname_sync_pairs_each_path_file_with_its_original() {
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), "n/a.md", "current");
+        put(dir.path(), "n/a.md.path1", "old");
+
+        let found = list_conflicts(dir.path(), &DirMatcher::new(""), Naming::Pathname).unwrap();
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].original, PathBuf::from("n/a.md"));
+        assert_eq!(found[0].current.as_ref().map(|facts| facts.size), Some(7));
+    }
+
+    #[test]
+    fn keep_both_names_a_path_file_after_the_digit_of_its_suffix() {
+        let dir = tempfile::tempdir().unwrap();
+        let versions = tempfile::tempdir().unwrap();
+        put(dir.path(), "a.md", "current");
+        put(dir.path(), "a.md.path2", "other");
+
+        resolve(
+            dir.path(),
+            Path::new("a.md.path2"),
+            Naming::Pathname,
+            Resolution::KeepBoth,
+            versions.path(),
+            &at("2026-01-02T15:04:05[UTC]"),
+        )
+        .unwrap();
+
+        assert_eq!(read(dir.path(), "a (conflict 2).md"), "other");
+        assert_eq!(read(dir.path(), "a.md"), "current");
+        assert!(!dir.path().join("a.md.path2").exists());
+    }
+
+    #[test]
+    fn resolve_refuses_a_path_file_when_the_sync_does_not_name_losers_by_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let versions = tempfile::tempdir().unwrap();
+        put(dir.path(), "a.md.path1", "x");
+
+        let err = resolve(
+            dir.path(),
+            Path::new("a.md.path1"),
+            Naming::Num,
+            Resolution::KeepCurrent,
+            versions.path(),
+            &at("2026-01-02T15:04:05[UTC]"),
+        )
+        .unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
 }

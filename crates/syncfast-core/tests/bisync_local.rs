@@ -1583,3 +1583,179 @@ async fn a_sync_that_keeps_versions_longer_does_not_lose_old_ones() {
     assert_eq!(report, ran_ok(Mode::Normal));
     assert!(versions.join("20200101-000000/old.txt").exists());
 }
+
+async fn both_sides_edit_doc_with_the_remote_newer(bed: &Bed) {
+    write(&bed.local, "doc.txt", "base");
+    write(&bed.local, "untouched.txt", "same");
+    bed.first_sync().await;
+    write(&bed.local, "doc.txt", "local edit");
+    write(&bed.remote, "doc.txt", "remote edit, newer");
+    set_age(&bed.local, "doc.txt", 3600);
+    set_age(&bed.remote, "doc.txt", 60);
+}
+
+#[tokio::test]
+async fn a_numbered_loser_is_kept_beside_the_winner_on_both_sides() {
+    let Some(bed) = bed() else { return };
+    both_sides_edit_doc_with_the_remote_newer(&bed).await;
+    bed.write_behavior("", "conflict_loser = \"num\"\n");
+
+    let report = bed.run().await;
+
+    assert_eq!(report, ran_ok(Mode::Normal));
+    for side in [&bed.local, &bed.remote] {
+        assert_eq!(read(side, "doc.txt"), "remote edit, newer");
+        assert_eq!(read(side, "doc.txt.conflict1"), "local edit");
+    }
+    assert_eq!(bed.state().await.conflicts_pending, 1);
+}
+
+#[tokio::test]
+async fn a_loser_named_by_path_is_kept_as_path1_and_counted_as_pending() {
+    let Some(bed) = bed() else { return };
+    both_sides_edit_doc_with_the_remote_newer(&bed).await;
+    bed.write_behavior("", "conflict_loser = \"pathname\"\n");
+
+    let report = bed.run().await;
+
+    assert_eq!(report, ran_ok(Mode::Normal));
+    for side in [&bed.local, &bed.remote] {
+        assert_eq!(names(side), ["doc.txt", "doc.txt.path1", "untouched.txt"]);
+        assert_eq!(read(side, "doc.txt"), "remote edit, newer");
+        assert_eq!(read(side, "doc.txt.path1"), "local edit");
+    }
+    assert_eq!(bed.state().await.conflicts_pending, 1);
+}
+
+#[tokio::test]
+async fn without_a_winner_both_copies_are_renamed_by_path_and_the_original_is_gone() {
+    let Some(bed) = bed() else { return };
+    both_sides_edit_doc_with_the_remote_newer(&bed).await;
+    bed.write_behavior(
+        "",
+        "conflict_resolve = \"none\"\nconflict_loser = \"pathname\"\n",
+    );
+
+    let report = bed.run().await;
+
+    assert_eq!(report, ran_ok(Mode::Normal));
+    for side in [&bed.local, &bed.remote] {
+        assert_eq!(
+            names(side),
+            ["doc.txt.path1", "doc.txt.path2", "untouched.txt"]
+        );
+        assert_eq!(read(side, "doc.txt.path1"), "local edit");
+        assert_eq!(read(side, "doc.txt.path2"), "remote edit, newer");
+    }
+    assert_eq!(bed.state().await.conflicts_pending, 2);
+}
+
+#[tokio::test]
+async fn a_deleted_loser_leaves_one_file_and_the_local_copy_goes_to_versions() {
+    let Some(bed) = bed() else { return };
+    both_sides_edit_doc_with_the_remote_newer(&bed).await;
+    bed.write_behavior("", "conflict_loser = \"delete\"\n");
+
+    let report = bed.run().await;
+
+    assert_eq!(report, ran_ok(Mode::Normal));
+    for side in [&bed.local, &bed.remote] {
+        assert_eq!(names(side), ["doc.txt", "untouched.txt"]);
+        assert_eq!(read(side, "doc.txt"), "remote edit, newer");
+    }
+    let kept = bed.versions_holding("doc.txt");
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert_eq!(kept[0].1, "local edit");
+    let state = bed.state().await;
+    assert_eq!(state.conflicts_pending, 0);
+    assert_eq!(state.last_run.unwrap().summary.conflicts_new, Some(1));
+    assert!(
+        bed.notices
+            .titles()
+            .contains(&"Docs: 1 conflicts resolved".to_owned()),
+        "{:?}",
+        bed.notices.titles()
+    );
+}
+
+#[tokio::test]
+async fn a_deleted_loser_with_versions_off_is_not_kept_anywhere() {
+    let Some(bed) = bed() else { return };
+    both_sides_edit_doc_with_the_remote_newer(&bed).await;
+    bed.write_behavior("", "conflict_loser = \"delete\"\nversions = false\n");
+
+    let report = bed.run().await;
+
+    assert_eq!(report, ran_ok(Mode::Normal));
+    assert_eq!(names(&bed.local), ["doc.txt", "untouched.txt"]);
+    assert_eq!(read(&bed.local, "doc.txt"), "remote edit, newer");
+    assert!(bed.versions_holding("doc.txt").is_empty());
+}
+
+#[tokio::test]
+async fn a_pathname_sync_does_not_count_a_leftover_numbered_copy_as_missing() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "base.txt", "base");
+    bed.first_sync().await;
+    bed.write_behavior("", "conflict_loser = \"pathname\"\n");
+    write(
+        &bed.local,
+        "old.txt.conflict3",
+        "left by an earlier setting",
+    );
+    write(&bed.local, "new.txt", "new");
+
+    let report = bed.run().await;
+
+    assert_eq!(report, ran_ok(Mode::Normal));
+    assert_eq!(bed.state().await.conflicts_pending, 1);
+}
+
+#[tokio::test]
+async fn a_num_sync_does_not_count_path_files_as_conflicts() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "base.txt", "base");
+    bed.first_sync().await;
+    write(&bed.local, "report.txt.path1", "a name the user chose");
+
+    let report = bed.run().await;
+
+    assert_eq!(report, ran_ok(Mode::Normal));
+    assert_eq!(bed.state().await.conflicts_pending, 0);
+}
+
+#[tokio::test]
+async fn prune_runs_with_versions_off() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "base.txt", "base");
+    bed.first_sync().await;
+    bed.write_behavior("", "versions = false\nversions_keep_days = 7\n");
+    let versions = bed.paths.versions_dir(PAIR);
+    write(&versions, "20200101-000000/old.txt", "expired");
+    write(&bed.local, "new.txt", "new");
+
+    let report = bed.run().await;
+
+    assert_eq!(report, ran_ok(Mode::Normal));
+    assert!(!versions.join("20200101-000000").exists());
+}
+
+#[tokio::test]
+async fn the_sync_retention_decides_which_version_folders_go() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "base.txt", "base");
+    bed.first_sync().await;
+    bed.write_behavior("", "versions_keep_days = 1\n");
+    let versions = bed.paths.versions_dir(PAIR);
+    let two_days_ago = Zoned::now()
+        .checked_sub(SignedDuration::from_hours(48))
+        .unwrap();
+    let folder = two_days_ago.strftime("%Y%m%d-%H%M%S").to_string();
+    write(&versions, &format!("{folder}/old.txt"), "two days old");
+    write(&bed.local, "new.txt", "new");
+
+    let report = bed.run().await;
+
+    assert_eq!(report, ran_ok(Mode::Normal));
+    assert!(!versions.join(folder).exists());
+}

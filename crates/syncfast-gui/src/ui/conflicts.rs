@@ -1,9 +1,11 @@
 //! The Conflicts tab: files changed on both sides at once, where rclone kept
-//! the newer one and left the other as `<name>.conflict<N>`.
+//! the winner and left the other as `<name>.conflict<N>` or, when the sync
+//! names losers by path, `<name>.path1` or `<name>.path2`.
 
 use egui::{Align, Id, Layout, RichText, Ui};
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, Zoned};
+use syncfast_core::behavior::ConflictLoser;
 use syncfast_core::conflicts::{Conflict, FileFacts, Resolution};
 
 use super::format;
@@ -14,6 +16,8 @@ use crate::theme::{self, space};
 
 const ROW_HEIGHT: f32 = 64.0;
 const LINE_GAP: f32 = 2.0;
+const DELETED: &str =
+    "Conflicts are resolved by deleting the losing version. Change this in Options.";
 
 pub fn show(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
     let Some(pair) = vm.selected_pair() else {
@@ -24,7 +28,9 @@ pub fn show(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
         actions.push(Action::RefreshConflicts(pair.id.clone()));
     }
     if vm.conflicts.is_empty() {
-        empty_state(ui, Icon::Copy, "No conflicts", None, None);
+        let note =
+            (pair.effective.behavior.conflict_loser == ConflictLoser::Delete).then_some(DELETED);
+        empty_state(ui, Icon::Copy, "No conflicts", note, None);
         return actions;
     }
     let tz = TimeZone::system();

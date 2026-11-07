@@ -342,7 +342,7 @@ impl Tracker {
             return;
         };
         match (op, self.target) {
-            (Op::BackupMove, _) => {
+            (Op::BackupMove, _) | (Op::Delete | Op::BackupDelete, None) => {
                 self.backed_up.insert(object.to_owned());
             }
             (Op::Copy { replaced }, Some(target)) => {
@@ -367,7 +367,7 @@ impl Tracker {
                 };
                 self.push(kind, object.to_owned());
             }
-            (Op::Copy { .. } | Op::Delete | Op::BackupDelete, None) => {
+            (Op::Copy { .. }, None) => {
                 self.push(ChangeKind::Other, object.to_owned());
             }
         }
@@ -597,6 +597,76 @@ mod tests {
             [
                 change(ChangeKind::OverwriteLocal, "doc.txt"),
                 change(ChangeKind::Upload, "doc.txt.conflict1"),
+            ]
+        );
+        assert_eq!(summary.conflicts_new, Some(1));
+    }
+
+    #[test]
+    fn summarize_of_a_conflict_with_no_winner_keeps_both_renamed_copies() {
+        let summary = summarize(&fixture("conflict_none"));
+
+        assert_eq!(
+            summary.changes,
+            [
+                change(ChangeKind::Download, "doc.txt.conflict2"),
+                change(ChangeKind::Upload, "doc.txt.conflict1"),
+            ]
+        );
+        assert_eq!(summary.conflicts_new, Some(1));
+    }
+
+    #[test]
+    fn summarize_of_a_pathname_conflict_names_the_loser_after_its_side() {
+        let summary = summarize(&fixture("conflict_pathname"));
+
+        assert_eq!(
+            summary.changes,
+            [
+                change(ChangeKind::OverwriteLocal, "doc.txt"),
+                change(ChangeKind::Upload, "doc.txt.path1"),
+            ]
+        );
+        assert_eq!(summary.conflicts_new, Some(1));
+    }
+
+    #[test]
+    fn summarize_of_a_pathname_conflict_with_no_winner_renames_both_sides() {
+        let summary = summarize(&fixture("conflict_pathname_none"));
+
+        assert_eq!(
+            summary.changes,
+            [
+                change(ChangeKind::Download, "doc.txt.path2"),
+                change(ChangeKind::Upload, "doc.txt.path1"),
+            ]
+        );
+        assert_eq!(summary.conflicts_new, Some(1));
+    }
+
+    #[test]
+    fn summarize_of_a_conflict_that_deletes_the_loser_counts_it_but_lists_one_overwrite() {
+        let summary = summarize(&fixture("conflict_delete"));
+
+        assert_eq!(
+            summary.changes,
+            [change(ChangeKind::OverwriteLocal, "doc.txt")]
+        );
+        assert_eq!(
+            counters(&summary),
+            [Some(0), Some(1), Some(0), Some(0), Some(1)]
+        );
+    }
+
+    #[test]
+    fn summarize_of_a_conflict_won_by_the_local_side_overwrites_the_remote_file() {
+        let summary = summarize(&fixture("conflict_local_wins"));
+
+        assert_eq!(
+            summary.changes,
+            [
+                change(ChangeKind::Download, "doc.txt.conflict1"),
+                change(ChangeKind::OverwriteRemote, "doc.txt"),
             ]
         );
         assert_eq!(summary.conflicts_new, Some(1));

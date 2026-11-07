@@ -17,7 +17,7 @@ use crate::bisync::{
 };
 use crate::bisync_log::{LogLine, read_log, summarize};
 use crate::config::{Config, GlobalConfigError, Pair, PairError};
-use crate::conflicts::find_conflicts;
+use crate::conflicts::{Naming, find_conflicts};
 use crate::filters::{self, DirMatcher, FiltersError, FiltersFile};
 use crate::network::Network;
 use crate::notify::{Alert, Notice, Notifier, last_error_message, notice};
@@ -634,7 +634,8 @@ impl Round<'_> {
     async fn count_conflicts(&self, previous: u32) -> u32 {
         let root = self.pair.local.clone();
         let matcher = DirMatcher::new(&self.filters.rendered);
-        let scanned = tokio::task::spawn_blocking(move || find_conflicts(&root, &matcher))
+        let naming = Naming::from(self.behavior.conflict_loser);
+        let scanned = tokio::task::spawn_blocking(move || find_conflicts(&root, &matcher, naming))
             .await
             .unwrap_or_else(|join| Err(std::io::Error::other(join)));
         match scanned {

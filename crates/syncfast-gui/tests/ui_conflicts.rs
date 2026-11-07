@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use common::{harness, pair, view_model};
 use egui_kittest::kittest::Queryable as _;
+use syncfast_core::behavior::ConflictLoser;
 use syncfast_core::conflicts::{Conflict, FileFacts, Resolution};
 use syncfast_gui::ui::{self, Action, ViewModel};
 
@@ -157,4 +158,30 @@ fn opening_the_tab_asks_to_look_for_conflicts_once() {
         .filter(|action| **action == Action::RefreshConflicts("notes".into()))
         .count();
     assert_eq!(refreshes, 1);
+}
+
+#[test]
+fn when_the_loser_is_deleted_the_empty_tab_says_where_to_change_it() {
+    let text = "Conflicts are resolved by deleting the losing version. Change this in Options.";
+    let mut vm = with_conflicts(Vec::new());
+    vm.pairs[0].effective.behavior.conflict_loser = ConflictLoser::Delete;
+    let mut harness = harness(vm, screen());
+
+    harness.run();
+
+    harness.get_by_label("No conflicts");
+    harness.get_by_label(text);
+}
+
+#[test]
+fn a_sync_that_keeps_the_loser_does_not_talk_about_deleting_it() {
+    let mut harness = harness(with_conflicts(Vec::new()), screen());
+
+    harness.run();
+
+    assert!(
+        harness
+            .query_by_label_contains("deleting the losing version")
+            .is_none()
+    );
 }

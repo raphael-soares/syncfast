@@ -359,6 +359,34 @@ fn a_setting_that_lowers_safety_is_a_tool_error_with_the_message_of_the_cli() {
 }
 
 #[test]
+fn a_deleted_loser_is_a_tool_error_that_changes_nothing() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs();
+    let cli = bed.run(&[
+        "settings",
+        "set",
+        "conflict_loser",
+        "delete",
+        "--sync",
+        "docs",
+    ]);
+    let config = bed.root.join("config/syncfast/config.toml");
+    let before = std::fs::read_to_string(&config).unwrap();
+    let mut client = Client::start(&bed);
+    client.initialize();
+
+    let (is_error, text) = client.call(
+        "set_setting",
+        &json!({"key": "conflict_loser", "value": "delete", "sync": "docs"}),
+    );
+
+    assert_eq!(cli.code, 4);
+    assert!(is_error);
+    assert_eq!(format!("syncfast: {text}"), cli.stderr.trim());
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), before);
+}
+
+#[test]
 fn copy_and_move_answer_over_mcp_as_the_commands_do_and_show_transfer_reads_them() {
     let Some(bed) = bed() else { return };
     write(&bed.local().join("docs/a.txt"), "hello");

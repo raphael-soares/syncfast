@@ -1,4 +1,4 @@
-//! Conflicts: both versions of a file were kept as `<name>.conflict<N>`.
+//! Conflicts: both versions of a file were kept, one under a conflict name.
 
 use std::path::{Path, PathBuf};
 
@@ -6,7 +6,7 @@ use jiff::{Timestamp, Zoned};
 use serde::Serialize;
 
 use super::{OpError, Ops};
-use crate::conflicts::{self, FileFacts, Resolution};
+use crate::conflicts::{self, FileFacts, Naming, Resolution};
 use crate::filters::{self, DirMatcher};
 
 /// What to keep when both versions of a file exist.
@@ -49,7 +49,7 @@ impl From<FileFacts> for FileView {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ConflictView {
-    /// The `<name>.conflict<N>` file, relative to the sync's folder.
+    /// The conflict file, relative to the sync's folder.
     pub path: PathBuf,
     /// The file it is a copy of, relative to the sync's folder.
     pub original: PathBuf,
@@ -75,11 +75,12 @@ impl Ops {
     /// # Errors
     /// No such sync, or the folder cannot be listed.
     pub async fn conflicts(&self, id: &str) -> Result<Vec<ConflictView>, OpError> {
-        let pair = self.find_pair(id).await?;
+        let (pair, behavior) = self.find_pair_and_behavior(id).await?;
         let matcher = DirMatcher::new(&filters::render_live(&pair).await.text);
+        let naming = Naming::from(behavior.conflict_loser);
         let local = pair.local;
         let scanned = tokio::task::spawn_blocking(move || {
-            conflicts::list_conflicts(&local, &matcher).map_err(|err| (local, err))
+            conflicts::list_conflicts(&local, &matcher, naming).map_err(|err| (local, err))
         })
         .await
         .map_err(|err| OpError::Failed(err.to_string()))?;
@@ -113,13 +114,15 @@ impl Ops {
         path: &Path,
         keep: Keep,
     ) -> Result<Resolved, OpError> {
-        let pair = self.find_pair(id).await?;
+        let (pair, behavior) = self.find_pair_and_behavior(id).await?;
         let versions = self.paths.versions_dir(id);
+        let naming = Naming::from(behavior.conflict_loser);
         let conflict = path.to_owned();
         tokio::task::spawn_blocking(move || {
             conflicts::resolve(
                 &pair.local,
                 &conflict,
+                naming,
                 keep.into(),
                 &versions,
                 &Zoned::now(),

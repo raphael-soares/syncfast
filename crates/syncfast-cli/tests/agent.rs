@@ -376,6 +376,34 @@ fn a_setting_that_lowers_safety_exits_four_and_changes_nothing() {
 }
 
 #[test]
+fn a_loser_that_is_deleted_or_versions_turned_off_exit_four_and_change_nothing() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs();
+    let before = config_text(&bed);
+
+    let own = bed.run(&[
+        "settings",
+        "set",
+        "conflict_loser",
+        "delete",
+        "--sync",
+        "docs",
+    ]);
+    let defaults = bed.run(&["settings", "set", "conflict_loser", "delete", "--json"]);
+    let versions = bed.run(&["settings", "set", "versions", "false", "--sync", "docs"]);
+
+    assert_eq!(own.code, 4);
+    assert_eq!(
+        own.stderr.trim(),
+        "syncfast: This setting lowers safety (conflict_loser). Change it in syncfast."
+    );
+    assert_eq!(defaults.code, 4);
+    assert_eq!(defaults.json()["error"]["code"], "needs_user");
+    assert_eq!(versions.code, 4);
+    assert_eq!(config_text(&bed), before);
+}
+
+#[test]
 fn show_and_status_report_the_keys_a_user_made_less_safe() {
     let Some(bed) = bed() else { return };
     bed.synced_docs();

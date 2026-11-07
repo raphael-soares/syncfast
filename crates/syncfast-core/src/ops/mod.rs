@@ -19,6 +19,7 @@ mod views;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::behavior::Behavior;
 use crate::config::{Config, Pair};
 use crate::flatpak;
 use crate::network::{Network, NetworkManager};
@@ -116,13 +117,20 @@ impl Ops {
 
     /// The sync `id` as written in the config.
     async fn find_pair(&self, id: &str) -> Result<Pair, OpError> {
+        Ok(self.find_pair_and_behavior(id).await?.0)
+    }
+
+    /// The sync `id` as written in the config, with its settings resolved.
+    async fn find_pair_and_behavior(&self, id: &str) -> Result<(Pair, Behavior), OpError> {
         let config = self.load_config().await?;
-        config
+        let pair = config
             .pairs()
             .iter()
             .find(|pair| pair.id == id)
             .cloned()
-            .ok_or_else(|| OpError::NotFound(id.to_owned()))
+            .ok_or_else(|| OpError::NotFound(id.to_owned()))?;
+        let behavior = config.effective(&pair).behavior;
+        Ok((pair, behavior))
     }
 
     /// `apply`, as the GUI runs it after it changes the config. Invalid
