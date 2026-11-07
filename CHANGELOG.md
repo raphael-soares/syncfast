@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/raphael-soares/syncfast/compare/v0.10.0...v0.11.0) (2026-11-07)
+
+
+### Features
+
+* notification and startup settings in their own panes ([#76](https://github.com/raphael-soares/syncfast/issues/76)) ([b5760bd](https://github.com/raphael-soares/syncfast/commit/b5760bdf88f7de4885f1c5e5f8c36ef46195994a))
+
 ## [0.10.0](https://github.com/raphael-soares/syncfast/compare/v0.9.0...v0.10.0) (2026-11-07)
 
 
