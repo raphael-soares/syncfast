@@ -335,6 +335,10 @@ pub mod size {
     /// A sheet is at most this fraction of the window tall.
     pub const SHEET_MAX_HEIGHT: f32 = 0.8;
     pub const SWITCH: [f32; 2] = [40.0, 22.0];
+    /// The combo of a setting row.
+    pub const SETTING_COMBO: f32 = 200.0;
+    /// The number field of a setting row.
+    pub const SETTING_FIELD: f32 = 72.0;
     pub const ICON: f32 = 16.0;
     pub const ICON_LARGE: f32 = 40.0;
 }

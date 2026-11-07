@@ -62,6 +62,9 @@ pub struct ReviewView<'a> {
     /// The account part of the sync's remote (`gdrive` of `gdrive:Notes`),
     /// for the section titles.
     pub remote: &'a str,
+    /// How many days a file this round replaces on this computer is kept;
+    /// `None` when the sync keeps no old versions.
+    pub kept_days: Option<u32>,
     /// Why the review is asked for; picks the subtitle.
     pub gate: GateKind,
     pub phase: &'a ReviewPhase,
@@ -156,7 +159,9 @@ fn body(ui: &mut Ui, view: &ReviewView<'_>, actions: &mut Vec<Action>) {
                 actions.push(Action::Review(ReviewAction::Retry));
             }
         }
-        ReviewPhase::Ready(preview) => ready(ui, view.remote, preview, toggles_id),
+        ReviewPhase::Ready(preview) => {
+            ready(ui, view.remote, view.kept_days, preview, toggles_id);
+        }
     }
 }
 
@@ -183,7 +188,7 @@ struct Section<'a> {
     paths: Vec<&'a str>,
 }
 
-fn sections<'a>(changes: &'a [Change], remote: &str) -> Vec<Section<'a>> {
+fn sections<'a>(changes: &'a [Change], remote: &str, kept_days: Option<u32>) -> Vec<Section<'a>> {
     ORDER
         .into_iter()
         .filter_map(|kind| {
@@ -194,20 +199,25 @@ fn sections<'a>(changes: &'a [Change], remote: &str) -> Vec<Section<'a>> {
                 .collect();
             (!paths.is_empty()).then(|| Section {
                 kind,
-                title: section_title(kind, remote),
+                title: section_title(kind, remote, kept_days),
                 paths,
             })
         })
         .collect()
 }
 
-fn section_title(kind: ChangeKind, remote: &str) -> String {
+fn section_title(kind: ChangeKind, remote: &str, kept_days: Option<u32>) -> String {
     match kind {
         ChangeKind::Upload => format!("Would upload to {remote}"),
         ChangeKind::Download => "Would download to this computer".to_owned(),
-        ChangeKind::OverwriteLocal => {
-            "Would replace on this computer (old version kept for 30 days)".to_owned()
-        }
+        ChangeKind::OverwriteLocal => format!(
+            "Would replace on this computer ({})",
+            match kept_days {
+                None => "old version not kept".to_owned(),
+                Some(1) => "old version kept for 1 day".to_owned(),
+                Some(days) => format!("old version kept for {days} days"),
+            }
+        ),
         ChangeKind::OverwriteRemote => format!("Would replace on {remote}"),
         ChangeKind::DeleteLocal => "Would delete on this computer".to_owned(),
         ChangeKind::DeleteRemote => format!("Would delete on {remote}"),
@@ -215,7 +225,7 @@ fn section_title(kind: ChangeKind, remote: &str) -> String {
     }
 }
 
-fn ready(ui: &mut Ui, remote: &str, preview: &Preview, toggles_id: Id) {
+fn ready(ui: &mut Ui, remote: &str, kept_days: Option<u32>, preview: &Preview, toggles_id: Id) {
     let palette = theme::palette(ui.ctx());
     let changes = &preview.summary.changes;
     if changes.is_empty() {
@@ -232,7 +242,7 @@ fn ready(ui: &mut Ui, remote: &str, preview: &Preview, toggles_id: Id) {
         .data(|data| data.get_temp::<Toggles>(toggles_id))
         .unwrap_or_default();
     let before = toggles.0.clone();
-    for (index, section) in sections(changes, remote).iter().enumerate() {
+    for (index, section) in sections(changes, remote, kept_days).iter().enumerate() {
         let default_open = index == 0 || is_delete(section.kind);
         let open = toggles
             .0

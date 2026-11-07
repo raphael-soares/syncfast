@@ -16,6 +16,7 @@ const REMOTE: &str = "devremote";
 struct Case {
     gate: GateKind,
     phase: ReviewPhase,
+    kept_days: Option<u32>,
     actions: Vec<Action>,
 }
 
@@ -35,9 +36,18 @@ fn ready(ui: &Ui) -> bool {
 }
 
 fn open_sheet(gate: GateKind, phase: ReviewPhase) -> Harness<'static, Case> {
+    open_sheet_keeping(gate, phase, Some(30))
+}
+
+fn open_sheet_keeping(
+    gate: GateKind,
+    phase: ReviewPhase,
+    kept_days: Option<u32>,
+) -> Harness<'static, Case> {
     let case = Case {
         gate,
         phase,
+        kept_days,
         actions: Vec::new(),
     };
     let mut harness = Harness::new_ui_state(
@@ -46,6 +56,7 @@ fn open_sheet(gate: GateKind, phase: ReviewPhase) -> Harness<'static, Case> {
                 let view = ReviewView {
                     name: "Docs",
                     remote: REMOTE,
+                    kept_days: case.kept_days,
                     gate: case.gate,
                     phase: &case.phase,
                 };
@@ -342,6 +353,36 @@ fn overwrite_local_section_says_the_old_version_is_kept_for_30_days() {
 }
 
 #[test]
+fn overwrite_local_section_names_the_days_the_sync_keeps_old_versions() {
+    let harness = open_sheet_keeping(
+        GateKind::NeedsReviewFirstRun,
+        preview(changes(ChangeKind::OverwriteLocal, "doc/", 1)),
+        Some(7),
+    );
+
+    assert!(
+        harness
+            .query_by_label("Would replace on this computer (old version kept for 7 days) (1)")
+            .is_some()
+    );
+}
+
+#[test]
+fn overwrite_local_section_says_so_when_the_sync_keeps_no_old_versions() {
+    let harness = open_sheet_keeping(
+        GateKind::NeedsReviewFirstRun,
+        preview(changes(ChangeKind::OverwriteLocal, "doc/", 1)),
+        None,
+    );
+
+    assert!(
+        harness
+            .query_by_label("Would replace on this computer (old version not kept) (1)")
+            .is_some()
+    );
+}
+
+#[test]
 fn every_kind_gets_its_title_in_order_and_empty_kinds_are_hidden() {
     let all = vec![
         change(ChangeKind::Other, "NOTICE: something odd"),
@@ -539,6 +580,7 @@ fn escape_emits_cancel_in_every_phase() {
 /// A sheet drawn before the screen, as the app does so Esc reaches it first.
 fn sheet_over_screen() -> Harness<'static, Case> {
     let case = Case {
+        kept_days: Some(30),
         gate: GateKind::NeedsReviewFirstRun,
         phase: preview(changes(ChangeKind::Upload, "up/", 1)),
         actions: Vec::new(),
@@ -549,6 +591,7 @@ fn sheet_over_screen() -> Harness<'static, Case> {
                 let view = ReviewView {
                     name: "Docs",
                     remote: REMOTE,
+                    kept_days: case.kept_days,
                     gate: case.gate,
                     phase: &case.phase,
                 };

@@ -2,8 +2,9 @@
 
 mod common;
 
-use common::{harness, harness_in, pair, view_model};
+use common::{from_config, harness, harness_in, pair, view_model};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
+use syncfast_core::config::SettingScope;
 use syncfast_core::state::GateKind;
 use syncfast_gui::gui_state::SettingsPane;
 use syncfast_gui::theme::ThemeChoice;
@@ -482,4 +483,74 @@ fn a_local_remote_can_only_be_removed() {
     for text in ["Rename…", "Change Client ID…", "Use My Client ID…"] {
         assert!(harness.query_by_label(text).is_none(), "{text}");
     }
+}
+
+const TWO_SYNCS: &str = "version = 2\n\n[defaults]\ninterval = \"15m\"\n\n[[pair]]\nid = \"a\"\nname = \"A\"\nlocal = \"/home/ada/a\"\nremote = \"gdrive:a\"\ninterval = \"30m\"\n\n[[pair]]\nid = \"b\"\nname = \"B\"\nlocal = \"/home/ada/b\"\nremote = \"gdrive:b\"\ninterval = \"1h\"\n\n[[pair]]\nid = \"c\"\nname = \"C\"\nlocal = \"/home/ada/c\"\nremote = \"gdrive:c\"\n";
+
+fn defaults() -> ViewModel {
+    ViewModel {
+        settings_pane: SettingsPane::Defaults,
+        ..from_config(TWO_SYNCS, None)
+    }
+}
+
+#[test]
+fn a_default_that_was_changed_says_what_it_replaces_and_how_many_syncs_override_it() {
+    let mut harness = harness(defaults(), screen());
+    harness.run();
+
+    harness.get_by_label("Built-in default: 5 min · Overridden by 2 syncs");
+}
+
+#[test]
+fn resetting_a_default_asks_to_reset_it_in_the_defaults() {
+    let mut harness = harness(defaults(), screen());
+    harness.run();
+
+    harness.get_by_label("Reset to Default").click();
+    harness.run();
+
+    assert_eq!(
+        harness.state().actions,
+        [Action::ResetSetting {
+            scope: SettingScope::Defaults,
+            key: "interval".to_owned(),
+        }]
+    );
+}
+
+#[test]
+fn changing_a_default_is_scoped_to_the_defaults() {
+    let mut harness = harness(defaults(), screen());
+    harness.run();
+
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::CheckBox, "Watch for changes")
+        .click();
+    harness.run();
+
+    assert_eq!(
+        harness.state().actions,
+        [Action::SetSetting {
+            scope: SettingScope::Defaults,
+            key: "watch".to_owned(),
+            value: "false".to_owned(),
+        }]
+    );
+}
+
+#[test]
+fn the_defaults_pane_sits_between_accounts_and_the_app_group() {
+    let mut harness = harness(defaults(), screen());
+    harness.run();
+
+    let button = |label| {
+        harness
+            .get_by_role_and_label(egui::accesskit::Role::Button, label)
+            .rect()
+    };
+    let (accounts, defaults) = (button("Accounts"), button("Defaults"));
+
+    assert!(accounts.top() < defaults.top());
+    assert!(defaults.top() < harness.get_by_label("App").rect().top());
 }

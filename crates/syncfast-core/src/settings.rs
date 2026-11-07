@@ -402,7 +402,7 @@ impl Origin {
 }
 
 /// The behavior of a sync and where each value came from.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Effective {
     pub behavior: Behavior,
     pub origins: BTreeMap<&'static str, Origin>,
@@ -559,6 +559,8 @@ mod tests {
         assert_eq!(text("max_wait", "90s").unwrap(), "90s");
         assert_eq!(text("max_delete", "25").unwrap(), "25");
         assert_eq!(text("watch", "false").unwrap(), "false");
+        assert_eq!(text("watch", "true").unwrap(), "true");
+        assert_eq!(text("watch", "yes").unwrap_err(), "watch must be bool");
     }
 
     #[test]

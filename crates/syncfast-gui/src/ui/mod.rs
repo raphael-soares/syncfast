@@ -10,6 +10,7 @@ pub mod detail;
 pub mod filters;
 pub mod format;
 pub mod menu;
+pub mod options;
 pub mod relative;
 pub mod remove;
 pub mod remove_account;
@@ -23,9 +24,12 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use jiff::Timestamp;
+use syncfast_core::behavior::Behavior;
 use syncfast_core::bisync::Fault;
 use syncfast_core::bisync_log::Progress;
+use syncfast_core::config::SettingScope;
 use syncfast_core::conflicts::{Conflict, Resolution};
+use syncfast_core::settings::{Effective, Overrides, lowered_safety};
 use syncfast_core::state::{DisplayStatus, GateKind};
 
 use crate::gui_state::SettingsPane;
@@ -62,6 +66,8 @@ pub struct PairRow {
     pub presets: Vec<String>,
     /// The custom filter lines.
     pub filters: Vec<String>,
+    /// What the sync runs with and where each value comes from.
+    pub effective: Effective,
 }
 
 impl PairRow {
@@ -75,6 +81,12 @@ impl PairRow {
                 .gate
                 .is_none_or(|gate| gate == GateKind::NeedsAttention)
             && self.enabled
+    }
+
+    /// The settings that make this sync less safe than the built-in values.
+    #[must_use]
+    pub fn lowered_safety(&self) -> Vec<&'static str> {
+        lowered_safety(&self.effective.behavior)
     }
 }
 
@@ -101,6 +113,7 @@ impl From<&PairSnapshot> for PairRow {
             realtime_off: snapshot.realtime_off,
             presets: snapshot.pair.presets.clone(),
             filters: snapshot.pair.filters.clone(),
+            effective: snapshot.effective.clone(),
         }
     }
 }
@@ -167,6 +180,10 @@ pub struct ViewModel {
     /// What the last check of each account found, by account name.
     pub account_status: BTreeMap<String, AccountStatus>,
     pub removing_account: Option<String>,
+    /// The built-in values with `[defaults]` on top.
+    pub defaults: Behavior,
+    /// The keys `[defaults]` sets.
+    pub defaults_overrides: Overrides,
 }
 
 impl ViewModel {
@@ -274,6 +291,19 @@ pub enum Action {
     },
     /// The user edited the filters again: the `Saved.` notice goes away.
     DismissFiltersSaved(String),
+    /// Sets a setting of a sync or of `[defaults]`; `value` is the text the
+    /// user typed or the name they picked, already valid for the key.
+    SetSetting {
+        scope: SettingScope,
+        key: String,
+        value: String,
+    },
+    /// Takes a setting out of a sync (it follows `[defaults]` again) or out of
+    /// `[defaults]` (it follows the built-in value).
+    ResetSetting {
+        scope: SettingScope,
+        key: String,
+    },
 }
 
 /// The whole window: sidebar and detail.

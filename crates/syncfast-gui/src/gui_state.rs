@@ -47,6 +47,7 @@ impl From<WindowRecord> for Geometry {
 pub enum SettingsPane {
     #[default]
     Accounts,
+    Defaults,
     Appearance,
 }
 
@@ -71,13 +72,14 @@ impl SettingsGroup {
 
 impl SettingsPane {
     /// In the order the sidebar lists them, group by group.
-    pub const ALL: [Self; 2] = [Self::Accounts, Self::Appearance];
+    pub const ALL: [Self; 3] = [Self::Accounts, Self::Defaults, Self::Appearance];
 
     /// The pane's name, shown in the sidebar and as the title of its content.
     #[must_use]
     pub fn title(self) -> &'static str {
         match self {
             Self::Accounts => "Accounts",
+            Self::Defaults => "Defaults",
             Self::Appearance => "Appearance",
         }
     }
@@ -85,7 +87,7 @@ impl SettingsPane {
     #[must_use]
     pub fn group(self) -> SettingsGroup {
         match self {
-            Self::Accounts => SettingsGroup::Syncs,
+            Self::Accounts | Self::Defaults => SettingsGroup::Syncs,
             Self::Appearance => SettingsGroup::App,
         }
     }

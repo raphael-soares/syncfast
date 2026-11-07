@@ -6,7 +6,7 @@ syncfast stops a sync and waits for you when the first sync is pending, the filt
 
 ## Many files would be deleted
 
-A round that would delete more than half of the files is refused. This usually means a folder is empty, unmounted or moved. Check the local folder and the Drive folder, then review. **Delete and Sync** goes ahead; to undo a mass delete on Drive, use the Drive trash.
+By default, a round that would delete more than half of the files is refused (the limit is **Stop when more than this share would be deleted** in the **Options** tab). This usually means a folder is empty, unmounted or moved. Check the local folder and the Drive folder, then review. **Delete and Sync** goes ahead; to undo a mass delete on Drive, use the Drive trash.
 
 ## Signed out
 

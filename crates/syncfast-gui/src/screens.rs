@@ -199,6 +199,16 @@ impl Screens {
                 self.filters_saved = None;
                 Some(Command::SaveFilters { id, presets, rules })
             }
+            Action::SetSetting { scope, key, value } => Some(Command::WriteSetting {
+                scope,
+                key,
+                value: Some(value),
+            }),
+            Action::ResetSetting { scope, key } => Some(Command::WriteSetting {
+                scope,
+                key,
+                value: None,
+            }),
             _ => None,
         }
     }
@@ -237,7 +247,9 @@ mod tests {
                 status: DisplayStatus::UpToDate,
                 progress: None,
                 realtime_off: false,
+                effective: syncfast_core::settings::Effective::default(),
             }],
+            ..Snapshot::default()
         }
     }
 

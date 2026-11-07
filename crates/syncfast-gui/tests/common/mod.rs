@@ -3,6 +3,8 @@
 use egui::Ui;
 use egui_kittest::Harness;
 use jiff::Timestamp;
+use syncfast_core::config::Config;
+use syncfast_core::settings::Effective;
 use syncfast_core::state::DisplayStatus;
 use syncfast_gui::theme::{self, Palette};
 use syncfast_gui::ui::{Action, PairRow, ViewModel};
@@ -33,6 +35,27 @@ pub fn pair(id: &str, name: &str) -> PairRow {
         realtime_off: false,
         presets: vec!["system_junk".into(), "dev_dirs".into()],
         filters: Vec::new(),
+        effective: Effective::default(),
+    }
+}
+
+/// The view model a `config.toml` gives: every sync with what it runs with,
+/// and the `[defaults]`.
+#[allow(dead_code)]
+pub fn from_config(text: &str, selected: Option<&str>) -> ViewModel {
+    let config = Config::parse(text, std::path::Path::new("/home/ada")).unwrap();
+    let pairs = config
+        .pairs()
+        .iter()
+        .map(|pair| PairRow {
+            effective: config.effective(pair),
+            ..self::pair(&pair.id, &pair.name)
+        })
+        .collect();
+    ViewModel {
+        defaults: config.defaults(),
+        defaults_overrides: config.defaults_overrides().clone(),
+        ..view_model(pairs, selected)
     }
 }
 

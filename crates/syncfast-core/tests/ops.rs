@@ -1263,6 +1263,20 @@ async fn an_agent_cannot_raise_max_delete() {
 }
 
 #[tokio::test]
+async fn a_refused_change_writes_nothing() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs().await;
+    let file = bed.ops.paths.config_file();
+    let before = fs::read_to_string(&file).unwrap();
+
+    let lowered = bed.ops.set_setting(Some("docs"), "versions", "false").await;
+    let invalid = bed.ops.set_setting(Some("docs"), "max_delete", "0").await;
+
+    assert!(lowered.is_err() && invalid.is_err());
+    assert_eq!(fs::read_to_string(&file).unwrap(), before);
+}
+
+#[tokio::test]
 async fn an_agent_cannot_turn_versions_off() {
     let Some(bed) = bed() else { return };
     bed.synced_docs().await;

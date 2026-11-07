@@ -1,11 +1,12 @@
-//! The I/O behind the Conflicts and Filters tabs and `Remove Sync…`: what the
-//! backend runs when those screens ask. Errors are the text the screen shows.
+//! The I/O behind the Conflicts, Filters and Options tabs, Settings >
+//! Defaults and `Remove Sync…`: what the backend runs when those screens ask.
+//! Errors are the text the screen shows.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use jiff::Zoned;
-use syncfast_core::config::{Config, Pair};
+use syncfast_core::config::{Config, Pair, SettingScope};
 use syncfast_core::conflicts::{self, Conflict, Resolution};
 use syncfast_core::filters::{self, DirMatcher, ExclusionSummary};
 use syncfast_core::ops;
@@ -150,6 +151,27 @@ pub async fn write_filters(
     } else {
         Err(format!("there is no sync with id \"{id}\""))
     }
+}
+
+/// Sets `key` of `scope` to `value`, or removes it when `value` is `None`.
+/// Nothing is written when the change is refused.
+///
+/// # Errors
+/// The config cannot be read or written, or the change is refused (unknown
+/// key or sync, invalid value).
+pub async fn write_setting(
+    paths: &Paths,
+    scope: &SettingScope,
+    key: &str,
+    value: Option<&str>,
+) -> Result<(), String> {
+    Config::edit(paths, |config| match value {
+        Some(text) => config.set_setting(scope, key, text),
+        None => config.reset_setting(scope, key),
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(|err| err.to_string())
 }
 
 /// After the filters changed: see [`ops::after_filters_saved`]. Returns whether
@@ -317,6 +339,56 @@ mod tests {
         let pair = find_pair(&paths, "notes").await.unwrap();
         assert_eq!(pair.presets, ["dev_dirs"]);
         assert_eq!(pair.filters, ["- *.bak"]);
+    }
+
+    #[tokio::test]
+    async fn a_setting_is_written_to_the_config_and_reset_removes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        write_config(&paths, dir.path());
+        let scope = SettingScope::Sync("notes".to_owned());
+
+        write_setting(&paths, &scope, "debounce", Some("10s"))
+            .await
+            .unwrap();
+        let set = Config::load(&paths).await.unwrap();
+        assert_eq!(
+            set.effective(&set.pairs()[0]).behavior.debounce,
+            std::time::Duration::from_secs(10)
+        );
+
+        write_setting(&paths, &scope, "debounce", None)
+            .await
+            .unwrap();
+        let reset = Config::load(&paths).await.unwrap();
+        assert!(!reset.pairs()[0].overrides.contains("debounce"));
+    }
+
+    #[tokio::test]
+    async fn a_refused_setting_names_the_problem_and_leaves_the_file_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        write_config(&paths, dir.path());
+        let before = std::fs::read_to_string(paths.config_file()).unwrap();
+
+        let too_short = write_setting(&paths, &SettingScope::Defaults, "debounce", Some("1s"))
+            .await
+            .unwrap_err();
+        let unknown_sync = write_setting(
+            &paths,
+            &SettingScope::Sync("nope".to_owned()),
+            "debounce",
+            Some("10s"),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(too_short, "debounce must be at least 5s");
+        assert!(unknown_sync.contains("nope"), "{unknown_sync}");
+        assert_eq!(
+            std::fs::read_to_string(paths.config_file()).unwrap(),
+            before
+        );
     }
 
     #[tokio::test]

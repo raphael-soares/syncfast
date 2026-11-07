@@ -28,6 +28,7 @@ fastframe_icons::icons! {
         Play => lucide "play",
         Plus => lucide "plus",
         Refresh => lucide "refresh-cw",
+        RotateCcw => "rotate-ccw",
         Settings => lucide "settings",
         Trash => lucide "trash-2",
         User => lucide "user",
