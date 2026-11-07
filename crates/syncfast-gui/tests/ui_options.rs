@@ -61,6 +61,11 @@ fn commit(harness: &mut Harness<'_, Frame>) {
     harness.run_steps(4);
 }
 
+/// The rows stack taller than a window, and a popup only opens on screen.
+fn tall(vm: ViewModel) -> Harness<'static, Frame> {
+    harness_in(vm, egui::vec2(900.0, 1100.0), Palette::dark(), screen())
+}
+
 #[test]
 fn the_rows_are_grouped_in_sections() {
     let mut harness = harness(options("", ""), screen());
@@ -246,7 +251,7 @@ fn picking_a_choice_saves_its_name() {
 
 #[test]
 fn picking_the_choice_already_set_asks_for_nothing() {
-    let mut harness = harness(options("", ""), screen());
+    let mut harness = tall(options("", ""));
     harness.run();
 
     harness
@@ -336,7 +341,7 @@ fn a_longest_wait_below_the_wait_after_changes_is_refused_in_line() {
 
 #[test]
 fn deleting_the_loser_without_a_winner_is_refused_in_line() {
-    let mut harness = harness(options("", "conflict_resolve = \"none\"\n"), screen());
+    let mut harness = tall(options("", "conflict_resolve = \"none\"\n"));
     harness.run();
 
     harness
@@ -827,4 +832,103 @@ fn a_sync_on_never_ask_says_its_safety_is_lowered() {
     harness.run();
 
     harness.get_by_label("Safety lowered");
+}
+
+#[test]
+fn the_mode_row_offers_every_mode_and_says_what_the_current_one_does() {
+    let mut harness = harness(options("", "mode = \"upload\"\n"), screen());
+    harness.run();
+
+    harness.get_by_label("Mode");
+    assert_eq!(
+        harness
+            .get_by_role_and_label(Role::ComboBox, "Sync mode")
+            .value()
+            .as_deref(),
+        Some("Upload only")
+    );
+    harness.get_by_label("New and changed files go to Drive. Nothing is deleted there.");
+    harness.get_by_label("Changing the mode holds this sync for a review.");
+
+    harness
+        .get_by_role_and_label(Role::ComboBox, "Sync mode")
+        .click();
+    harness.run();
+    for name in [
+        "Two-way",
+        "Download only",
+        "Mirror to Drive",
+        "Mirror to this computer",
+    ] {
+        harness.get_by_label(name);
+    }
+    harness.get_by_label("Mirror to Drive").click();
+    harness.run();
+
+    assert_eq!(harness.state().actions, [set("mode", "mirror_up")]);
+}
+
+#[test]
+fn a_mirror_mode_warns_about_what_it_deletes() {
+    let mut harness = harness(options("", "mode = \"mirror_down\"\n"), screen());
+    harness.run();
+
+    harness.get_by_label(
+        "Files that exist only on this computer are deleted. The ones replaced or deleted go to the versions folder.",
+    );
+}
+
+#[test]
+fn fields_of_a_direction_the_mode_does_not_sync_are_hidden() {
+    let shown = |pair_settings: &str, label: &str| {
+        let mut harness = harness(options("", pair_settings), screen());
+        harness.run();
+        harness.query_all_by_label(label).count() > 0
+    };
+
+    assert!(shown("", "Watch for changes"));
+    assert!(shown("", "When both sides change"));
+    assert!(shown("", "Limit uploads to"));
+
+    assert!(!shown("mode = \"download\"\n", "Watch for changes"));
+    assert!(!shown("mode = \"download\"\n", "Wait after changes"));
+    assert!(!shown("mode = \"download\"\n", "Limit uploads to"));
+    assert!(shown("mode = \"download\"\n", "Limit downloads to"));
+    assert!(!shown("mode = \"mirror_down\"\n", "Watch for changes"));
+    assert!(!shown("mode = \"mirror_down\"\n", "When both sides change"));
+    assert!(shown("mode = \"mirror_up\"\n", "Watch for changes"));
+    assert!(shown("mode = \"mirror_up\"\n", "Limit uploads to"));
+    assert!(!shown("mode = \"mirror_up\"\n", "Limit downloads to"));
+    assert!(!shown("mode = \"upload\"\n", "The losing version"));
+}
+
+#[test]
+fn only_a_two_way_sync_has_a_conflicts_tab() {
+    let tabs = |pair_settings: &str| {
+        let mut vm = options("", pair_settings);
+        vm.tab = DetailTab::Activity;
+        let mut harness = harness(vm, ui::detail::show);
+        harness.run();
+        harness.query_all_by_label("Conflicts").count() > 0
+    };
+
+    assert!(tabs(""));
+    for mode in ["upload", "download", "mirror_up", "mirror_down"] {
+        assert!(!tabs(&format!("mode = \"{mode}\"\n")), "{mode}");
+    }
+}
+
+#[test]
+fn a_one_way_sync_shows_its_mode_as_a_chip_and_a_two_way_one_does_not() {
+    let chip = |pair_settings: &str, label: &str| {
+        let mut vm = options("", pair_settings);
+        vm.tab = DetailTab::Activity;
+        let mut harness = harness(vm, ui::detail::show);
+        harness.run();
+        harness.query_all_by_label(label).count() > 0
+    };
+
+    assert!(chip("mode = \"mirror_up\"\n", "Mirror to Drive"));
+    assert!(chip("mode = \"download\"\n", "Download only"));
+    assert!(!chip("", "Two-way"));
 }

@@ -1490,7 +1490,7 @@ async fn mode_is_set_per_sync_and_refused_for_defaults_with_exit_2() {
     assert_eq!(err.exit_code(), 2);
     let listed = bed.ops.settings(None).await.unwrap();
     assert!(listed.settings.iter().all(|row| row.key != "mode"));
-    assert_eq!(listed.settings.len(), 14);
+    assert_eq!(listed.settings.len(), 20);
 }
 
 #[tokio::test]

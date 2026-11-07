@@ -1,6 +1,7 @@
 //! The right side of the window: toolbar, status card and the tabs.
 
 use egui::{Frame, Margin, RichText, Ui};
+use syncfast_core::behavior::SyncMode;
 use syncfast_core::bisync_log::Progress;
 use syncfast_core::notify::attention_body;
 use syncfast_core::state::{DisplayStatus, GateKind};
@@ -89,32 +90,44 @@ fn padded<R>(ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> R {
 
 fn pair_detail(ui: &mut Ui, vm: &ViewModel, pair: &PairRow, palette: &Palette) -> Vec<Action> {
     let mut actions = Vec::new();
-    let subtitle = format!("{} ↔ {}", pair.local.display(), pair.remote);
+    let sync_mode = pair.effective.behavior.mode;
+    let arrow = match sync_mode {
+        SyncMode::Bisync => "\u{2194}",
+        SyncMode::Upload | SyncMode::MirrorUp => "\u{2192}",
+        SyncMode::Download | SyncMode::MirrorDown => "\u{2190}",
+    };
+    let subtitle = format!("{} {arrow} {}", pair.local.display(), pair.remote);
     toolbar(ui, &pair.name, &subtitle, |ui| {
         let more = icon_button(ui, Icon::Ellipsis, "More");
         more_menu(&more, pair, palette, &mut actions);
         pause_button(ui, pair, &mut actions);
         sync_button(ui, pair, &mut actions);
+        if sync_mode != SyncMode::Bisync {
+            mode_chip(ui, sync_mode);
+        }
     });
     padded(ui, |ui| {
         status_card(ui, pair, vm.now, palette, &mut actions);
     });
+    let tabs = tabs_of(sync_mode);
+    let tab = if tabs.contains(&vm.tab) {
+        vm.tab
+    } else {
+        DetailTab::default()
+    };
     padded(ui, |ui| {
         ui.add_space(space::L);
-        let selected = DetailTab::ALL
-            .iter()
-            .position(|tab| *tab == vm.tab)
-            .unwrap_or(0);
-        let labels = DetailTab::ALL.map(DetailTab::label);
+        let selected = tabs.iter().position(|shown| *shown == tab).unwrap_or(0);
+        let labels: Vec<&str> = tabs.iter().map(|shown| shown.label()).collect();
         if let Some(index) = segmented(ui, selected, &labels) {
-            actions.push(Action::SelectTab(DetailTab::ALL[index]));
+            actions.push(Action::SelectTab(tabs[index]));
         }
         ui.add_space(space::S);
     });
     padded(ui, |ui| {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
-            .show(ui, |ui| match vm.tab {
+            .show(ui, |ui| match tab {
                 DetailTab::Activity => actions.extend(activity::show(ui, vm)),
                 DetailTab::Conflicts => actions.extend(conflicts::show(ui, vm)),
                 DetailTab::Filters => actions.extend(filters::show(ui, vm)),
@@ -122,6 +135,32 @@ fn pair_detail(ui: &mut Ui, vm: &ViewModel, pair: &PairRow, palette: &Palette) -
             });
     });
     actions
+}
+
+/// Conflicts only exist in a two-way sync.
+fn tabs_of(mode: SyncMode) -> Vec<DetailTab> {
+    DetailTab::ALL
+        .into_iter()
+        .filter(|tab| *tab != DetailTab::Conflicts || mode == SyncMode::Bisync)
+        .collect()
+}
+
+fn mode_chip(ui: &mut Ui, mode: SyncMode) {
+    let palette = theme::palette(ui.ctx());
+    let text = options::mode_label(mode.name());
+    let response = egui::Frame::new()
+        .stroke(egui::Stroke::new(1.0, palette.secondary))
+        .corner_radius(radius::CARD)
+        .inner_margin(Margin::symmetric(8, 2))
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new(text)
+                    .font(theme::callout())
+                    .color(palette.secondary),
+            )
+        })
+        .response;
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
 }
 
 fn sync_button(ui: &mut Ui, pair: &PairRow, actions: &mut Vec<Action>) {
@@ -191,6 +230,7 @@ fn card_text(pair: &PairRow, now: jiff::Timestamp) -> CardText {
             GateKind::NeedsReviewFirstRun
             | GateKind::NeedsReviewFiltersChanged
             | GateKind::NeedsReviewCriticalError
+            | GateKind::NeedsReviewModeChanged
             | GateKind::TooManyDeletes
             | GateKind::AllFilesChanged => CardText {
                 phrase: "Review what will change before syncing resumes.".to_owned(),
