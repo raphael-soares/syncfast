@@ -1,17 +1,20 @@
 //! The one-way modes against the real rclone with folders on this disk.
 //! Skipped, with a warning, when rclone is not installed.
 //!
-//! The remote is a `local` rclone remote, whose account root is the working
-//! directory, so each bed moves the process there: that is where
-//! `mirror_up` keeps `.syncfast-versions`.
+//! The remote is a `local` rclone remote, whose account root is the
+//! directory rclone runs in. A wrapper script starts rclone in each bed's
+//! root, so beds run in parallel and `mirror_up` keeps `.syncfast-versions`
+//! there.
 
 #![allow(clippy::unwrap_used)]
 
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use jiff::{SignedDuration, Zoned};
+use syncfast_core::behavior::SyncMode;
 use syncfast_core::bisync::{Fault, Outcome, ReviewKind, RoundMode};
 use syncfast_core::network::{BoxFuture, Network};
 use syncfast_core::notify::{Notice, Notifier};
@@ -23,8 +26,6 @@ use syncfast_core::run_decision::SkipReason;
 use syncfast_core::state::{ConfirmMarker, GateKind, State};
 
 const PAIR: &str = "docs";
-
-static CWD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 struct Online(AtomicBool);
 
@@ -40,19 +41,7 @@ impl Notifier for Silent {
     fn notify(&self, _notice: &Notice) {}
 }
 
-struct InRoot {
-    _lock: tokio::sync::MutexGuard<'static, ()>,
-    before: PathBuf,
-}
-
-impl Drop for InRoot {
-    fn drop(&mut self) {
-        std::env::set_current_dir(&self.before).unwrap();
-    }
-}
-
 struct Bed {
-    _cwd: InRoot,
     _dir: tempfile::TempDir,
     root: PathBuf,
     paths: Paths,
@@ -68,11 +57,21 @@ async fn bed(mode: &str) -> Option<Bed> {
         eprintln!("skipping: rclone is not installed");
         return None;
     };
-    let lock = CWD.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
     let rclone_conf = root.join("rclone.conf");
     fs::write(&rclone_conf, "[testremote]\ntype = local\n").unwrap();
+    let wrapper = root.join("rclone-in-root");
+    fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\ncd '{}' || exit 1\nexec '{}' \"$@\"\n",
+            root.display(),
+            found.bin().display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
     let paths = Paths::new(
         root.join("home"),
         root.join("config"),
@@ -83,14 +82,8 @@ async fn bed(mode: &str) -> Option<Bed> {
     let (local, remote) = (root.join("local"), root.join("remote"));
     fs::create_dir_all(&local).unwrap();
     fs::create_dir_all(&remote).unwrap();
-    let before = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&root).unwrap();
     let bed = Bed {
-        _cwd: InRoot {
-            _lock: lock,
-            before,
-        },
-        rclone: Rclone::new(found.bin().to_owned()).with_config(rclone_conf),
+        rclone: Rclone::new(wrapper).with_config(rclone_conf),
         root,
         local,
         remote,
@@ -135,8 +128,15 @@ impl Bed {
     async fn confirm(&self, kind: ReviewKind) {
         let clock = Zoned::now;
         let reviewed = preview(&self.env(&clock), PAIR, kind).await.unwrap();
+        self.confirm_in(kind, reviewed.mode).await;
+    }
+
+    async fn confirm_in(&self, kind: ReviewKind, mode: SyncMode) {
+        let clock = Zoned::now;
+        let reviewed = preview(&self.env(&clock), PAIR, kind).await.unwrap();
         ConfirmMarker {
             kind,
+            mode,
             filters_hash: reviewed.filters_hash,
         }
         .save(&self.paths, PAIR)
@@ -155,7 +155,8 @@ impl Bed {
         State::load(&self.paths, PAIR).await.unwrap()
     }
 
-    /// `--combined` reports still on disk: a round must not leave any.
+    /// Dry-run `--combined` reports still on disk: a preview must not leave
+    /// any. A real round keeps its own, named after the mode, for Activity.
     fn reports_left(&self) -> Vec<PathBuf> {
         let mut found = Vec::new();
         for dir in [self.paths.runs_dir(PAIR), self.paths.pair_state_dir(PAIR)] {
@@ -164,7 +165,8 @@ impl Bed {
             };
             for entry in entries {
                 let path = entry.unwrap().path();
-                if path.extension().is_some_and(|ext| ext == "changes") {
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                if name.starts_with("preview-") && name.ends_with(".changes") {
                     found.push(path);
                 }
             }
@@ -411,8 +413,17 @@ async fn more_deletions_than_max_delete_stops_at_too_many_deletes_and_the_confir
     );
     let state = bed.state().await;
     assert_eq!(
-        state.gate.map(|gate| gate.kind),
+        state.gate.as_ref().map(|gate| gate.kind),
         Some(GateKind::TooManyDeletes)
+    );
+    let gate = state.gate.unwrap();
+    let deleted = 10 - names(&bed.remote).len();
+    assert!(deleted >= 2, "{:?}", names(&bed.remote));
+    assert_eq!(
+        gate.detail,
+        format!(
+            "{deleted} files were already deleted before the stop. Deleted files are kept in .syncfast-versions on the account."
+        )
     );
     assert_eq!(bed.run().await, RunReport::Skipped(SkipReason::Gated));
     assert!(
@@ -497,6 +508,27 @@ async fn leaving_and_returning_to_bisync_rebuilds_the_listings() {
     write(&bed.local, "after.txt", "x");
     assert_eq!(bed.run().await, ran_ok(RoundMode::Normal));
     assert_eq!(read(&bed.remote, "after.txt"), "x");
+}
+
+#[tokio::test]
+async fn a_confirmation_given_in_one_mode_does_not_start_another_mode_uncapped() {
+    let Some(bed) = bed("bisync").await else {
+        return;
+    };
+    write(&bed.local, "a.txt", "a");
+    bed.first_sync().await;
+    bed.set_mode("mirror_up", "manual", "");
+    assert_eq!(
+        bed.run().await,
+        RunReport::GateSet(GateKind::NeedsReviewModeChanged)
+    );
+
+    bed.confirm_in(ReviewKind::Resync, SyncMode::Bisync).await;
+
+    assert_eq!(bed.run().await, RunReport::Skipped(SkipReason::Gated));
+    assert_eq!(ConfirmMarker::load(&bed.paths, PAIR).await.unwrap(), None);
+    bed.confirm(ReviewKind::Resync).await;
+    assert_eq!(bed.run().await, ran_ok(RoundMode::Resync));
 }
 
 #[tokio::test]

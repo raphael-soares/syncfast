@@ -377,10 +377,11 @@ pub fn per_sync_only_message(key: &str) -> String {
 /// Problems that only exist between keys, judged on a resolved behavior.
 #[must_use]
 pub fn relation_problem(behavior: &Behavior) -> Option<String> {
-    if behavior.max_wait < behavior.debounce {
+    if watches(behavior.mode) && behavior.max_wait < behavior.debounce {
         return Some("max_wait must be at least debounce".to_owned());
     }
-    if behavior.conflict_resolve == ConflictResolve::None
+    if bisync_only(behavior.mode)
+        && behavior.conflict_resolve == ConflictResolve::None
         && behavior.conflict_loser == ConflictLoser::Delete
     {
         return Some(
@@ -395,7 +396,7 @@ pub fn relation_problem(behavior: &Behavior) -> Option<String> {
 pub fn lowered_safety(behavior: &Behavior) -> Vec<&'static str> {
     let builtin = Behavior::default();
     KEYS.iter()
-        .filter(|def| def.lowers(&builtin, behavior))
+        .filter(|def| (def.applies_to)(behavior.mode) && def.lowers(&builtin, behavior))
         .map(|def| def.name)
         .collect()
 }
@@ -1150,6 +1151,41 @@ mod tests {
         };
 
         assert_eq!(relation_problem(&equal), None);
+    }
+
+    #[test]
+    fn keys_a_mode_ignores_raise_no_relation_problem_and_no_safety_warning() {
+        let stored = Behavior {
+            debounce: Duration::from_mins(10),
+            conflict_resolve: ConflictResolve::None,
+            conflict_loser: ConflictLoser::Delete,
+            max_delete: 80,
+            versions: false,
+            ..Behavior::default()
+        };
+        let download = Behavior {
+            mode: SyncMode::Download,
+            ..stored.clone()
+        };
+        let mirror_down = Behavior {
+            mode: SyncMode::MirrorDown,
+            ..stored.clone()
+        };
+
+        assert_eq!(relation_problem(&download), None);
+        assert_eq!(
+            relation_problem(&mirror_down).as_deref(),
+            None,
+            "a mirror pulls: the debounce does not matter"
+        );
+        let upload = Behavior {
+            mode: SyncMode::Upload,
+            ..stored.clone()
+        };
+        assert!(lowered_safety(&upload).is_empty());
+        assert_eq!(lowered_safety(&download), ["versions"]);
+        assert_eq!(lowered_safety(&mirror_down), ["versions", "max_delete"]);
+        assert!(relation_problem(&stored).is_some());
     }
 
     #[test]

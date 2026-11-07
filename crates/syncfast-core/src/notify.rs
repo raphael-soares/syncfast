@@ -113,6 +113,22 @@ impl Alert {
     }
 }
 
+/// Why a round stopped for deleting too much. A mirror says what it had
+/// already deleted (`detail`): `--max-delete` removes files up to the cap
+/// before it stops.
+pub(crate) fn too_many_deletes_text(behavior: &Behavior, detail: &str) -> String {
+    let percent = behavior.max_delete;
+    if !behavior.mode.is_mirror() {
+        return format!("More than {percent}% of the files would be deleted.");
+    }
+    let done = if detail.is_empty() {
+        "Nothing was deleted yet."
+    } else {
+        detail
+    };
+    format!("The mirror would delete more than {percent}% of the files. {done}")
+}
+
 #[must_use]
 pub fn notice(pair: &Pair, behavior: &Behavior, alert: &Alert) -> Notice {
     let name = &pair.name;
@@ -141,8 +157,8 @@ pub fn notice(pair: &Pair, behavior: &Behavior, alert: &Alert) -> Notice {
             GateKind::TooManyDeletes => (
                 format!("{name}: many deletions"),
                 format!(
-                    "More than {}% of the files would be deleted. Review before continuing.",
-                    behavior.max_delete
+                    "{} Review before continuing.",
+                    too_many_deletes_text(behavior, detail)
                 ),
             ),
             GateKind::AllFilesChanged => (
@@ -447,6 +463,31 @@ mod tests {
         assert_eq!(
             notice.body,
             "More than 20% of the files would be deleted. Review before continuing."
+        );
+    }
+
+    #[test]
+    fn a_stopped_mirror_says_what_it_had_already_deleted() {
+        let behavior = Behavior {
+            mode: crate::behavior::SyncMode::MirrorUp,
+            max_delete: 20,
+            ..Behavior::default()
+        };
+        let partial =
+            "2 files were already deleted before the stop. Versions are off, so they are not kept.";
+
+        let with = notice(&pair(), &behavior, &gate(GateKind::TooManyDeletes, partial));
+        let without = notice(&pair(), &behavior, &gate(GateKind::TooManyDeletes, ""));
+
+        assert_eq!(
+            with.body,
+            format!(
+                "The mirror would delete more than 20% of the files. {partial} Review before continuing."
+            )
+        );
+        assert_eq!(
+            without.body,
+            "The mirror would delete more than 20% of the files. Nothing was deleted yet. Review before continuing."
         );
     }
 

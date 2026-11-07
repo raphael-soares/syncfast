@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
 use jiff::{SignedDuration, Timestamp, Zoned};
-use syncfast_core::behavior::ReviewLevel;
+use syncfast_core::behavior::{ReviewLevel, SyncMode};
 use syncfast_core::bisync::{Fault, Outcome, ReviewKind, RoundMode};
 use syncfast_core::bisync_log::ChangeKind;
 use syncfast_core::network::{BoxFuture, Network};
@@ -172,6 +172,7 @@ impl Bed {
         ConfirmMarker {
             kind,
             filters_hash: reviewed.filters_hash,
+            mode: SyncMode::Bisync,
         }
         .save(&self.paths, PAIR)
         .await
@@ -229,6 +230,7 @@ impl Bed {
         ConfirmMarker {
             kind: ReviewKind::Resync,
             filters_hash: reviewed.filters_hash,
+            mode: SyncMode::Bisync,
         }
         .save(&self.paths, PAIR)
         .await
@@ -348,6 +350,7 @@ async fn first_round_waits_for_review_then_a_confirmed_resync_equalizes_both_sid
     ConfirmMarker {
         kind: ReviewKind::Resync,
         filters_hash: reviewed.filters_hash,
+        mode: SyncMode::Bisync,
     }
     .save(&bed.paths, PAIR)
     .await
@@ -568,6 +571,7 @@ async fn deleting_most_files_locally_stops_at_the_gate_until_a_forced_round_is_c
     ConfirmMarker {
         kind: ReviewKind::Force,
         filters_hash: reviewed.filters_hash,
+        mode: SyncMode::Bisync,
     }
     .save(&bed.paths, PAIR)
     .await
@@ -654,6 +658,7 @@ async fn editing_the_only_file_stops_at_the_gate_until_a_forced_round_is_confirm
     ConfirmMarker {
         kind: ReviewKind::Force,
         filters_hash: reviewed.filters_hash,
+        mode: SyncMode::Bisync,
     }
     .save(&bed.paths, PAIR)
     .await
@@ -1399,6 +1404,7 @@ async fn marker_with_an_old_filters_hash_is_discarded_and_the_gate_holds() {
     ConfirmMarker {
         kind: ReviewKind::Resync,
         filters_hash: "hash-of-other-filters".to_owned(),
+        mode: SyncMode::Bisync,
     }
     .save(&bed.paths, PAIR)
     .await

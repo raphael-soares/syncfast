@@ -27,6 +27,8 @@ static CLOCK: fn() -> Zoned = Zoned::now;
 #[derive(Debug, Serialize, Deserialize)]
 struct StoredReview {
     kind: ReviewKind,
+    #[serde(default)]
+    mode: SyncMode,
     filters_hash: String,
     shown: Timestamp,
     changes: Vec<Change>,
@@ -103,6 +105,7 @@ impl Ops {
         let found = preview(&env, id, kind).await?;
         let stored = StoredReview {
             kind,
+            mode: behavior.mode,
             filters_hash: found.filters_hash,
             shown: Timestamp::now(),
             changes: found.summary.changes,
@@ -178,7 +181,7 @@ impl Ops {
         filters_hash: &str,
         wait: Duration,
     ) -> Result<ConfirmedReview, OpError> {
-        let pair = self.find_pair(id).await?;
+        let (pair, behavior) = self.find_pair_and_behavior(id).await?;
         let state = load_state(self, id).await;
         let Some(kind) = state.gate.and_then(|gate| review_kind(gate.kind)) else {
             return Err(OpError::Invalid(
@@ -206,8 +209,14 @@ impl Ops {
                     .to_owned(),
             ));
         }
+        if shown.mode != behavior.mode {
+            return Err(OpError::ReviewNotShown(
+                "the sync mode changed after the review was shown; show it again".to_owned(),
+            ));
+        }
         ConfirmMarker {
             kind,
+            mode: behavior.mode,
             filters_hash: shown.filters_hash,
         }
         .save(&self.paths, id)

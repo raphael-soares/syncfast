@@ -248,11 +248,14 @@ impl State {
 }
 
 /// What the user confirmed in the review. The GUI writes it; the next run
-/// consumes it, but only while `filters_hash` still matches the filters.
+/// consumes it, but only while `filters_hash` still matches the filters and
+/// the sync still has the `mode` it was reviewed in.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConfirmMarker {
     pub kind: ReviewKind,
     pub filters_hash: String,
+    #[serde(default)]
+    pub mode: SyncMode,
 }
 
 impl ConfirmMarker {
@@ -384,23 +387,33 @@ pub(crate) fn try_lock(paths: &Paths, path: PathBuf) -> Result<Option<File>, Sta
 
 /// Keeps the [`RUNS_KEPT`] newest `.jsonl` logs in the pair's `runs/`
 /// folder (names are timestamps, so the highest names are the newest) and
-/// deletes the rest, then the preview logs older than [`PREVIEWS_KEPT`]. A
-/// log that cannot be deleted is a warning, not a stop. A missing folder is
-/// fine.
+/// deletes the rest with the `.changes` report of each, then the preview
+/// logs older than [`PREVIEWS_KEPT`]. A file that cannot be deleted is a
+/// warning, not a stop. A missing folder is fine.
 ///
 /// # Errors
 /// The runs folder cannot be listed.
 pub async fn prune_runs(paths: &Paths, pair_id: &str) -> Result<(), StateError> {
     let dir = paths.runs_dir(pair_id);
-    let mut names: Vec<OsString> = file_names(&dir)
-        .await?
-        .into_iter()
-        .filter(|name| is_jsonl(name))
-        .collect();
-    names.sort();
-    let excess = names.len().saturating_sub(RUNS_KEPT);
-    for name in names.into_iter().take(excess) {
+    let files = file_names(&dir).await?;
+    let mut logs: Vec<&OsString> = files.iter().filter(|name| is_jsonl(name)).collect();
+    logs.sort();
+    let excess = logs.len().saturating_sub(RUNS_KEPT);
+    for name in logs.drain(..excess) {
         remove_or_warn(&dir.join(name)).await;
+    }
+    let kept: Vec<&str> = logs
+        .iter()
+        .filter_map(|name| name.to_str()?.strip_suffix(".jsonl"))
+        .collect();
+    for name in &files {
+        let stem = name
+            .to_str()
+            .filter(|text| text.ends_with(".changes"))
+            .and_then(|text| text.split('.').next());
+        if stem.is_some_and(|stem| !kept.contains(&stem)) {
+            remove_or_warn(&dir.join(name)).await;
+        }
     }
     prune_previews(&paths.pair_state_dir(pair_id)).await;
     Ok(())
@@ -770,11 +783,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_marker_written_before_the_modes_existed_is_a_bisync_marker() {
+        let (_dir, paths) = temp_paths();
+        let file = paths.confirm_file("drive");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, r#"{"kind":"resync","filters_hash":"f00"}"#).unwrap();
+
+        let loaded = ConfirmMarker::load(&paths, "drive").await.unwrap().unwrap();
+
+        assert_eq!(loaded.mode, SyncMode::Bisync);
+    }
+
+    #[tokio::test]
     async fn the_marker_round_trips_and_is_removed() {
         let (_dir, paths) = temp_paths();
         let marker = ConfirmMarker {
             kind: ReviewKind::Force,
             filters_hash: "f00".into(),
+            mode: SyncMode::MirrorUp,
         };
 
         assert_eq!(ConfirmMarker::load(&paths, "drive").await.unwrap(), None);
@@ -787,7 +813,7 @@ mod tests {
         assert_eq!(loaded, Some(marker));
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&text).unwrap(),
-            serde_json::json!({ "kind": "force", "filters_hash": "f00" })
+            serde_json::json!({ "kind": "force", "filters_hash": "f00", "mode": "mirror_up" })
         );
         assert_eq!(after, None);
     }
@@ -963,6 +989,22 @@ mod tests {
         prune_runs(&paths, "drive").await.unwrap();
 
         assert_eq!(run_names(&paths).len(), 50);
+    }
+
+    #[tokio::test]
+    async fn a_pruned_run_takes_its_changes_report_with_it() {
+        let (_dir, paths) = temp_paths();
+        make_runs(&paths, 51);
+        let runs = paths.runs_dir("drive");
+        for stamp in ["20260101-000000", "20260101-000001", "20260101-000050"] {
+            std::fs::write(runs.join(format!("{stamp}.mirror_up.changes")), "+ a\n").unwrap();
+        }
+
+        prune_runs(&paths, "drive").await.unwrap();
+
+        assert!(!runs.join("20260101-000000.mirror_up.changes").exists());
+        assert!(runs.join("20260101-000001.mirror_up.changes").exists());
+        assert!(runs.join("20260101-000050.mirror_up.changes").exists());
     }
 
     #[tokio::test]

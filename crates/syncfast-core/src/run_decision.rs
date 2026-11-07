@@ -72,7 +72,8 @@ pub fn decide(input: &DecideInput<'_>) -> Decision {
     }
     let mode_changed =
         input.applied_filters_hash.is_some() && input.applied_mode != Some(input.mode);
-    let resync_confirmed = input.marker.is_some_and(|marker| {
+    let confirmed = input.marker.filter(|marker| marker.mode == input.mode);
+    let resync_confirmed = confirmed.is_some_and(|marker| {
         marker.kind == ReviewKind::Resync && marker.filters_hash == input.current_filters_hash
     });
     let gate = match input.gate {
@@ -104,9 +105,8 @@ pub fn decide(input: &DecideInput<'_>) -> Decision {
     if !input.online {
         return Decision::Skip(SkipReason::Offline);
     }
-    if let Some(marker) = input
-        .marker
-        .filter(|marker| marker.filters_hash == input.current_filters_hash)
+    if let Some(marker) =
+        confirmed.filter(|marker| marker.filters_hash == input.current_filters_hash)
     {
         match (marker.kind, gate) {
             (ReviewKind::Resync, Some(kind)) if kind.is_needs_review() => {
@@ -196,7 +196,37 @@ mod tests {
         ConfirmMarker {
             kind,
             filters_hash: hash.to_owned(),
+            mode: SyncMode::Bisync,
         }
+    }
+
+    #[test]
+    fn a_confirmation_given_for_another_mode_is_ignored_and_dropped() {
+        let held = marker(ReviewKind::Resync, HASH);
+        let decision = decide(&DecideInput {
+            gate: Some(GateKind::NeedsReviewModeChanged),
+            mode: SyncMode::MirrorUp,
+            applied_mode: Some(SyncMode::Bisync),
+            marker: Some(&held),
+            ..input()
+        });
+
+        assert_eq!(decision, Decision::Skip(SkipReason::Gated));
+        assert!(decision.discards_marker());
+    }
+
+    #[test]
+    fn a_confirmation_given_for_the_current_mode_runs_the_review() {
+        let held = marker(ReviewKind::Resync, HASH);
+        let decision = decide(&DecideInput {
+            gate: Some(GateKind::NeedsReviewModeChanged),
+            mode: SyncMode::Bisync,
+            applied_mode: Some(SyncMode::MirrorUp),
+            marker: Some(&held),
+            ..input()
+        });
+
+        assert_eq!(decision, Decision::Run(RoundMode::Resync));
     }
 
     #[test]
@@ -569,7 +599,10 @@ mod tests {
 
     #[test]
     fn a_confirmed_mode_review_runs_as_resync() {
-        let confirmed = marker(ReviewKind::Resync, HASH);
+        let confirmed = ConfirmMarker {
+            mode: SyncMode::MirrorDown,
+            ..marker(ReviewKind::Resync, HASH)
+        };
 
         let decision = decide(&DecideInput {
             gate: Some(GateKind::NeedsReviewModeChanged),
@@ -598,7 +631,10 @@ mod tests {
 
     #[test]
     fn an_attention_gate_after_a_confirmed_mode_review_resumes_it() {
-        let confirmed = marker(ReviewKind::Resync, HASH);
+        let confirmed = ConfirmMarker {
+            mode: SyncMode::MirrorUp,
+            ..marker(ReviewKind::Resync, HASH)
+        };
         let attention = DecideInput {
             gate: Some(GateKind::NeedsAttention),
             mode: SyncMode::MirrorUp,

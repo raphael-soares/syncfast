@@ -4,10 +4,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::behavior::SyncMode;
 use crate::bisync::{Outcome, classify};
 use crate::bisync_log::{LogLine, RunSummary, parse_log, summarize};
 use crate::notify::last_error_message;
+use crate::oneway::{classify_oneway, exit_code_from_log, mode_of_changes_file, summarize_oneway};
 use crate::paths::Paths;
+use crate::run::read_changes;
 use crate::state::{AutoReviewed, DisplayStatus, LastRun, RUNS_KEPT, State};
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, Zoned};
@@ -60,6 +63,21 @@ struct Known<'a> {
     in_progress: bool,
     /// The exit code and workdir, kept only for the sync's latest round.
     last: Option<(i32, &'a Path)>,
+    /// The report of a one-way round, which is read with `classify_oneway`
+    /// and `summarize_oneway` instead of the bisync readers.
+    one_way: Option<OneWay>,
+}
+
+struct OneWay {
+    mode: SyncMode,
+    changes: String,
+}
+
+impl Known<'_> {
+    fn one_way_exit_code(&self, lines: &[LogLine]) -> i32 {
+        self.last
+            .map_or_else(|| exit_code_from_log(lines), |(code, _)| code)
+    }
 }
 
 #[derive(Deserialize)]
@@ -96,10 +114,11 @@ fn status_and_detail(
     if known.in_progress {
         return (DisplayStatus::Syncing, None);
     }
-    let outcome = match known.last {
-        Some((code, workdir)) => classify(code, lines, workdir),
-        None if summary.conflicts_new.is_some() => Outcome::Ok,
-        None => classify(EXIT_NOT_CRITICAL, lines, Path::new("")),
+    let outcome = match (&known.one_way, known.last) {
+        (Some(_), _) => classify_oneway(known.one_way_exit_code(lines), lines),
+        (None, Some((code, workdir))) => classify(code, lines, workdir),
+        (None, None) if summary.conflicts_new.is_some() => Outcome::Ok,
+        (None, None) => classify(EXIT_NOT_CRITICAL, lines, Path::new("")),
     };
     let detail = (outcome != Outcome::Ok)
         .then(|| last_error_message(lines).map(str::to_owned))
@@ -109,7 +128,14 @@ fn status_and_detail(
 
 fn entry(file_name: &str, text: &str, known: &Known<'_>) -> RunEntry {
     let lines = parse_log(text);
-    let summary = summarize(&lines);
+    let summary = match &known.one_way {
+        Some(one_way) if !known.in_progress => summarize_oneway(
+            &one_way.changes,
+            one_way.mode,
+            known.one_way_exit_code(&lines),
+        ),
+        _ => summarize(&lines),
+    };
     let mut raw = text.lines().filter(|line| !line.trim().is_empty());
     let first = time_of(raw.next());
     let last = time_of(text.lines().rev().find(|line| !line.trim().is_empty()));
@@ -140,23 +166,42 @@ fn entry(file_name: &str, text: &str, known: &Known<'_>) -> RunEntry {
     }
 }
 
-async fn log_names(runs: &Path) -> Vec<String> {
+async fn dir_names(runs: &Path) -> Vec<String> {
     let Ok(mut entries) = tokio::fs::read_dir(runs).await else {
         return Vec::new();
     };
     let mut names = Vec::new();
     while let Ok(Some(item)) = entries.next_entry().await {
-        let name = item.file_name().to_string_lossy().into_owned();
-        if Path::new(&name)
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"))
-        {
-            names.push(name);
-        }
+        names.push(item.file_name().to_string_lossy().into_owned());
     }
-    names.sort_unstable_by(|a, b| b.cmp(a));
-    names.truncate(RUNS_KEPT);
     names
+}
+
+fn log_names(names: &[String]) -> Vec<&str> {
+    let mut logs: Vec<&str> = names
+        .iter()
+        .map(String::as_str)
+        .filter(|name| {
+            Path::new(name)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"))
+        })
+        .collect();
+    logs.sort_unstable_by(|a, b| b.cmp(a));
+    logs.truncate(RUNS_KEPT);
+    logs
+}
+
+/// The report a one-way round kept next to `log`, `<stamp>.<mode>.changes`.
+async fn one_way_of(runs: &Path, names: &[String], log: &str) -> Option<OneWay> {
+    let stem = log.strip_suffix(".jsonl")?;
+    let name = names
+        .iter()
+        .find(|name| name.starts_with(stem) && mode_of_changes_file(name).is_some())?;
+    Some(OneWay {
+        mode: mode_of_changes_file(name)?,
+        changes: read_changes(&runs.join(name)).await,
+    })
 }
 
 /// The log's text. Past [`LOG_BYTES_KEPT`] it is the first line (for the
@@ -208,7 +253,8 @@ pub async fn load(paths: &Paths, pair_id: &str, running: bool) -> Arc<[RunEntry]
     let state = State::load(paths, pair_id).await.ok();
     let workdir: PathBuf = paths.bisync_workdir(pair_id);
     let mut entries = Vec::new();
-    for (index, name) in log_names(&runs).await.iter().enumerate() {
+    let names = dir_names(&runs).await;
+    for (index, name) in log_names(&names).into_iter().enumerate() {
         let text = match read_log(&runs.join(name)).await {
             Ok(text) => text,
             Err(err) => {
@@ -224,6 +270,7 @@ pub async fn load(paths: &Paths, pair_id: &str, running: bool) -> Arc<[RunEntry]
         let known = Known {
             in_progress: running && index == 0 && last.is_none(),
             last,
+            one_way: one_way_of(&runs, &names, name).await,
         };
         let mut run = entry(name, &text, &known);
         run.auto_reviewed = latest.and_then(|last| last.auto_reviewed);
@@ -255,6 +302,7 @@ mod tests {
         Known {
             in_progress: false,
             last: None,
+            one_way: None,
         }
     }
 
@@ -281,6 +329,7 @@ mod tests {
         let known = Known {
             in_progress: false,
             last: Some((EXIT_NOT_CRITICAL, Path::new(""))),
+            one_way: None,
         };
 
         let run = entry("a.jsonl", log, &known);
@@ -293,6 +342,7 @@ mod tests {
         let known = Known {
             in_progress: true,
             last: None,
+            one_way: None,
         };
 
         let run = entry("a.jsonl", FAILED, &known);
@@ -425,6 +475,71 @@ mod tests {
         );
         let cap = usize::try_from(LOG_BYTES_KEPT).unwrap();
         assert!(text.len() <= cap + line.len());
+    }
+
+    fn keep_round(paths: &Paths, stamp: &str, mode: &str, fixture: &str) {
+        use crate::bisync_log::fixtures::fixture_path;
+        let dir = paths.runs_dir("p");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::copy(
+            fixture_path(&format!("{fixture}.jsonl")),
+            dir.join(format!("{stamp}.jsonl")),
+        )
+        .unwrap();
+        std::fs::copy(
+            fixture_path(&format!("{fixture}.changes")),
+            dir.join(format!("{stamp}.{mode}.changes")),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_good_one_way_round_is_up_to_date_with_its_counters() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        keep_round(&paths, "20261107-163613", "mirror_up", "oneway_sync_delete");
+
+        let runs = load(&paths, "p", false).await;
+
+        assert_eq!(runs[0].status, DisplayStatus::UpToDate);
+        assert_eq!(runs[0].detail, None);
+        assert_eq!(
+            (
+                runs[0].summary.uploaded,
+                runs[0].summary.deleted_remote,
+                runs[0].summary.deleted_local
+            ),
+            (Some(3), Some(1), Some(0))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_one_way_round_stopped_by_the_delete_cap_needs_review_without_counters() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        keep_round(
+            &paths,
+            "20261107-163700",
+            "mirror_down",
+            "oneway_sync_max_delete",
+        );
+
+        let runs = load(&paths, "p", false).await;
+
+        assert_eq!(runs[0].status, DisplayStatus::NeedsReview);
+        assert_eq!(runs[0].summary.deleted_local, None);
+        assert_eq!(runs[0].summary.changes.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_one_way_round_that_failed_is_retrying() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        keep_round(&paths, "20261107-163800", "upload", "oneway_sync_errors");
+
+        let runs = load(&paths, "p", false).await;
+
+        assert_eq!(runs[0].status, DisplayStatus::Retrying);
     }
 
     #[tokio::test]

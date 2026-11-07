@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::behavior::Behavior;
+use crate::behavior::{Behavior, SyncMode};
 use crate::bisync::{ReviewKind, RoundMode, bisync_args, log_file};
 use crate::bisync_log::{Change, ChangeKind, RunSummary, summarize};
 use crate::config::Pair;
@@ -23,6 +23,8 @@ pub struct Preview {
     /// Hash of the filters the preview ran with; the confirmation marker
     /// carries it so a later filter change voids the confirmation.
     pub filters_hash: String,
+    /// The mode the preview ran in; the confirmation is only good for it.
+    pub mode: SyncMode,
     /// Folders the `git_repos` preset left out of the dry run.
     pub excluded_repos: Vec<String>,
     pub summary: RunSummary,
@@ -181,7 +183,7 @@ pub(crate) async fn preview_locked(
     let now = fresh_start(env.paths, pair_id, mode, env.now());
     let log_path = log_file(env.paths, pair_id, mode, &now);
     let one_way = behavior.mode.is_one_way();
-    let changes_path = oneway::changes_file(env.paths, pair_id, mode, &now);
+    let changes_path = oneway::changes_file(env.paths, pair_id, mode, behavior.mode, &now);
     let args = if one_way {
         oneway_args(pair, behavior, env.paths, mode, 0, &now)
     } else {
@@ -209,6 +211,7 @@ pub(crate) async fn preview_locked(
         summarize(&lines)
     };
     Ok(Preview {
+        mode: behavior.mode,
         filters_hash: filters_file.hash.clone(),
         excluded_repos: filters_file.git_repos.clone(),
         summary,
@@ -306,6 +309,7 @@ mod tests {
     #[test]
     fn report_serializes_hash_changes_and_counts() {
         let preview = Preview {
+            mode: SyncMode::Bisync,
             filters_hash: "abc".to_owned(),
             excluded_repos: vec!["a/repo".to_owned()],
             summary: RunSummary {

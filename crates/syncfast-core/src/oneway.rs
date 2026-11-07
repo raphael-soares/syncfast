@@ -25,7 +25,6 @@ pub const REMOTE_VERSIONS_DIR: &str = ".syncfast-versions";
 
 const STATS_INTERVAL: &str = "2s";
 const TOO_MANY_DELETES: &str = "--max-delete threshold reached";
-const FATAL_DELETE: &str = "Got fatal error on delete";
 
 /// `<account>:.syncfast-versions/<id>`: where the remote versions of a
 /// `mirror_up` sync live. `None` for a remote without an account.
@@ -35,11 +34,32 @@ pub fn remote_versions_dir(remote: &str, id: &str) -> Option<String> {
     Some(format!("{account}:{REMOTE_VERSIONS_DIR}/{id}"))
 }
 
-/// Where `--combined` writes the report of the run: next to its log, with
-/// the same stamp.
+/// Where `--combined` writes the report of the run. A real run keeps it
+/// next to its log, named after the log and the mode (Activity reads the
+/// round from it); a dry run's report is deleted with its preview.
 #[must_use]
-pub fn changes_file(paths: &Paths, pair_id: &str, mode: RoundMode, now: &Zoned) -> PathBuf {
-    log_file(paths, pair_id, mode, now).with_extension("changes")
+pub fn changes_file(
+    paths: &Paths,
+    pair_id: &str,
+    mode: RoundMode,
+    sync_mode: SyncMode,
+    now: &Zoned,
+) -> PathBuf {
+    let log = log_file(paths, pair_id, mode, now);
+    match mode {
+        RoundMode::DryRun(_) => log.with_extension("changes"),
+        RoundMode::Normal | RoundMode::Resync | RoundMode::Force => {
+            log.with_extension(format!("{}.changes", sync_mode.name()))
+        }
+    }
+}
+
+/// The mode a kept report belongs to, from its file name
+/// (`<stamp>.<mode>.changes`).
+#[must_use]
+pub fn mode_of_changes_file(name: &str) -> Option<SyncMode> {
+    let stem = name.strip_suffix(".changes")?;
+    SyncMode::from_name(stem.rsplit_once('.')?.1)
 }
 
 /// How many files a `sync` may delete before rclone stops: `max_delete`
@@ -101,7 +121,7 @@ pub fn oneway_args(
     }
     args.extend([
         "--combined".into(),
-        changes_file(paths, id, mode, now).into_os_string(),
+        changes_file(paths, id, mode, behavior.mode, now).into_os_string(),
     ]);
     args.extend(bwlimit_args(behavior));
     args.extend([
@@ -149,10 +169,7 @@ pub fn classify_oneway(exit_code: i32, lines: &[LogLine]) -> Outcome {
     if failure_msgs(lines).any(|msg| fault_of(msg) == Some(Fault::Auth)) {
         return Outcome::AuthError;
     }
-    if exit_code == EXIT_CRITICAL
-        && failure_msgs(lines)
-            .any(|msg| msg.contains(TOO_MANY_DELETES) || msg.contains(FATAL_DELETE))
-    {
+    if exit_code == EXIT_CRITICAL && failure_msgs(lines).any(|msg| msg.contains(TOO_MANY_DELETES)) {
         return Outcome::TooManyDeletes;
     }
     if let Some((fault, msg)) = failure_msgs(lines).find_map(|msg| fault_of(msg).map(|f| (f, msg)))
@@ -245,6 +262,55 @@ pub fn files_at_destination(changes: &str) -> u64 {
         .filter(|(symbol, path)| matches!(symbol, '=' | '+' | '*') && !failed.contains(path))
         .count();
     u64::try_from(present).unwrap_or(u64::MAX)
+}
+
+/// What a mirror stopped by `--max-delete` had already deleted, as a
+/// sentence: rclone deletes files up to the cap and then stops. Empty when
+/// nothing was deleted or the mode never deletes.
+#[must_use]
+pub fn deleted_before_stop(changes: &str, mode: SyncMode, versions: bool) -> String {
+    if !mode.is_mirror() {
+        return String::new();
+    }
+    let failed: HashSet<&str> = entries(changes)
+        .filter(|(symbol, _)| *symbol == '!')
+        .map(|(_, path)| path)
+        .collect();
+    let deleted = entries(changes)
+        .filter(|(symbol, path)| *symbol == '-' && !failed.contains(path))
+        .count();
+    if deleted == 0 {
+        return String::new();
+    }
+    let (noun, kept) = (
+        if deleted == 1 {
+            "file was"
+        } else {
+            "files were"
+        },
+        match (versions, mode) {
+            (false, _) => "Versions are off, so deleted files are not kept.".to_owned(),
+            (true, SyncMode::MirrorUp) => {
+                format!("Deleted files are kept in {REMOTE_VERSIONS_DIR} on the account.")
+            }
+            (true, _) => "Deleted files are kept in the versions folder of this sync.".to_owned(),
+        },
+    );
+    format!("{deleted} {noun} already deleted before the stop. {kept}")
+}
+
+/// The exit code of an older round, which `state.json` no longer keeps: 0
+/// when its log has no failure, rclone's critical code when `--max-delete`
+/// stopped it and the not-critical one otherwise.
+#[must_use]
+pub fn exit_code_from_log(lines: &[LogLine]) -> i32 {
+    if failure_msgs(lines).next().is_none() {
+        0
+    } else if failure_msgs(lines).any(|msg| msg.contains(TOO_MANY_DELETES)) {
+        EXIT_CRITICAL
+    } else {
+        1
+    }
 }
 
 /// Deletes the dated folders of the remote versions of `pair` that are older
@@ -340,7 +406,13 @@ mod tests {
 
     const FILTERS: &str = "/s/syncfast/filters/drive.txt";
     const RUN_LOG: &str = "/s/syncfast/pairs/drive/runs/20260102-150405.jsonl";
-    const RUN_CHANGES: &str = "/s/syncfast/pairs/drive/runs/20260102-150405.changes";
+    const RUN_CHANGES_UPLOAD: &str = "/s/syncfast/pairs/drive/runs/20260102-150405.upload.changes";
+    const RUN_CHANGES_DOWNLOAD: &str =
+        "/s/syncfast/pairs/drive/runs/20260102-150405.download.changes";
+    const RUN_CHANGES_MIRROR_UP: &str =
+        "/s/syncfast/pairs/drive/runs/20260102-150405.mirror_up.changes";
+    const RUN_CHANGES_MIRROR_DOWN: &str =
+        "/s/syncfast/pairs/drive/runs/20260102-150405.mirror_down.changes";
     const PREVIEW_LOG: &str = "/s/syncfast/pairs/drive/preview-20260102-150405.jsonl";
     const PREVIEW_CHANGES: &str = "/s/syncfast/pairs/drive/preview-20260102-150405.changes";
     const LOCAL_BACKUP: &str = "/d/syncfast/versions/drive/20260102-150405/";
@@ -385,7 +457,7 @@ mod tests {
                 "copy",
                 (LOCAL, REMOTE),
                 &["--create-empty-src-dirs", "--drive-skip-gdocs"],
-                (RUN_CHANGES, RUN_LOG),
+                (RUN_CHANGES_UPLOAD, RUN_LOG),
                 &[],
             )
         );
@@ -406,7 +478,7 @@ mod tests {
                     "--backup-dir",
                     LOCAL_BACKUP,
                 ],
-                (RUN_CHANGES, RUN_LOG),
+                (RUN_CHANGES_DOWNLOAD, RUN_LOG),
                 &[],
             )
         );
@@ -429,7 +501,7 @@ mod tests {
                     "--backup-dir",
                     REMOTE_BACKUP,
                 ],
-                (RUN_CHANGES, RUN_LOG),
+                (RUN_CHANGES_MIRROR_UP, RUN_LOG),
                 &[],
             )
         );
@@ -452,7 +524,7 @@ mod tests {
                     "--backup-dir",
                     LOCAL_BACKUP,
                 ],
-                (RUN_CHANGES, RUN_LOG),
+                (RUN_CHANGES_MIRROR_DOWN, RUN_LOG),
                 &[],
             )
         );
@@ -502,7 +574,7 @@ mod tests {
                         "--backup-dir",
                         LOCAL_BACKUP,
                     ],
-                    (RUN_CHANGES, RUN_LOG),
+                    (RUN_CHANGES_MIRROR_DOWN, RUN_LOG),
                     &[],
                 )
             );
@@ -664,7 +736,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_to_delete_is_too_many_deletes_only_after_a_fatal_exit() {
+    fn only_the_delete_cap_is_too_many_deletes_after_a_fatal_exit() {
         let threshold = failing(
             "error",
             "Got fatal error on delete: --max-delete threshold reached",
@@ -672,7 +744,7 @@ mod tests {
         let fatal = failing("error", "Got fatal error on delete: other");
 
         assert_eq!(classify_oneway(7, &threshold), Outcome::TooManyDeletes);
-        assert_eq!(classify_oneway(7, &fatal), Outcome::TooManyDeletes);
+        assert_ne!(classify_oneway(7, &fatal), Outcome::TooManyDeletes);
         assert_eq!(classify_oneway(1, &threshold), Outcome::Transient);
     }
 
@@ -783,6 +855,62 @@ mod tests {
             ]
         );
         assert_eq!((stopped.uploaded, stopped.deleted_remote), (None, None));
+    }
+
+    #[test]
+    fn what_a_stopped_mirror_deleted_is_said_with_where_it_is_kept() {
+        let stopped = changes("oneway_sync_max_delete");
+
+        assert_eq!(
+            deleted_before_stop(&stopped, SyncMode::MirrorUp, true),
+            "1 file was already deleted before the stop. Deleted files are kept in .syncfast-versions on the account."
+        );
+        assert_eq!(
+            deleted_before_stop(&stopped, SyncMode::MirrorDown, true),
+            "1 file was already deleted before the stop. Deleted files are kept in the versions folder of this sync."
+        );
+        assert_eq!(
+            deleted_before_stop(&stopped, SyncMode::MirrorUp, false),
+            "1 file was already deleted before the stop. Versions are off, so deleted files are not kept."
+        );
+        assert_eq!(deleted_before_stop(&stopped, SyncMode::Upload, true), "");
+        assert_eq!(
+            deleted_before_stop("= a.txt\n", SyncMode::MirrorUp, true),
+            ""
+        );
+        assert!(
+            deleted_before_stop("- a.txt\n- b.txt\n", SyncMode::MirrorUp, true)
+                .starts_with("2 files were")
+        );
+    }
+
+    #[test]
+    fn an_older_round_exit_code_is_read_from_its_log() {
+        assert_eq!(exit_code_from_log(&fixture("oneway_copy_new")), 0);
+        assert_eq!(exit_code_from_log(&fixture("oneway_sync_max_delete")), 7);
+        assert_eq!(exit_code_from_log(&fixture("oneway_sync_errors")), 1);
+    }
+
+    #[test]
+    fn a_real_run_keeps_its_report_named_after_the_mode() {
+        let real = changes_file(&paths(), "p", RoundMode::Normal, SyncMode::MirrorUp, &now());
+        let preview = changes_file(
+            &paths(),
+            "p",
+            RoundMode::DryRun(crate::bisync::ReviewKind::Resync),
+            SyncMode::MirrorUp,
+            &now(),
+        );
+        let real_name = real.file_name().unwrap().to_string_lossy().into_owned();
+
+        assert_eq!(real_name, format!("{}.mirror_up.changes", stamp(&now())));
+        assert_eq!(real.parent(), Some(paths().runs_dir("p").as_path()));
+        assert_eq!(
+            preview.file_name().unwrap().to_string_lossy(),
+            format!("preview-{}.changes", stamp(&now()))
+        );
+        assert_eq!(mode_of_changes_file(&real_name), Some(SyncMode::MirrorUp));
+        assert_eq!(mode_of_changes_file("20261103-134545.changes"), None);
     }
 
     #[test]

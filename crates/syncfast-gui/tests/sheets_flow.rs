@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use syncfast_core::behavior::SyncMode;
 use syncfast_core::bisync::ReviewKind;
 use syncfast_core::bisync_log::RunSummary;
 use syncfast_core::ops::FirstRound;
@@ -47,6 +48,7 @@ fn pair(id: &str, gate: Option<GateKind>) -> PairRow {
 
 fn found(hash: &str) -> Preview {
     Preview {
+        mode: SyncMode::MirrorDown,
         filters_hash: hash.into(),
         excluded_repos: Vec::new(),
         summary: RunSummary::default(),
@@ -140,6 +142,7 @@ fn confirming_a_ready_review_leaves_the_marker_of_that_preview_and_closes_the_sh
         [Command::ConfirmReview {
             pair_id: "notes".into(),
             kind: ReviewKind::Force,
+            mode: SyncMode::MirrorDown,
             filters_hash: "abc123".into()
         }]
     );

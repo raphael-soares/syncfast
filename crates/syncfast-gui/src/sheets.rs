@@ -232,6 +232,7 @@ impl Sheets {
                 let command = Command::ConfirmReview {
                     pair_id: session.pair_id.clone(),
                     kind: review::review_kind(session.gate),
+                    mode: found.mode,
                     filters_hash: found.filters_hash.clone(),
                 };
                 self.current = Current::Closed;

@@ -447,16 +447,23 @@ impl Rclone {
     ///
     /// # Errors
     /// rclone cannot run, cannot list the source or does not answer in time.
-    pub async fn has_files(&self, source: &str, filters: &Path) -> Result<bool, RcloneError> {
-        let args = [
+    pub async fn has_files(
+        &self,
+        source: &str,
+        filters: &Path,
+        skip_gdocs: bool,
+    ) -> Result<bool, RcloneError> {
+        let mut args = vec![
             OsString::from("lsf"),
             "-R".into(),
             "--files-only".into(),
             "--filter-from".into(),
             filters.as_os_str().to_owned(),
-            "--".into(),
-            source.into(),
         ];
+        if skip_gdocs {
+            args.push("--drive-skip-gdocs".into());
+        }
+        args.extend(["--".into(), source.into()]);
         let mut child = self
             .command(args)
             .stdout(Stdio::piped())
@@ -940,7 +947,7 @@ type = local
         let started = std::time::Instant::now();
 
         let found = rclone
-            .has_files("local:", Path::new("filters.txt"))
+            .has_files("local:", Path::new("filters.txt"), false)
             .await
             .unwrap();
 
@@ -954,7 +961,7 @@ type = local
         let rclone = fake_rclone(dir.path(), "exit 0");
 
         let found = rclone
-            .has_files("local:", Path::new("filters.txt"))
+            .has_files("local:", Path::new("filters.txt"), false)
             .await
             .unwrap();
 
@@ -967,7 +974,7 @@ type = local
         let rclone = fake_rclone(dir.path(), "echo 'boom' >&2; exit 3");
 
         let error = rclone
-            .has_files("local:", Path::new("filters.txt"))
+            .has_files("local:", Path::new("filters.txt"), false)
             .await
             .unwrap_err();
 
@@ -980,7 +987,7 @@ type = local
         let rclone = fake_rclone(dir.path(), "echo \"$@\" > \"$0.args\"; exit 0");
 
         rclone
-            .has_files("gdrive:Docs", Path::new("/f/filters.txt"))
+            .has_files("gdrive:Docs", Path::new("/f/filters.txt"), false)
             .await
             .unwrap();
 
@@ -988,6 +995,23 @@ type = local
         assert_eq!(
             args.trim(),
             "lsf -R --files-only --filter-from /f/filters.txt -- gdrive:Docs"
+        );
+    }
+
+    #[tokio::test]
+    async fn has_files_skips_google_docs_when_the_sync_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let rclone = fake_rclone(dir.path(), "echo \"$@\" > \"$0.args\"; exit 0");
+
+        rclone
+            .has_files("gdrive:Docs", Path::new("/f/filters.txt"), true)
+            .await
+            .unwrap();
+
+        let args = std::fs::read_to_string(dir.path().join("fake-rclone.args")).unwrap();
+        assert_eq!(
+            args.trim(),
+            "lsf -R --files-only --filter-from /f/filters.txt --drive-skip-gdocs -- gdrive:Docs"
         );
     }
 

@@ -11,7 +11,7 @@ use rustix::process::{Pid, Signal};
 use tokio::process::Child;
 use tokio::signal::unix::{SignalKind, signal};
 
-use crate::behavior::{Behavior, ReviewLevel, SyncMode};
+use crate::behavior::{Behavior, GoogleDocs, ReviewLevel, SyncMode};
 use crate::bisync::{
     Fault, Outcome, RoundMode, bisync_args, classify, is_empty_prior_listing, log_file, stamp,
 };
@@ -21,7 +21,9 @@ use crate::conflicts::{Naming, find_conflicts};
 use crate::filters::{self, DirMatcher, FiltersError, FiltersFile};
 use crate::network::Network;
 use crate::notify::{Alert, Notice, Notifier, last_error_message, notice};
-use crate::oneway::{self, classify_oneway, files_at_destination, oneway_args, summarize_oneway};
+use crate::oneway::{
+    self, classify_oneway, deleted_before_stop, files_at_destination, oneway_args, summarize_oneway,
+};
 use crate::ops::views::review_kind;
 use crate::paths::Paths;
 use crate::preview::{ChangeCounts, PreviewError, preview_locked};
@@ -610,6 +612,7 @@ async fn check_review(
     }
     let saved = ConfirmMarker {
         kind: review,
+        mode: preview.mode,
         filters_hash: preview.filters_hash,
     };
     saved.save(env.paths, &pair.id).await?;
@@ -641,10 +644,10 @@ struct Ended {
     dest_files: Option<u64>,
 }
 
-/// Reads the `--combined` report of a one-way round and deletes it; a
-/// report that was never written reads as empty.
-pub(crate) async fn take_changes(path: &Path) -> String {
-    let text = match tokio::fs::read_to_string(path).await {
+/// Reads the `--combined` report of a one-way round; a report that was
+/// never written reads as empty.
+pub(crate) async fn read_changes(path: &Path) -> String {
+    match tokio::fs::read_to_string(path).await {
         Ok(text) => text,
         Err(err) => {
             if err.kind() != std::io::ErrorKind::NotFound {
@@ -652,7 +655,12 @@ pub(crate) async fn take_changes(path: &Path) -> String {
             }
             String::new()
         }
-    };
+    }
+}
+
+/// [`read_changes`] for a report nobody reads again: a preview's.
+pub(crate) async fn take_changes(path: &Path) -> String {
+    let text = read_changes(path).await;
     if let Err(err) = tokio::fs::remove_file(path).await
         && err.kind() != std::io::ErrorKind::NotFound
     {
@@ -753,7 +761,15 @@ impl Round<'_> {
         let ended = Ended {
             exit_code,
             alerts,
-            detail: last_error_message(&lines).map(str::to_owned),
+            detail: if matches!(outcome, Outcome::TooManyDeletes) {
+                Some(deleted_before_stop(
+                    &changes,
+                    behavior.mode,
+                    behavior.versions,
+                ))
+            } else {
+                last_error_message(&lines).map(str::to_owned)
+            },
             finished,
             dest_files: behavior
                 .mode
@@ -784,9 +800,10 @@ impl Round<'_> {
         } else {
             pair.remote.clone()
         };
+        let skip_gdocs = self.behavior.google_docs == GoogleDocs::Skip;
         match env
             .rclone
-            .has_files(&source, &env.paths.filters_file(&pair.id))
+            .has_files(&source, &env.paths.filters_file(&pair.id), skip_gdocs)
             .await
         {
             Ok(true) => None,
@@ -848,7 +865,14 @@ impl Round<'_> {
         let exit_code = execute(env.rclone, args, env.forward_signals).await?;
         let lines = read_log_or_empty(&log_path).await;
         let changes = if one_way {
-            take_changes(&oneway::changes_file(env.paths, &pair.id, mode, &stamp)).await
+            read_changes(&oneway::changes_file(
+                env.paths,
+                &pair.id,
+                mode,
+                self.behavior.mode,
+                &stamp,
+            ))
+            .await
         } else {
             String::new()
         };
@@ -905,7 +929,7 @@ impl Round<'_> {
                     .map(|alert| notice(pair, self.behavior, alert))
                     .collect();
             }
-            Outcome::TooManyDeletes => (GateKind::TooManyDeletes, String::new(), None),
+            Outcome::TooManyDeletes => (GateKind::TooManyDeletes, detail.unwrap_or_default(), None),
             Outcome::AllFilesChanged => (GateKind::AllFilesChanged, String::new(), None),
             Outcome::NeedsReview(_) => (
                 GateKind::NeedsReviewCriticalError,

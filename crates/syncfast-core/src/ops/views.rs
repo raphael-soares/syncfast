@@ -11,7 +11,7 @@ use crate::behavior::{Behavior, SyncMode};
 use crate::bisync::ReviewKind;
 use crate::config::Pair;
 use crate::filters;
-use crate::notify::attention_body;
+use crate::notify::{attention_body, too_many_deletes_text};
 use crate::settings::lowered_safety;
 use crate::state::{Gate, GateKind, LastOutcome, State, display_status, is_running};
 use crate::watch::{WATCH_LIMIT_NOTICE, limited_pairs};
@@ -114,6 +114,10 @@ fn explanation(gate: &Gate, behavior: &Behavior) -> String {
         GateKind::NeedsReviewCriticalError => {
             "Sync stopped after an error: review to resume.".to_owned()
         }
+        GateKind::TooManyDeletes if behavior.mode.is_mirror() => format!(
+            "{} Review before continuing.",
+            too_many_deletes_text(behavior, &gate.detail)
+        ),
         GateKind::TooManyDeletes => format!(
             "More than {}% of the files would be deleted: review before continuing.",
             behavior.max_delete

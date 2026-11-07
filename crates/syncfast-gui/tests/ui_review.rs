@@ -1,6 +1,7 @@
 use egui::{Key, Ui};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
+use syncfast_core::behavior::SyncMode;
 use syncfast_core::bisync::ReviewKind;
 use syncfast_core::bisync_log::{Change, ChangeKind, RunSummary};
 use syncfast_core::preview::Preview;
@@ -90,6 +91,7 @@ fn preview(changes: Vec<Change>) -> ReviewPhase {
 
 fn preview_with_repos(changes: Vec<Change>, excluded_repos: Vec<String>) -> ReviewPhase {
     ReviewPhase::Ready(Preview {
+        mode: SyncMode::Bisync,
         filters_hash: "hash".to_owned(),
         excluded_repos,
         summary: RunSummary {
