@@ -96,6 +96,7 @@ pub async fn test_filters(
         enabled: true,
         presets: presets.to_vec(),
         filters: rules.to_vec(),
+        overrides: syncfast_core::settings::Overrides::default(),
     })
     .await;
     let dir = paths.state_dir().join("filters");

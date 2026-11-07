@@ -22,6 +22,8 @@ Every command takes `--json` and then prints one JSON value (errors too: `{"erro
    - The transfer runs detached, so a client timeout never kills it. The command waits up to `--wait` seconds (default 60). When it is still going the answer has `finished: false` and an `id`: `syncfast transfer <id> [--wait N]` reads it later (`running`, `done` or `failed` with the error). A transfer that fails within the wait exits 1.
    - The destination must not exist: it is never overwritten or merged (exit 2). Also refused with exit 2: a source that does not exist, is the root of an account (`gdrive:`), or is or contains the folder of a sync (moving it breaks the pair: `remove` the sync first), and a destination inside the source. Exit 3 when the source or destination is inside the folder of a sync whose round is running.
    - Changing files inside a synced folder is allowed; the next round carries the change to the other side. When it turns into a mass deletion the `too_many_deletes` gate holds the sync for the user.
+7. **Tune.** `syncfast settings --sync notes` lists how a sync behaves: every key with its `value`, its `origin` (`builtin`, `defaults` or `sync`), the `default` it falls back to and `applies`; `lowered_safety` names the keys less safe than the built-in default. Without `--sync` it lists the defaults every sync inherits.
+   - `syncfast settings set <key> <value> [--sync notes]` changes one (`debounce 30s`, `max_delete 20`, `versions true`); without `--sync` it writes `[defaults]`. `syncfast settings reset <key> [--sync notes]` removes the sync's own value, or the changed default. Keys: `watch`, `debounce`, `max_wait`, `interval`, `conflict_resolve`, `conflict_loser`, `versions`, `versions_keep_days`, `max_delete`, `resync_mode`, `empty_dirs`. A wrong key, value or combination exits 2 with the message of the config.
 
 Other commands: `remove <id> [--delete-versions]`, `pause <id>|--all`, `resume <id>|--all`, `filters set <id> [--preset N]... [--no-presets] [--rule R]... [--clear-rules]`, `mkdir remote:folder`, `theme [name]`, `apply`, `agent-guide`.
 
@@ -29,6 +31,7 @@ Other commands: `remove <id> [--delete-versions]`, `pause <id>|--all`, `resume <
 
 - A confirmation needs the `filters_hash` of the review you showed. It is refused (exit 5) when no review was shown, when the hash is not the one shown, or when the filters changed since. Show the review again.
 - Changing filters holds the sync for a new review. A sync held because many files would be deleted (`too_many_deletes`) is for the user to confirm.
+- Settings that lower safety are for the user: a larger `max_delete`, `versions` from true to false and `conflict_loser = delete`, on a sync or in the defaults. Setting one, or resetting a key to a value that is less safe, is refused (exit 4, `This setting lowers safety (<keys>). Change it in syncfast.`) and nothing is written. Lowering `max_delete` or changing a value to a safer one is allowed.
 - There is no flag to confirm a review that deletes files. Do not work around the refusal by editing files in syncfast's state folder.
 - Removing a sync leaves the files on both sides; `--delete-versions` also deletes the saved copies of replaced local files.
 - `copy` and `move` never overwrite or merge, and never touch a folder a running round is working on. Do not work around a refusal with `rclone` or shell commands: they skip these checks.
@@ -42,12 +45,12 @@ Other commands: `remove <id> [--delete-versions]`, `pause <id>|--all`, `resume <
 | 1 | the operation failed (rclone, files, systemd) |
 | 2 | wrong request or config; the message says what to fix |
 | 3 | a round of this sync is running (also for `copy` and `move` inside its folders); try again when it finishes |
-| 4 | the review deletes files: only the user can confirm it |
+| 4 | only the user can do this: confirm a review that deletes files, or lower a safety setting |
 | 5 | no matching review was shown; run `review show` again |
 
 ## MCP
 
-`syncfast mcp` speaks MCP over stdio. Tools: `status`, `show_sync`, `add_sync`, `remove_sync`, `pause_sync`, `resume_sync`, `set_filters`, `test_filters`, `list_accounts`, `list_remote_folders`, `create_remote_folder`, `explore`, `copy`, `move`, `show_transfer`, `sync_now`, `show_review`, `confirm_review`, `list_conflicts`, `resolve_conflict`, `list_activity`, `show_round_log`, `theme`. Errors come back as tool results with `isError` set and the message of the CLI. `copy` and `move` take `source`, `destination`, `dry_run` and `wait_seconds` and answer like the commands; `show_transfer` takes the `id`.
+`syncfast mcp` speaks MCP over stdio. Tools: `status`, `show_sync`, `add_sync`, `remove_sync`, `pause_sync`, `resume_sync`, `set_filters`, `test_filters`, `list_accounts`, `list_remote_folders`, `create_remote_folder`, `explore`, `copy`, `move`, `show_transfer`, `sync_now`, `show_review`, `confirm_review`, `list_conflicts`, `resolve_conflict`, `list_activity`, `show_round_log`, `theme`, `get_settings`, `set_setting`, `reset_setting`. Errors come back as tool results with `isError` set and the message of the CLI. `copy` and `move` take `source`, `destination`, `dry_run` and `wait_seconds` and answer like the commands; `show_transfer` takes the `id`. `get_settings` takes an optional `sync`; `set_setting` takes an optional `sync`, `key` and `value` (a JSON boolean, number or string); `reset_setting` takes an optional `sync` and `key`.
 
 Claude Code:
 

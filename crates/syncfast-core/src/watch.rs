@@ -166,7 +166,7 @@ pub struct WatchEnv {
     pub rclone: Rclone,
     pub trigger: Arc<dyn Trigger>,
     /// The timings (and `watch` switch) of a sync.
-    pub behavior_for: fn(&Pair) -> Behavior,
+    pub behavior_for: fn(&Behavior, &Pair) -> Behavior,
     pub lock_recheck: Duration,
     pub root_recheck: Duration,
 }
@@ -738,9 +738,10 @@ async fn load_pairs(env: &WatchEnv) -> Result<Vec<Watched>, WatchError> {
     let config = Config::load(&env.paths).await?;
     let accounts = env.rclone.listremotes().await?;
     let validation = config.validate(&env.paths, &accounts);
+    let defaults = config.defaults();
     let mut watched = Vec::new();
     for pair in validation.pairs.iter().filter(|pair| pair.enabled) {
-        let behavior = (env.behavior_for)(pair);
+        let behavior = (env.behavior_for)(&defaults, pair);
         if !behavior.watch {
             continue;
         }

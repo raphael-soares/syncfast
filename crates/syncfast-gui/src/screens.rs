@@ -226,6 +226,7 @@ mod tests {
                     enabled: true,
                     presets: Vec::new(),
                     filters: Vec::new(),
+                    overrides: syncfast_core::settings::Overrides::default(),
                 },
                 state: State {
                     conflicts_pending,

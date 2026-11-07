@@ -9,10 +9,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use jiff::Zoned;
+use serde_json::json;
+use syncfast_core::config::{Config, SettingScope};
 use syncfast_core::network::{BoxFuture, Network};
 use syncfast_core::notify::{Notice, Notifier};
 use syncfast_core::ops::{
-    ExploreOptions, Keep, NewSync, OpError, Ops, TransferOptions, TransferStarter, run_transfer,
+    ExploreOptions, Keep, NewSync, OpError, Ops, SettingView, SettingsView, TransferOptions,
+    TransferStarter, run_transfer,
 };
 use syncfast_core::paths::Paths;
 use syncfast_core::rclone::Rclone;
@@ -1090,4 +1093,250 @@ async fn a_transfer_that_outlasts_the_wait_is_read_later_by_its_id() {
     assert_eq!(read(&bed.remote().join("big/a.txt")), "a");
     assert_eq!(unknown.exit_code(), 2);
     assert_eq!(traversal.exit_code(), 2);
+}
+
+async fn user_sets(bed: &Bed, scope: &SettingScope, key: &str, value: &str) {
+    Config::edit(&bed.ops.paths, |config| {
+        config.set_setting(scope, key, value).unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+fn row<'a>(view: &'a SettingsView, key: &str) -> &'a SettingView {
+    view.settings.iter().find(|row| row.key == key).unwrap()
+}
+
+#[tokio::test]
+async fn settings_lists_every_key_with_origin_and_default() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs().await;
+    user_sets(&bed, &SettingScope::Defaults, "debounce", "10s").await;
+    user_sets(&bed, &SettingScope::Sync("docs".into()), "max_delete", "20").await;
+
+    let of_sync = bed.ops.settings(Some("docs")).await.unwrap();
+    let of_defaults = bed.ops.settings(None).await.unwrap();
+
+    assert_eq!(of_sync.scope, "docs");
+    assert_eq!(of_sync.settings.len(), 11);
+    let described = |view: &SettingsView, key: &str| {
+        let row = row(view, key);
+        (row.value.clone(), row.origin, row.default.clone())
+    };
+    assert_eq!(
+        described(&of_sync, "max_delete"),
+        (json!(20), "sync", json!(50))
+    );
+    assert_eq!(
+        described(&of_sync, "debounce"),
+        (json!("10s"), "defaults", json!("10s"))
+    );
+    assert_eq!(
+        described(&of_sync, "interval"),
+        (json!("5m"), "builtin", json!("5m"))
+    );
+    assert_eq!(of_defaults.scope, "defaults");
+    assert_eq!(
+        described(&of_defaults, "debounce"),
+        (json!("10s"), "defaults", json!("30s"))
+    );
+    assert_eq!(
+        described(&of_defaults, "max_delete"),
+        (json!(50), "builtin", json!(50))
+    );
+}
+
+#[tokio::test]
+async fn settings_of_an_unknown_sync_are_not_found() {
+    let Some(bed) = bed() else { return };
+
+    let err = bed.ops.settings(Some("nope")).await.unwrap_err();
+
+    assert!(matches!(err, OpError::NotFound(_)), "{err}");
+}
+
+#[tokio::test]
+async fn set_setting_on_a_sync_writes_an_override_and_reapplies_units() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs().await;
+
+    let changed = bed
+        .ops
+        .set_setting(Some("docs"), "interval", "10m")
+        .await
+        .unwrap();
+
+    assert_eq!(changed.scope, "docs");
+    assert_eq!(changed.setting.value, json!("10m"));
+    assert_eq!(changed.setting.origin, "sync");
+    assert!(changed.warnings.is_empty(), "{:?}", changed.warnings);
+    let config = fs::read_to_string(bed.ops.paths.config_file()).unwrap();
+    assert!(config.contains("interval = \"10m\""), "{config}");
+    let timer = fs::read_to_string(
+        bed.ops
+            .paths
+            .units_preview_dir()
+            .join("syncfast-docs.timer"),
+    )
+    .unwrap();
+    assert!(timer.contains("OnUnitInactiveSec=600s"), "{timer}");
+}
+
+#[tokio::test]
+async fn set_setting_without_a_sync_writes_defaults() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs().await;
+
+    let changed = bed.ops.set_setting(None, "debounce", "10s").await.unwrap();
+
+    assert_eq!(changed.scope, "defaults");
+    let config = fs::read_to_string(bed.ops.paths.config_file()).unwrap();
+    assert!(
+        config.contains("[defaults]\ndebounce = \"10s\""),
+        "{config}"
+    );
+}
+
+#[tokio::test]
+async fn an_invalid_value_is_refused_with_two_and_the_key_message() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs().await;
+    let before = fs::read_to_string(bed.ops.paths.config_file()).unwrap();
+
+    let err = bed
+        .ops
+        .set_setting(None, "debounce", "2s")
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.to_string(), "debounce must be at least 5s");
+    assert_eq!(err.exit_code(), 2);
+    assert_eq!(
+        fs::read_to_string(bed.ops.paths.config_file()).unwrap(),
+        before
+    );
+}
+
+#[tokio::test]
+async fn reset_setting_removes_the_override() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs().await;
+    user_sets(&bed, &SettingScope::Defaults, "max_delete", "30").await;
+    user_sets(&bed, &SettingScope::Sync("docs".into()), "max_delete", "40").await;
+
+    let reset = bed
+        .ops
+        .reset_setting(Some("docs"), "max_delete")
+        .await
+        .unwrap();
+
+    assert_eq!(reset.setting.value, json!(30));
+    assert_eq!(reset.setting.origin, "defaults");
+    let config = fs::read_to_string(bed.ops.paths.config_file()).unwrap();
+    assert!(!config.contains("max_delete = 40"), "{config}");
+}
+
+async fn refused_as_needing_the_user(bed: &Bed, sync: Option<&str>, key: &str, value: &str) {
+    let before = fs::read_to_string(bed.ops.paths.config_file()).unwrap();
+
+    let err = bed.ops.set_setting(sync, key, value).await.unwrap_err();
+
+    assert_eq!(
+        err.to_string(),
+        format!("This setting lowers safety ({key}). Change it in syncfast.")
+    );
+    assert_eq!(err.exit_code(), 4);
+    assert_eq!(
+        fs::read_to_string(bed.ops.paths.config_file()).unwrap(),
+        before,
+        "a refused change writes nothing"
+    );
+}
+
+#[tokio::test]
+async fn an_agent_cannot_raise_max_delete() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs().await;
+
+    refused_as_needing_the_user(&bed, Some("docs"), "max_delete", "60").await;
+    refused_as_needing_the_user(&bed, None, "max_delete", "60").await;
+}
+
+#[tokio::test]
+async fn an_agent_cannot_turn_versions_off() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs().await;
+
+    refused_as_needing_the_user(&bed, Some("docs"), "versions", "false").await;
+    refused_as_needing_the_user(&bed, None, "versions", "false").await;
+}
+
+#[tokio::test]
+async fn an_agent_cannot_set_conflict_loser_delete() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs().await;
+
+    refused_as_needing_the_user(&bed, Some("docs"), "conflict_loser", "delete").await;
+}
+
+#[tokio::test]
+async fn an_agent_can_lower_max_delete() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs().await;
+
+    let changed = bed
+        .ops
+        .set_setting(Some("docs"), "max_delete", "20")
+        .await
+        .unwrap();
+
+    assert_eq!(changed.setting.value, json!(20));
+}
+
+#[tokio::test]
+async fn reset_to_a_less_safe_default_is_refused_for_agents() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs().await;
+    user_sets(&bed, &SettingScope::Defaults, "max_delete", "80").await;
+    user_sets(&bed, &SettingScope::Sync("docs".into()), "max_delete", "10").await;
+    let before = fs::read_to_string(bed.ops.paths.config_file()).unwrap();
+
+    let err = bed
+        .ops
+        .reset_setting(Some("docs"), "max_delete")
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.exit_code(), 4);
+    assert_eq!(
+        fs::read_to_string(bed.ops.paths.config_file()).unwrap(),
+        before
+    );
+}
+
+#[tokio::test]
+async fn an_agent_may_undo_a_change_the_user_made_back_to_the_builtin_default() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs().await;
+    user_sets(&bed, &SettingScope::Defaults, "max_delete", "80").await;
+
+    let reset = bed.ops.reset_setting(None, "max_delete").await.unwrap();
+
+    assert_eq!(reset.setting.value, json!(50));
+}
+
+#[tokio::test]
+async fn lowered_safety_lists_keys_less_safe_than_the_builtin_default() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs().await;
+    user_sets(&bed, &SettingScope::Defaults, "versions", "false").await;
+    user_sets(&bed, &SettingScope::Sync("docs".into()), "max_delete", "70").await;
+
+    let of_defaults = bed.ops.settings(None).await.unwrap();
+    let of_sync = bed.ops.settings(Some("docs")).await.unwrap();
+    let status = bed.ops.status().await.unwrap();
+
+    assert_eq!(of_defaults.lowered_safety, ["versions"]);
+    assert_eq!(of_sync.lowered_safety, ["versions", "max_delete"]);
+    assert_eq!(status[0].lowered_safety, ["versions", "max_delete"]);
 }

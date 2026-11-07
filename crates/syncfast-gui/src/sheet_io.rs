@@ -113,6 +113,7 @@ pub async fn create_sync(paths: &Paths, rclone: &Rclone, new: NewSync) -> Result
         enabled: true,
         presets: new.presets,
         filters: new.filters,
+        overrides: syncfast_core::settings::Overrides::default(),
     };
     config.add_pair(pair.clone()).map_err(|e| e.to_string())?;
     let accounts = rclone.listremotes().await.map_err(|e| e.to_string())?;

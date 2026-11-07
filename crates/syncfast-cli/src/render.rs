@@ -7,7 +7,8 @@ use syncfast_core::bisync_log::ChangeKind;
 use syncfast_core::ops::{
     AccountView, AddedSync, ConfirmedReview, ConflictView, Exploration, FilterTestView,
     FiltersSaved, FolderList, FolderMade, PairDetail, PairView, RemovedSync, Resolved, ReviewView,
-    RoundLog, RoundView, SyncRounds, ThemeInfo, ThemeSet, Toggled, TransferReport,
+    RoundLog, RoundView, SettingChanged, SettingView, SettingsView, SyncRounds, ThemeInfo,
+    ThemeSet, Toggled, TransferReport,
 };
 
 fn day(at: Timestamp) -> String {
@@ -81,6 +82,9 @@ fn sync_block(out: &mut String, sync: &PairView) {
     }
     if let Some(notice) = sync.notice {
         let _ = writeln!(out, "  notice:   {notice}");
+    }
+    if !sync.lowered_safety.is_empty() {
+        let _ = writeln!(out, "  safety lowered: {}", sync.lowered_safety.join(", "));
     }
     let _ = writeln!(out, "  presets:  {}", sync.presets.join(", "));
     for rule in &sync.filters {
@@ -431,4 +435,41 @@ pub fn theme_info(info: &ThemeInfo) -> String {
 
 pub fn theme_set(set: &ThemeSet) -> String {
     format!("Theme set to {}.\n", set.theme)
+}
+
+fn plain(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
+}
+
+fn setting_line(setting: &SettingView) -> String {
+    let mut line = format!(
+        "{}\t{}\t{}",
+        setting.key,
+        plain(&setting.value),
+        setting.origin
+    );
+    if setting.origin != "builtin" {
+        let _ = write!(line, "\t(default {})", plain(&setting.default));
+    }
+    line
+}
+
+pub fn settings(view: &SettingsView) -> String {
+    let mut out = format!("settings of {}\n", view.scope);
+    for setting in &view.settings {
+        let _ = writeln!(out, "{}", setting_line(setting));
+    }
+    if !view.lowered_safety.is_empty() {
+        let _ = writeln!(out, "safety lowered: {}", view.lowered_safety.join(", "));
+    }
+    out
+}
+
+pub fn setting_changed(changed: &SettingChanged) -> String {
+    let mut out = format!("{}\n", setting_line(&changed.setting));
+    warnings(&mut out, &changed.warnings);
+    out
 }

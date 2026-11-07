@@ -24,7 +24,7 @@ const DEBOUNCE: Duration = Duration::from_millis(300);
 const MAX_WAIT: Duration = Duration::from_millis(1200);
 const RECHECK: Duration = Duration::from_millis(100);
 
-fn fast(pair: &Pair) -> Behavior {
+fn fast(_defaults: &Behavior, pair: &Pair) -> Behavior {
     Behavior {
         debounce: DEBOUNCE,
         max_wait: MAX_WAIT,
@@ -92,11 +92,19 @@ async fn start(pairs: &[(&str, bool)], prepare: impl FnOnce(&Bed)) -> Running {
 
 /// Starts the watcher after `prepare` has written the config.
 async fn start_with(prepare: impl FnOnce(&Bed)) -> Running {
+    start_using(fast, prepare).await
+}
+
+/// Starts the watcher with `behavior_for` resolving each sync's behavior.
+async fn start_using(
+    behavior_for: fn(&Behavior, &Pair) -> Behavior,
+    prepare: impl FnOnce(&Bed),
+) -> Running {
     let bed = Bed::new();
     prepare(&bed);
     let recorder = Arc::new(Recorder::default());
     let mut env = WatchEnv::new(bed.paths.clone(), bed.rclone.clone(), recorder.clone());
-    env.behavior_for = fast;
+    env.behavior_for = behavior_for;
     env.lock_recheck = RECHECK;
     env.root_recheck = RECHECK;
     let watcher = Watcher::start(env).await.unwrap();
@@ -369,7 +377,7 @@ async fn config_change_through_a_symlink_is_noticed() {
 #[tokio::test]
 async fn broken_config_keeps_the_previous_watches() {
     let run = start(&[("docs", true)], |_| {}).await;
-    run.bed.write_config_text("version = 2\n");
+    run.bed.write_config_text("version = 3\n");
     sleep(Duration::from_millis(1200)).await;
 
     write(&run.local("docs"), "still.txt");
@@ -582,4 +590,31 @@ async fn systemd_trigger_reports_the_command_and_the_reason_when_systemctl_refus
         err,
         "systemctl --user start --no-block syncfast-docs.service: Unit syncfast-docs.service not found."
     );
+}
+
+#[tokio::test]
+async fn the_config_decides_which_syncs_are_watched_and_how_long_they_wait() {
+    let run = start_using(Behavior::for_pair, |bed| {
+        let mut text = String::from(
+            "version = 2\n\n[defaults]\nwatch = false\ndebounce = \"5s\"\nmax_wait = \"5s\"\n",
+        );
+        text.push_str(&pair_block("off", &bed.local("off"), &bed.remote("off")));
+        text.push_str(&pair_block("on", &bed.local("on"), &bed.remote("on")));
+        text.push_str("watch = true\n");
+        fs::create_dir_all(bed.local("off")).unwrap();
+        fs::create_dir_all(bed.local("on")).unwrap();
+        bed.write_config_text(&text);
+    })
+    .await;
+    let started = Instant::now();
+
+    write(&run.local("off"), "a.txt");
+    write(&run.local("on"), "a.txt");
+    let fired = wait_for_id(&run.recorder, "on", Duration::from_secs(9)).await;
+    let waited = started.elapsed();
+
+    assert!(fired);
+    assert!(waited >= Duration::from_secs(4), "{waited:?}");
+    assert_eq!(triggers_of(&run.recorder, "off"), 0);
+    run.stop().await;
 }

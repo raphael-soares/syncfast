@@ -253,3 +253,150 @@ fn moving_the_folder_of_a_sync_exits_two_and_names_the_sync() {
     );
     assert!(local.join("a.txt").exists());
 }
+
+fn config_text(bed: &common::Bed) -> String {
+    fs::read_to_string(bed.root.join("config/syncfast/config.toml")).unwrap()
+}
+
+#[test]
+fn settings_json_lists_every_key_with_its_origin_and_default() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs();
+
+    let defaults = bed.run(&["settings", "--json"]);
+    let of_sync = bed.run(&["settings", "--sync", "docs", "--json"]);
+
+    assert_eq!(defaults.code, 0, "{}", defaults.stderr);
+    assert_eq!(defaults.json()["scope"], "defaults");
+    assert_eq!(defaults.json()["settings"].as_array().unwrap().len(), 11);
+    assert_eq!(defaults.json()["lowered_safety"], serde_json::json!([]));
+    assert_eq!(of_sync.json()["scope"], "docs");
+    assert_eq!(
+        of_sync.json()["settings"][1],
+        serde_json::json!({
+            "key": "debounce", "value": "30s", "origin": "builtin", "default": "30s", "applies": true
+        })
+    );
+}
+
+#[test]
+fn settings_text_is_one_line_per_key() {
+    let Some(bed) = bed() else { return };
+
+    let run = bed.run(&["settings"]);
+
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(
+        run.stdout.starts_with("settings of defaults\n"),
+        "{}",
+        run.stdout
+    );
+    assert!(
+        run.stdout.contains("\nmax_delete\t50\tbuiltin\n"),
+        "{}",
+        run.stdout
+    );
+}
+
+#[test]
+fn settings_set_writes_defaults_or_the_sync_and_reset_takes_it_back() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs();
+
+    let defaults = bed.run(&["settings", "set", "debounce", "10s", "--json"]);
+    let own = bed.run(&[
+        "settings", "set", "interval", "10m", "--sync", "docs", "--json",
+    ]);
+    let written = config_text(&bed);
+    let reset = bed.run(&["settings", "reset", "interval", "--sync", "docs", "--json"]);
+    let reset_defaults = bed.run(&["settings", "reset", "debounce", "--json"]);
+
+    assert_eq!(defaults.code, 0, "{}", defaults.stderr);
+    assert_eq!(defaults.json()["setting"]["value"], "10s");
+    assert_eq!(own.json()["setting"]["origin"], "sync");
+    assert!(
+        written.contains("[defaults]\ndebounce = \"10s\""),
+        "{written}"
+    );
+    assert!(written.contains("interval = \"10m\""), "{written}");
+    assert_eq!(reset.json()["setting"]["origin"], "builtin");
+    assert_eq!(reset_defaults.json()["setting"]["value"], "30s");
+    let after = config_text(&bed);
+    assert!(
+        !after.contains("debounce =") && !after.contains("interval ="),
+        "{after}"
+    );
+}
+
+#[test]
+fn an_invalid_setting_exits_two_with_the_message_of_the_config() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs();
+    let before = config_text(&bed);
+
+    let run = bed.run(&["settings", "set", "debounce", "2s"]);
+    let json = bed.run(&["settings", "set", "debounce", "2s", "--json"]);
+    let unknown = bed.run(&["settings", "set", "nope", "1"]);
+
+    assert_eq!(run.code, 2);
+    assert_eq!(run.stderr.trim(), "syncfast: debounce must be at least 5s");
+    assert_eq!(json.json()["error"]["code"], "invalid");
+    assert_eq!(unknown.code, 2);
+    assert_eq!(config_text(&bed), before);
+}
+
+#[test]
+fn a_setting_that_lowers_safety_exits_four_and_changes_nothing() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs();
+    let before = config_text(&bed);
+
+    let raise = bed.run(&["settings", "set", "max_delete", "60", "--sync", "docs"]);
+    let versions = bed.run(&["settings", "set", "versions", "false", "--json"]);
+    let lower = bed.run(&[
+        "settings",
+        "set",
+        "max_delete",
+        "20",
+        "--sync",
+        "docs",
+        "--json",
+    ]);
+
+    assert_eq!(raise.code, 4);
+    assert_eq!(
+        raise.stderr.trim(),
+        "syncfast: This setting lowers safety (max_delete). Change it in syncfast."
+    );
+    assert_eq!(versions.code, 4);
+    assert_eq!(versions.json()["error"]["code"], "needs_user");
+    assert_eq!(lower.code, 0, "{}", lower.stderr);
+    assert!(!config_text(&bed).contains("max_delete = 60"));
+    assert_ne!(config_text(&bed), before);
+}
+
+#[test]
+fn show_and_status_report_the_keys_a_user_made_less_safe() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs();
+    let config = config_text(&bed).replace("[[pair]]", "[[pair]]\nmax_delete = 90");
+    write(&bed.root.join("config/syncfast/config.toml"), &config);
+
+    let status = bed.run(&["status", "--json"]);
+    let shown = bed.run(&["show", "docs"]);
+    let settings = bed.run(&["settings", "--sync", "docs", "--json"]);
+
+    assert_eq!(
+        status.json()[0]["lowered_safety"],
+        serde_json::json!(["max_delete"])
+    );
+    assert!(
+        shown.stdout.contains("safety lowered: max_delete"),
+        "{}",
+        shown.stdout
+    );
+    assert_eq!(
+        settings.json()["lowered_safety"],
+        serde_json::json!(["max_delete"])
+    );
+}

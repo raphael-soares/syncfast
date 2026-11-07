@@ -5,7 +5,8 @@ mod mcp;
 mod render;
 
 use args::{
-    Cli, Command, ConflictsCommand, FiltersCommand, Operation, ReviewCommand, TransferArgs,
+    Cli, Command, ConflictsCommand, FiltersCommand, Operation, ReviewCommand, SettingsCommand,
+    TransferArgs,
 };
 
 use std::process::ExitCode;
@@ -283,9 +284,31 @@ async fn operate(operation: Operation, json: bool) -> anyhow::Result<ExitCode> {
         Operation::Theme { name: Some(name) } => {
             emit(json, &ops.set_theme(&name).await?, render::theme_set)
         }
+        Operation::Settings { command, sync } => settings(&ops, command, sync, json).await,
     }
 }
 
+async fn settings(
+    ops: &Ops,
+    command: Option<SettingsCommand>,
+    sync: Option<String>,
+    json: bool,
+) -> anyhow::Result<ExitCode> {
+    let sync = sync.as_deref();
+    match command {
+        None => emit(json, &ops.settings(sync).await?, render::settings),
+        Some(SettingsCommand::Set { key, value }) => emit(
+            json,
+            &ops.set_setting(sync, &key, &value).await?,
+            render::setting_changed,
+        ),
+        Some(SettingsCommand::Reset { key }) => emit(
+            json,
+            &ops.reset_setting(sync, &key).await?,
+            render::setting_changed,
+        ),
+    }
+}
 async fn filters(ops: &Ops, command: FiltersCommand, json: bool) -> anyhow::Result<ExitCode> {
     match command {
         FiltersCommand::Set {

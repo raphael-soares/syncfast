@@ -375,6 +375,7 @@ mod tests {
             enabled: true,
             presets: presets.iter().map(|s| (*s).to_owned()).collect(),
             filters: filters.iter().map(|s| (*s).to_owned()).collect(),
+            overrides: crate::settings::Overrides::default(),
         }
     }
 

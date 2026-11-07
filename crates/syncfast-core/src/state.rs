@@ -554,6 +554,7 @@ mod tests {
             enabled,
             presets: vec![],
             filters: vec![],
+            overrides: crate::settings::Overrides::default(),
         }
     }
 

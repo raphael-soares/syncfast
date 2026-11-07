@@ -139,6 +139,17 @@ impl Bed {
         fs::write(file, text).unwrap();
     }
 
+    /// The same enabled sync with `defaults` as the `[defaults]` table and
+    /// `own` as keys of the sync itself.
+    fn write_behavior(&self, defaults: &str, own: &str) {
+        let text = format!(
+            "version = 2\n\n[defaults]\n{defaults}\n[[pair]]\nid = \"{PAIR}\"\nname = \"Docs\"\nlocal = \"{}\"\nremote = \"testremote:{}\"\n{own}",
+            self.local.display(),
+            self.remote.display(),
+        );
+        fs::write(self.paths.config_file(), text).unwrap();
+    }
+
     /// Makes the pair invalid: its local folder becomes a relative path.
     fn break_config(&self) {
         let text = fs::read_to_string(self.paths.config_file())
@@ -1465,4 +1476,110 @@ async fn failed_preview_reports_the_last_error_and_deletes_its_log() {
         .filter(|name| name.starts_with("preview-"))
         .collect();
     assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+fn ran_ok(mode: Mode) -> RunReport {
+    RunReport::Ran {
+        mode,
+        outcome: Outcome::Ok,
+    }
+}
+
+#[tokio::test]
+async fn a_syncs_own_max_delete_lets_a_mass_deletion_through() {
+    let Some(bed) = bed() else { return };
+    for name in ["a.txt", "b.txt", "c.txt", "d.txt"] {
+        write(&bed.local, name, name);
+    }
+    bed.first_sync().await;
+    bed.write_behavior("", "max_delete = 80\n");
+    for name in ["a.txt", "b.txt", "c.txt"] {
+        fs::remove_file(bed.local.join(name)).unwrap();
+    }
+
+    let report = bed.run().await;
+
+    assert_eq!(report, ran_ok(Mode::Normal));
+    assert_eq!(names(&bed.remote), ["d.txt"]);
+}
+
+#[tokio::test]
+async fn a_defaults_max_delete_applies_to_a_sync_that_sets_none() {
+    let Some(bed) = bed() else { return };
+    for name in ["a.txt", "b.txt", "c.txt", "d.txt"] {
+        write(&bed.local, name, name);
+    }
+    bed.first_sync().await;
+    bed.write_behavior("max_delete = 10\n", "");
+    fs::remove_file(bed.local.join("a.txt")).unwrap();
+
+    let report = bed.run().await;
+
+    assert_eq!(
+        report,
+        RunReport::Ran {
+            mode: Mode::Normal,
+            outcome: Outcome::TooManyDeletes
+        }
+    );
+    assert_eq!(names(&bed.remote), ["a.txt", "b.txt", "c.txt", "d.txt"]);
+}
+
+#[tokio::test]
+async fn a_sync_with_versions_off_keeps_no_old_version() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "a.txt", "version one");
+    write(&bed.local, "untouched.txt", "same");
+    bed.first_sync().await;
+    bed.write_behavior("", "versions = false\n");
+    write(&bed.remote, "a.txt", "version two, longer");
+    set_age(&bed.remote, "a.txt", 0);
+
+    let report = bed.run().await;
+
+    assert_eq!(report, ran_ok(Mode::Normal));
+    assert_eq!(read(&bed.local, "a.txt"), "version two, longer");
+    assert!(bed.versions_holding("a.txt").is_empty());
+}
+
+#[tokio::test]
+async fn a_defaults_conflict_rule_applies_unless_the_sync_sets_its_own() {
+    for (own, local_wins) in [("", true), ("conflict_resolve = \"newer\"\n", false)] {
+        let Some(bed) = bed() else { return };
+        write(&bed.local, "doc.txt", "base");
+        write(&bed.local, "untouched.txt", "same");
+        bed.first_sync().await;
+        bed.write_behavior("conflict_resolve = \"local\"\n", own);
+        write(&bed.local, "doc.txt", "local edit");
+        write(&bed.remote, "doc.txt", "remote edit, newer");
+        set_age(&bed.local, "doc.txt", 3600);
+        set_age(&bed.remote, "doc.txt", 60);
+
+        let report = bed.run().await;
+
+        assert_eq!(report, ran_ok(Mode::Normal));
+        let winner = if local_wins {
+            "local edit"
+        } else {
+            "remote edit, newer"
+        };
+        assert_eq!(read(&bed.local, "doc.txt"), winner);
+        assert_eq!(read(&bed.remote, "doc.txt"), winner);
+    }
+}
+
+#[tokio::test]
+async fn a_sync_that_keeps_versions_longer_does_not_lose_old_ones() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "base.txt", "base");
+    bed.first_sync().await;
+    bed.write_behavior("", "versions_keep_days = 3650\n");
+    let versions = bed.paths.versions_dir(PAIR);
+    write(&versions, "20200101-000000/old.txt", "kept");
+    write(&bed.local, "new.txt", "new");
+
+    let report = bed.run().await;
+
+    assert_eq!(report, ran_ok(Mode::Normal));
+    assert!(versions.join("20200101-000000/old.txt").exists());
 }

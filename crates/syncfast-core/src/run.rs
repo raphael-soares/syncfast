@@ -118,9 +118,9 @@ pub enum RunReport {
 }
 
 pub(crate) enum PairLookup {
-    Valid(Pair),
+    Valid(Pair, Behavior),
     /// The pair as written in the config, and why it cannot run.
-    Invalid(Pair, PairError),
+    Invalid(Pair, PairError, Behavior),
 }
 
 /// Loads the pair's state. A file that is not valid JSON is set aside as
@@ -153,8 +153,10 @@ pub(crate) async fn lookup_pair(env: &RunEnv<'_>, pair_id: &str) -> Result<PairL
     }
     let accounts = env.rclone.listremotes().await?;
     let validation = config.validate(env.paths, &accounts);
+    let defaults = config.defaults();
     if let Some(pair) = validation.pairs.into_iter().find(|pair| pair.id == pair_id) {
-        return Ok(PairLookup::Valid(pair));
+        let behavior = Behavior::for_pair(&defaults, &pair);
+        return Ok(PairLookup::Valid(pair, behavior));
     }
     let written = config.pairs().iter().find(|pair| pair.id == pair_id);
     let error = validation
@@ -162,7 +164,10 @@ pub(crate) async fn lookup_pair(env: &RunEnv<'_>, pair_id: &str) -> Result<PairL
         .into_iter()
         .find(|error| error.pair_id == pair_id);
     match (written, error) {
-        (Some(pair), Some(error)) => Ok(PairLookup::Invalid(pair.clone(), error)),
+        (Some(pair), Some(error)) => {
+            let behavior = Behavior::for_pair(&defaults, pair);
+            Ok(PairLookup::Invalid(pair.clone(), error, behavior))
+        }
         _ => Err(RunError::UnknownPair(pair_id.to_owned())),
     }
 }
@@ -201,15 +206,26 @@ fn record_failure(state: &mut State, finished: Timestamp) {
 /// `state.notified` until a round succeeds (or the gate is cleared). The
 /// notice is returned, not sent: callers send it after saving the state, so
 /// whoever is told can already read why.
-fn announce(pair: &Pair, state: &mut State, key: String, alert: &Alert) -> Option<Notice> {
+fn announce(
+    pair: &Pair,
+    behavior: &Behavior,
+    state: &mut State,
+    key: String,
+    alert: &Alert,
+) -> Option<Notice> {
     if state.notified.contains(&key) {
         return None;
     }
     state.notified.push(key);
-    Some(notice(pair, alert))
+    Some(notice(pair, behavior, alert))
 }
 
-fn announce_gate(pair: &Pair, state: &mut State, kind: GateKind) -> Option<Notice> {
+fn announce_gate(
+    pair: &Pair,
+    behavior: &Behavior,
+    state: &mut State,
+    kind: GateKind,
+) -> Option<Notice> {
     let (detail, fault) = state
         .gate
         .as_ref()
@@ -217,6 +233,7 @@ fn announce_gate(pair: &Pair, state: &mut State, kind: GateKind) -> Option<Notic
         .unwrap_or_default();
     announce(
         pair,
+        behavior,
         state,
         kind.notified_key(),
         &Alert::Gate {
@@ -338,9 +355,9 @@ pub(crate) fn fresh_start(paths: &Paths, pair_id: &str, mode: Mode, mut now: Zon
 /// The config has a global error or no sync has this id (exit code 2), or
 /// syncfast itself failed on rclone, state or a file (exit code 1).
 pub async fn run(env: &RunEnv<'_>, pair_id: &str) -> Result<RunReport, RunError> {
-    let pair = match lookup_pair(env, pair_id).await? {
-        PairLookup::Valid(pair) => pair,
-        PairLookup::Invalid(pair, error) => {
+    let (pair, behavior) = match lookup_pair(env, pair_id).await? {
+        PairLookup::Valid(pair, behavior) => (pair, behavior),
+        PairLookup::Invalid(pair, error, behavior) => {
             let mut state = load_state(env, pair_id).await?;
             set_gate(
                 &mut state,
@@ -349,7 +366,7 @@ pub async fn run(env: &RunEnv<'_>, pair_id: &str) -> Result<RunReport, RunError>
                 None,
                 env.now().timestamp(),
             );
-            let notice = announce_gate(&pair, &mut state, GateKind::ConfigError);
+            let notice = announce_gate(&pair, &behavior, &mut state, GateKind::ConfigError);
             state.save(env.paths, pair_id).await?;
             send(env, notice);
             return Ok(RunReport::ConfigInvalid);
@@ -358,7 +375,6 @@ pub async fn run(env: &RunEnv<'_>, pair_id: &str) -> Result<RunReport, RunError>
     let Some(_lock) = try_lock_pair(env.paths, pair_id)? else {
         return Ok(RunReport::Busy);
     };
-    let behavior = Behavior::for_pair(&pair);
     let online = env.network.is_online().await;
     let filters_file = filters::write_if_changed(env.paths, &pair).await?;
     let mut state = load_state(env, pair_id).await?;
@@ -405,7 +421,7 @@ pub async fn run(env: &RunEnv<'_>, pair_id: &str) -> Result<RunReport, RunError>
                 .gate
                 .as_ref()
                 .map(|gate| gate.kind)
-                .and_then(|kind| announce_gate(&pair, &mut state, kind));
+                .and_then(|kind| announce_gate(&pair, &behavior, &mut state, kind));
             dirty |= notice.is_some();
             if dirty {
                 state.save(env.paths, pair_id).await?;
@@ -418,7 +434,7 @@ pub async fn run(env: &RunEnv<'_>, pair_id: &str) -> Result<RunReport, RunError>
             if !unchanged {
                 set_gate(&mut state, kind, String::new(), None, env.now().timestamp());
             }
-            let notice = announce_gate(&pair, &mut state, kind);
+            let notice = announce_gate(&pair, &behavior, &mut state, kind);
             state.save(env.paths, pair_id).await?;
             send(env, notice);
             Ok(RunReport::GateSet(kind))
@@ -559,7 +575,7 @@ impl Round<'_> {
                 state.conflicts_pending = self.count_conflicts(state.conflicts_pending).await;
                 return conflicts_new
                     .filter(|count| *count > 0)
-                    .map(|count| notice(pair, &Alert::NewConflicts(count)));
+                    .map(|count| notice(pair, self.behavior, &Alert::NewConflicts(count)));
             }
             Outcome::TooManyDeletes => (GateKind::TooManyDeletes, String::new(), None),
             Outcome::AllFilesChanged => (GateKind::AllFilesChanged, String::new(), None),
@@ -599,6 +615,7 @@ impl Round<'_> {
                 } else if state.consecutive_failures >= NOTIFY_FAILURES_AFTER {
                     return announce(
                         pair,
+                        self.behavior,
                         state,
                         NOTIFIED_FAILURES.to_owned(),
                         &Alert::Failing(message),
@@ -609,7 +626,7 @@ impl Round<'_> {
             }
         };
         set_gate(state, gate.0, gate.1, gate.2, finished);
-        announce_gate(pair, state, gate.0)
+        announce_gate(pair, self.behavior, state, gate.0)
     }
 
     /// Conflict files in the local tree; the previous count when the tree

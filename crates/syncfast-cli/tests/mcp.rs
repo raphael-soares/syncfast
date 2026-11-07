@@ -101,7 +101,7 @@ impl Drop for Client {
     }
 }
 
-const TOOLS: [&str; 23] = [
+const TOOLS: [&str; 26] = [
     "status",
     "show_sync",
     "add_sync",
@@ -125,6 +125,9 @@ const TOOLS: [&str; 23] = [
     "list_activity",
     "show_round_log",
     "theme",
+    "get_settings",
+    "set_setting",
+    "reset_setting",
 ];
 
 #[test]
@@ -298,6 +301,61 @@ fn an_unknown_sync_is_a_tool_error_not_a_protocol_error() {
 
     assert!(is_error);
     assert_eq!(text, "no sync has the id \"nope\"");
+}
+
+#[test]
+fn settings_over_mcp_answer_as_the_commands_do() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs();
+    let cli = bed.run(&["settings", "--sync", "docs", "--json"]).json();
+    let mut client = Client::start(&bed);
+    client.initialize();
+
+    let (is_error, text) = client.call("get_settings", &json!({"sync": "docs"}));
+    let (changed_error, changed) = client.call(
+        "set_setting",
+        &json!({"sync": "docs", "key": "interval", "value": "10m"}),
+    );
+    let cli_after = bed.run(&["settings", "--sync", "docs", "--json"]).json();
+    let (reset_error, reset) =
+        client.call("reset_setting", &json!({"sync": "docs", "key": "interval"}));
+
+    assert!(!is_error, "{text}");
+    assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), cli);
+    assert!(!changed_error, "{changed}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&changed).unwrap()["setting"]["value"],
+        "10m"
+    );
+    assert_eq!(cli_after["settings"][3]["value"], "10m");
+    assert!(!reset_error, "{reset}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&reset).unwrap()["setting"]["value"],
+        "5m"
+    );
+}
+
+#[test]
+fn a_setting_that_lowers_safety_is_a_tool_error_with_the_message_of_the_cli() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs();
+    let cli = bed.run(&["settings", "set", "versions", "false"]);
+    let mut client = Client::start(&bed);
+    client.initialize();
+
+    let (is_error, text) = client.call("set_setting", &json!({"key": "versions", "value": false}));
+    let (list_error, invalid) =
+        client.call("set_setting", &json!({"key": "debounce", "value": "2s"}));
+    let (shape_error, shape) =
+        client.call("set_setting", &json!({"key": "debounce", "value": [1]}));
+
+    assert_eq!(cli.code, 4);
+    assert!(is_error);
+    assert_eq!(format!("syncfast: {text}"), cli.stderr.trim());
+    assert!(list_error);
+    assert_eq!(invalid, "debounce must be at least 5s");
+    assert!(shape_error);
+    assert_eq!(shape, "value must be a boolean, a whole number or a string");
 }
 
 #[test]

@@ -43,7 +43,9 @@ show_transfer. A folder that a sync keeps cannot be moved: remove the sync first
 
 Rules: a changed filter or an error holds the sync for a new review. A sync held because many \
 files would be deleted is for the user to confirm. A first sync of a large folder can take \
-longer than the wait: the round goes on by itself, read status later.";
+longer than the wait: the round goes on by itself, read status later. get_settings shows how a \
+sync behaves and where each value comes from; set_setting and reset_setting change it, except \
+what lowers safety (a larger max_delete, versions off, conflict_loser delete): that is for the user.";
 
 /// The MCP server: one tool per operation.
 #[derive(Clone)]
@@ -238,6 +240,41 @@ struct RoundLogArgs {
 struct ThemeArgs {
     /// `system`, `light`, `dark` or a file of the themes folder. Absent: only report the current one.
     name: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct SettingsArgs {
+    /// The sync id. Absent: the defaults.
+    sync: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct SetSettingArgs {
+    /// The sync id. Absent: the defaults.
+    sync: Option<String>,
+    /// A setting name, as `get_settings` lists it.
+    key: String,
+    /// The new value: a boolean, a whole number or a string such as `"30s"` or `"newer"`.
+    value: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ResetSettingArgs {
+    /// The sync id. Absent: the defaults.
+    sync: Option<String>,
+    /// A setting name, as `get_settings` lists it.
+    key: String,
+}
+
+/// The text `Ops::set_setting` reads for a JSON value.
+fn setting_text(value: &serde_json::Value) -> Result<String, OpError> {
+    match value {
+        serde_json::Value::String(text) => Ok(text.clone()),
+        serde_json::Value::Bool(_) | serde_json::Value::Number(_) => Ok(value.to_string()),
+        _ => Err(OpError::Invalid(
+            "value must be a boolean, a whole number or a string".to_owned(),
+        )),
+    }
 }
 
 #[tool_router]
@@ -544,6 +581,52 @@ impl SyncfastMcp {
             Some(name) => reply(self.ops.set_theme(&name).await),
             None => reply::<_>(Ok::<_, OpError>(self.ops.theme().await)),
         }
+    }
+
+    #[tool(
+        description = "Every behavior setting with its value, where it comes from (`builtin`, `defaults` or `sync`), the value it falls back to on reset, and the keys whose value is less safe than the built-in default. With `sync`, the settings of that sync; without it, the defaults every sync inherits.",
+        annotations(read_only_hint = true)
+    )]
+    async fn get_settings(&self, Parameters(args): Parameters<SettingsArgs>) -> CallToolResult {
+        reply(self.ops.settings(args.sync.as_deref()).await)
+    }
+
+    #[tool(
+        description = "Set one behavior setting of a sync, or of the defaults when `sync` is absent. `value` is a JSON boolean, whole number or string (`\"30s\"`, `\"newer\"`). Refused with `This setting lowers safety (...). Change it in syncfast.` when it raises max_delete, turns versions off or sets conflict_loser to delete: those are for the user. Nothing changes when it is refused.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    async fn set_setting(&self, Parameters(args): Parameters<SetSettingArgs>) -> CallToolResult {
+        match setting_text(&args.value) {
+            Ok(value) => reply(
+                self.ops
+                    .set_setting(args.sync.as_deref(), &args.key, &value)
+                    .await,
+            ),
+            Err(err) => reply::<()>(Err(err)),
+        }
+    }
+
+    #[tool(
+        description = "Remove the own value of a setting of a sync, or the changed default when `sync` is absent, so it falls back to the inherited or built-in value. Refused like set_setting when the value it falls back to is less safe.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    async fn reset_setting(
+        &self,
+        Parameters(args): Parameters<ResetSettingArgs>,
+    ) -> CallToolResult {
+        reply(
+            self.ops
+                .reset_setting(args.sync.as_deref(), &args.key)
+                .await,
+        )
     }
 }
 

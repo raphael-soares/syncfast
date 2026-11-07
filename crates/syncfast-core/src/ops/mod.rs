@@ -10,6 +10,7 @@ mod explore;
 mod pairs;
 mod review;
 mod rules;
+mod settings;
 mod sync;
 mod theme;
 mod transfer;
@@ -40,6 +41,7 @@ pub use pairs::{
 };
 pub use review::{ConfirmedReview, ReviewView};
 pub use rules::{FilterTestView, FiltersSaved, FolderCount, after_filters_saved};
+pub use settings::{SettingChanged, SettingView, SettingsView};
 pub use sync::{RoundOutcome, SyncReport, SyncRounds};
 pub use theme::{ThemeInfo, ThemeSet};
 pub use transfer::{

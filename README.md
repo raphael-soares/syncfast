@@ -21,7 +21,7 @@
 
 syncfast keeps folders on your computer in sync with Google Drive, in both directions, from one tray window. It runs [rclone bisync](https://rclone.org/bisync/) for you, on a schedule and whenever local files change, with systemd user units it generates.
 
-The first sync of a folder, a changed filter set and any round that would delete many files stop and wait for you to review what will change. Files replaced on this computer are kept for 30 days. Read [PRODUCT.md](PRODUCT.md) for what syncfast is and is not.
+The first sync of a folder, a changed filter set and any round that would delete many files stop and wait for you to review what will change. Files replaced on this computer are kept for 30 days by default; each sync can change that in its Options tab. Read [PRODUCT.md](PRODUCT.md) for what syncfast is and is not.
 
 ## Install
 

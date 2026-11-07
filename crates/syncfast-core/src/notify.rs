@@ -7,6 +7,7 @@ use std::time::Duration;
 use fastframe_instance::Slot;
 use fastframe_notifications::{App, Client, Event, Notification};
 
+use crate::behavior::Behavior;
 use crate::bisync::{FAILED_TO_BISYNC, Fault, failure_msgs, fault_of};
 use crate::bisync_log::{Level, LogLine};
 use crate::config::{Pair, split_remote};
@@ -41,7 +42,7 @@ pub enum Alert {
 }
 
 #[must_use]
-pub fn notice(pair: &Pair, alert: &Alert) -> Notice {
+pub fn notice(pair: &Pair, behavior: &Behavior, alert: &Alert) -> Notice {
     let name = &pair.name;
     let (title, body) = match alert {
         Alert::Gate {
@@ -63,8 +64,10 @@ pub fn notice(pair: &Pair, alert: &Alert) -> Notice {
             ),
             GateKind::TooManyDeletes => (
                 format!("{name}: many deletions"),
-                "More than half of the files would be deleted. Review before continuing."
-                    .to_owned(),
+                format!(
+                    "More than {}% of the files would be deleted. Review before continuing.",
+                    behavior.max_delete
+                ),
             ),
             GateKind::AllFilesChanged => (
                 format!("{name}: review needed"),
@@ -260,6 +263,7 @@ mod tests {
             enabled: true,
             presets: vec![],
             filters: vec![],
+            overrides: crate::settings::Overrides::default(),
         }
     }
 
@@ -272,7 +276,7 @@ mod tests {
     }
 
     fn text(alert: &Alert) -> (String, String) {
-        let notice = notice(&pair(), alert);
+        let notice = notice(&pair(), &Behavior::default(), alert);
         (notice.title, notice.body)
     }
 
@@ -301,9 +305,23 @@ mod tests {
             text(&gate(GateKind::TooManyDeletes, "")),
             (
                 "Documents: many deletions".to_owned(),
-                "More than half of the files would be deleted. Review before continuing."
-                    .to_owned()
+                "More than 50% of the files would be deleted. Review before continuing.".to_owned()
             )
+        );
+    }
+
+    #[test]
+    fn too_many_deletes_names_the_syncs_own_limit() {
+        let behavior = Behavior {
+            max_delete: 20,
+            ..Behavior::default()
+        };
+
+        let notice = notice(&pair(), &behavior, &gate(GateKind::TooManyDeletes, ""));
+
+        assert_eq!(
+            notice.body,
+            "More than 20% of the files would be deleted. Review before continuing."
         );
     }
 
@@ -503,7 +521,7 @@ mod tests {
     }
 
     fn some_notice() -> Notice {
-        notice(&pair(), &Alert::NewConflicts(1))
+        notice(&pair(), &Behavior::default(), &Alert::NewConflicts(1))
     }
 
     #[test]

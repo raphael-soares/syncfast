@@ -418,14 +418,14 @@ async fn global_config_error_changes_nothing_and_exits_with_two() {
     bed.write_config(&[("docs", true)]);
     let systemctl = FakeSystemctl::default();
     apply_with(&bed, SystemdMode::Off, &systemctl, &[]).await;
-    bed.write_config_text("version = 2\n");
+    bed.write_config_text("version = 3\n");
 
     let report = apply_with(&bed, SystemdMode::Off, &systemctl, &["docs"]).await;
 
     assert_eq!(report.exit_code(), 2);
     assert_eq!(
         report.config_error.as_deref(),
-        Some("unsupported config version 2")
+        Some("unsupported config version 3")
     );
     assert_eq!(
         names(&bed.paths.units_preview_dir()),
@@ -622,4 +622,60 @@ async fn delete_versions_of_the_reserved_watch_id_is_refused() {
         traces_left(&bed, "watch"),
         ["state", "filters", "md5", "workdir", "versions"]
     );
+}
+
+fn pair_text(bed: &Bed, id: &str, extra: &str) -> String {
+    fs::create_dir_all(bed.local(id)).unwrap();
+    format!(
+        "\n[[pair]]\nid = \"{id}\"\nname = \"{id}\"\nlocal = \"{}\"\nremote = \"testremote:{}\"\n{extra}",
+        bed.local(id).display(),
+        bed.remote(id).display(),
+    )
+}
+
+fn timer_interval(bed: &Bed, id: &str) -> String {
+    let text = fs::read_to_string(
+        bed.paths
+            .units_preview_dir()
+            .join(format!("syncfast-{id}.timer")),
+    )
+    .unwrap();
+    text.lines()
+        .find_map(|line| line.strip_prefix("OnUnitInactiveSec="))
+        .unwrap()
+        .to_owned()
+}
+
+#[tokio::test]
+async fn each_timer_uses_the_interval_its_sync_resolves() {
+    let bed = Bed::new();
+    let text = format!(
+        "version = 2\n\n[defaults]\ninterval = \"10m\"\n{}{}",
+        pair_text(&bed, "inherits", ""),
+        pair_text(&bed, "own", "interval = \"2h\"\n"),
+    );
+    bed.write_config_text(&text);
+
+    let report = apply_with(&bed, SystemdMode::Off, &FakeSystemctl::default(), &[]).await;
+
+    assert!(report.is_empty(), "{report}");
+    assert_eq!(timer_interval(&bed, "inherits"), "600s");
+    assert_eq!(timer_interval(&bed, "own"), "7200s");
+}
+
+#[tokio::test]
+async fn apply_migrates_a_v1_config_and_keeps_a_copy_of_the_old_file() {
+    let bed = Bed::new();
+    bed.write_config(&[("docs", true)]);
+    let old = fs::read_to_string(bed.paths.config_file()).unwrap();
+
+    let report = apply_with(&bed, SystemdMode::Off, &FakeSystemctl::default(), &[]).await;
+
+    assert!(report.is_empty(), "{report}");
+    let migrated = fs::read_to_string(bed.paths.config_file()).unwrap();
+    assert!(migrated.starts_with("version = 2\n"), "{migrated}");
+    assert!(migrated.contains("id = \"docs\""));
+    let backup = bed.paths.config_file().with_file_name("config.toml.v1");
+    assert_eq!(fs::read_to_string(backup).unwrap(), old);
+    assert_eq!(timer_interval(&bed, "docs"), "300s");
 }
