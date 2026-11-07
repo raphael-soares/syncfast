@@ -91,6 +91,9 @@ pub struct App {
     runs_key: Option<RunsKey>,
     sheets: Sheets,
     screens: Screens,
+    /// The sync just created needed no review: the welcome says so until
+    /// the snapshot brings the sync in.
+    auto_confirmed_sync: Option<String>,
 }
 
 impl App {
@@ -134,6 +137,7 @@ impl App {
             runs_key: None,
             sheets: Sheets::new(paths.home.clone(), paths.data_dir()),
             screens: Screens::default(),
+            auto_confirmed_sync: None,
         };
         if with_tray {
             app.tray = SyncTray::spawn(waker, app.tray_view());
@@ -318,6 +322,11 @@ impl App {
         match event {
             Event::Snapshot(snapshot) => {
                 self.snapshot = snapshot;
+                if let Some(id) = &self.auto_confirmed_sync
+                    && self.snapshot.pairs.iter().any(|pair| pair.pair.id == *id)
+                {
+                    self.auto_confirmed_sync = None;
+                }
                 self.finish_welcome();
                 self.load_runs_if_stale();
                 let selected = self.selected_id();
@@ -338,6 +347,10 @@ impl App {
             | Event::FiltersSaved(_)
             | Event::AccountStatus { .. }) => self.screens.on_event(event),
             other => {
+                if let Event::SyncCreated(Ok(created)) = &other {
+                    self.auto_confirmed_sync =
+                        created.confirmed_automatically.then(|| created.id.clone());
+                }
                 for command in self.sheets.handle_event(&other) {
                     self.backend.send(command);
                 }
@@ -491,6 +504,7 @@ impl App {
         if welcome {
             let view = WelcomeView {
                 has_remote: !vm.remotes.is_empty(),
+                review_confirmed_automatically: self.auto_confirmed_sync.is_some(),
             };
             actions.extend(welcome::show(ui, &view));
         } else {
@@ -867,6 +881,7 @@ mod tests {
                     since: Timestamp::UNIX_EPOCH,
                     detail: String::new(),
                     fault: None,
+                    auto_checked: None,
                 }),
                 ..State::default()
             },
@@ -942,6 +957,26 @@ mod tests {
         app.snapshot.pairs.clear();
         app.gui.welcome_done = true;
         assert!(!app.welcome_visible());
+    }
+
+    #[test]
+    fn the_welcome_does_not_repeat_the_automatic_review_text_once_the_sync_has_shown_up() {
+        let (_dir, mut app) = app();
+        app.handle_event(Event::SyncCreated(Ok(crate::backend::CreatedSync {
+            id: "a".into(),
+            confirmed_automatically: true,
+        })));
+        assert!(app.auto_confirmed_sync.is_some());
+
+        app.handle_event(Event::Snapshot(Snapshot {
+            config_error: None,
+            pairs: vec![pair_with_gate("a", None)],
+            ..Snapshot::default()
+        }));
+        app.handle_event(Event::Snapshot(Snapshot::default()));
+
+        assert!(app.welcome_visible());
+        assert!(app.auto_confirmed_sync.is_none());
     }
 
     #[test]
@@ -1047,6 +1082,7 @@ mod tests {
             exit_code: 0,
             summary: RunSummary::default(),
             log_file: "a.jsonl".into(),
+            auto_reviewed: None,
         };
         app.snapshot.pairs[0].state.last_run = Some(run);
         app.load_runs_if_stale();

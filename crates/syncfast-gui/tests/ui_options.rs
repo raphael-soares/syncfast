@@ -90,6 +90,7 @@ fn the_rows_are_grouped_in_sections() {
         "Stop when more than this share would be deleted",
         "When a first sync finds different files",
         "Sync empty folders",
+        "Review",
     ] {
         assert!(harness.query_all_by_label(row).count() >= 1, "{row}");
     }
@@ -710,6 +711,28 @@ fn the_warnings_wrap_inside_the_minimum_window_in_both_themes() {
 }
 
 #[test]
+fn a_long_warning_wraps_before_the_right_edge_of_the_options() {
+    for palette in [Palette::dark(), Palette::light()] {
+        let size = egui::vec2(760.0, 520.0);
+        let vm = options("", "conflict_loser = \"delete\"\nreview = \"automatic\"\n");
+        let mut harness = harness_in(vm, size, palette, ui::detail::show);
+        harness.run();
+
+        let content_right = harness
+            .get_all_by_role(Role::ComboBox)
+            .map(|combo| combo.rect().right())
+            .fold(f32::MIN, f32::max);
+        for label in [NEVER_ASK, DELETED_AND_KEPT] {
+            let rect = harness.get_all_by_label(label).next().unwrap().rect();
+            assert!(
+                rect.right() <= content_right,
+                "{label} runs past the options: {rect:?} against {content_right}"
+            );
+        }
+    }
+}
+
+#[test]
 fn the_defaults_panel_warns_about_a_default_that_turns_versions_off() {
     let vm = options("versions = false\n", "");
     let mut harness = harness(vm, defaults_screen());
@@ -717,4 +740,91 @@ fn the_defaults_panel_warns_about_a_default_that_turns_versions_off() {
     harness.run();
 
     harness.get_by_label(NOT_KEPT);
+}
+
+const ASK_EVERY_TIME: &str =
+    "Every first sync, filter change, mode change and mass deletion waits for you.";
+const ASK_ONLY_FOR_DELETIONS: &str = "A review is confirmed automatically when its preview deletes nothing. The first sync of a folder always waits for you.";
+const NEVER_ASK: &str = "Deletions are confirmed automatically, including mass deletions. Only an empty source folder or a critical error stops a sync.";
+
+#[test]
+fn review_is_a_choice_that_names_the_level_it_is_on() {
+    for (value, name) in [
+        ("manual", "Ask every time"),
+        ("deletions", "Ask only for deletions"),
+        ("automatic", "Never ask"),
+    ] {
+        let mut harness = harness(options("", &format!("review = \"{value}\"\n")), screen());
+        harness.run();
+
+        assert_eq!(
+            harness
+                .get_by_role_and_label(Role::ComboBox, "Review")
+                .accesskit_node()
+                .value(),
+            Some(name.to_owned())
+        );
+    }
+}
+
+#[test]
+fn picking_a_review_level_saves_its_name() {
+    let tall = egui::vec2(800.0, 1800.0);
+    let mut harness = harness_in(options("", ""), tall, Palette::dark(), screen());
+    harness.run();
+
+    harness
+        .get_by_role_and_label(Role::ComboBox, "Review")
+        .click();
+    harness.run();
+    harness.get_by_label("Ask every time").click();
+    harness.run();
+
+    assert_eq!(harness.state().actions, [set("review", "manual")]);
+}
+
+#[test]
+fn each_review_level_explains_itself_under_the_row() {
+    assert!(shows(options("", "review = \"manual\"\n"), ASK_EVERY_TIME));
+    assert!(!shows(
+        options("", "review = \"manual\"\n"),
+        ASK_ONLY_FOR_DELETIONS
+    ));
+    assert!(shows(options("", ""), ASK_ONLY_FOR_DELETIONS));
+    assert!(!shows(options("", ""), ASK_EVERY_TIME));
+    assert!(!shows(
+        options("", "review = \"automatic\"\n"),
+        ASK_EVERY_TIME
+    ));
+    assert!(!shows(
+        options("", "review = \"automatic\"\n"),
+        ASK_ONLY_FOR_DELETIONS
+    ));
+}
+
+#[test]
+fn never_ask_warns_and_the_other_levels_do_not() {
+    assert!(shows(options("", "review = \"automatic\"\n"), NEVER_ASK));
+    assert!(!shows(options("", ""), NEVER_ASK));
+    assert!(!shows(options("", "review = \"manual\"\n"), NEVER_ASK));
+}
+
+#[test]
+fn the_defaults_panel_warns_about_a_default_of_never_ask() {
+    let vm = options("review = \"automatic\"\n", "");
+    let mut harness = harness(vm, defaults_screen());
+
+    harness.run();
+
+    harness.get_by_label(NEVER_ASK);
+}
+
+#[test]
+fn a_sync_on_never_ask_says_its_safety_is_lowered() {
+    let mut harness = harness(options("", "review = \"automatic\"\n"), |ui, vm| {
+        ui::detail::show(ui, vm)
+    });
+    harness.run();
+
+    harness.get_by_label("Safety lowered");
 }

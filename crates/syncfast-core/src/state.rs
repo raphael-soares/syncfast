@@ -13,10 +13,12 @@ use std::time::Duration;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+use crate::behavior::ReviewLevel;
 use crate::bisync::{Fault, ReviewKind};
 use crate::bisync_log::RunSummary;
 use crate::config::Pair;
 use crate::paths::Paths;
+use crate::preview::ChangeCounts;
 
 /// How many rounds keep their log in `runs/`.
 pub const RUNS_KEPT: usize = 50;
@@ -114,6 +116,10 @@ pub struct Gate {
     /// The fault a `needs_attention` gate names; absent from older files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fault: Option<Fault>,
+    /// The review level at which a dry run already found this gate held;
+    /// the same level does not run it again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_checked: Option<ReviewLevel>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,6 +136,18 @@ pub struct LastRun {
     pub exit_code: i32,
     pub summary: RunSummary,
     pub log_file: PathBuf,
+    /// Set when syncfast confirmed the review this round ran after.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_reviewed: Option<AutoReviewed>,
+}
+
+/// A review syncfast confirmed by itself, as the round that followed it
+/// records it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutoReviewed {
+    pub gate: GateKind,
+    pub level: ReviewLevel,
+    pub counts: ChangeCounts,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -162,6 +180,7 @@ impl State {
                 since: now,
                 detail: String::new(),
                 fault: None,
+                auto_checked: None,
             }),
             ..Self::default()
         }
@@ -196,6 +215,7 @@ impl State {
                     since: Timestamp::UNIX_EPOCH,
                     detail: err.to_string(),
                     fault: None,
+                    auto_checked: None,
                 }),
                 ..Self::default()
             },
@@ -568,6 +588,7 @@ mod tests {
             since: at("2026-01-01T12:00:00Z"),
             detail: String::new(),
             fault: None,
+            auto_checked: None,
         }
     }
 
@@ -591,6 +612,7 @@ mod tests {
                 since: at("2026-01-01T12:00:00Z"),
                 detail: "3 of 4".into(),
                 fault: Some(Fault::Quota),
+                auto_checked: Some(ReviewLevel::Deletions),
             }),
             last_outcome: Some(LastOutcome::Error),
             offline: true,
@@ -613,6 +635,14 @@ mod tests {
                     ..RunSummary::default()
                 },
                 log_file: "/s/runs/x.jsonl".into(),
+                auto_reviewed: Some(AutoReviewed {
+                    gate: GateKind::TooManyDeletes,
+                    level: ReviewLevel::Automatic,
+                    counts: ChangeCounts {
+                        delete_remote: 3,
+                        ..ChangeCounts::default()
+                    },
+                }),
             }),
             notified: vec!["gate:too_many_deletes".into(), "failures".into()],
         }

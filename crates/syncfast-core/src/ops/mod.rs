@@ -14,7 +14,7 @@ mod settings;
 mod sync;
 mod theme;
 mod transfer;
-mod views;
+pub(crate) mod views;
 
 use std::path::PathBuf;
 use std::sync::Arc;

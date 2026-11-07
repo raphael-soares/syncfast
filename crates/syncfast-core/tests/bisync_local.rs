@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
 use jiff::{SignedDuration, Timestamp, Zoned};
+use syncfast_core::behavior::ReviewLevel;
 use syncfast_core::bisync::{Fault, Mode, Outcome, ReviewKind};
 use syncfast_core::bisync_log::ChangeKind;
 use syncfast_core::network::{BoxFuture, Network};
@@ -129,7 +130,7 @@ impl Bed {
     fn write_config(&self, enabled: bool, filters: &[&str]) {
         let filters: Vec<String> = filters.iter().map(|f| format!("{f:?}")).collect();
         let text = format!(
-            "version = 1\n\n[[pair]]\nid = \"{PAIR}\"\nname = \"Docs\"\nlocal = \"{}\"\nremote = \"testremote:{}\"\nenabled = {enabled}\nfilters = [{}]\n",
+            "version = 2\n\n[defaults]\nreview = \"manual\"\n\n[[pair]]\nid = \"{PAIR}\"\nname = \"Docs\"\nlocal = \"{}\"\nremote = \"testremote:{}\"\nenabled = {enabled}\nfilters = [{}]\n",
             self.local.display(),
             self.remote.display(),
             filters.join(", "),
@@ -1758,4 +1759,279 @@ async fn the_sync_retention_decides_which_version_folders_go() {
 
     assert_eq!(report, ran_ok(Mode::Normal));
     assert!(!versions.join(folder).exists());
+}
+
+fn review_at(bed: &Bed, level: &str) {
+    bed.write_behavior(&format!("review = \"{level}\"\n"), "");
+}
+
+async fn four_files_synced(bed: &Bed) {
+    for name in ["a.txt", "b.txt", "c.txt", "d.txt"] {
+        write(&bed.local, name, name);
+    }
+    bed.first_sync().await;
+}
+
+fn delete_three_locally(bed: &Bed) {
+    for name in ["a.txt", "b.txt", "c.txt"] {
+        fs::remove_file(bed.local.join(name)).unwrap();
+    }
+}
+
+fn restore_three_locally(bed: &Bed) {
+    for name in ["a.txt", "b.txt", "c.txt"] {
+        write(&bed.local, name, name);
+    }
+}
+
+#[tokio::test]
+async fn a_first_run_waits_for_review_at_deletions_even_when_nothing_is_deleted() {
+    for level in ["manual", "deletions"] {
+        let Some(bed) = bed() else { return };
+        review_at(&bed, level);
+        write(&bed.local, "a.txt", "a");
+
+        let report = bed.run().await;
+
+        assert_eq!(report, RunReport::Skipped(SkipReason::Gated), "{level}");
+        let state = bed.state().await;
+        assert_eq!(
+            state.gate.map(|gate| gate.kind),
+            Some(GateKind::NeedsReviewFirstRun),
+            "{level}"
+        );
+        assert!(names(&bed.remote).is_empty(), "{level}");
+    }
+}
+
+#[tokio::test]
+async fn a_first_run_confirms_itself_at_automatic_and_says_so_in_the_last_round() {
+    let Some(bed) = bed() else { return };
+    review_at(&bed, "automatic");
+    write(&bed.local, "a.txt", "a");
+
+    let report = bed.run().await;
+
+    assert_eq!(report, ran_ok(Mode::Resync));
+    assert_eq!(read(&bed.remote, "a.txt"), "a");
+    let state = bed.state().await;
+    assert!(state.gate.is_none());
+    let reviewed = state.last_run.and_then(|last| last.auto_reviewed).unwrap();
+    assert_eq!(reviewed.gate, GateKind::NeedsReviewFirstRun);
+    assert_eq!(reviewed.level, ReviewLevel::Automatic);
+    assert_eq!(reviewed.counts.upload, 1);
+    assert!(
+        bed.notices.titles().is_empty(),
+        "{:?}",
+        bed.notices.titles()
+    );
+}
+
+#[tokio::test]
+async fn a_filters_change_confirms_itself_at_deletions_when_the_preview_deletes_nothing() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "base.txt", "base");
+    bed.first_sync().await;
+    bed.write_behavior("review = \"deletions\"\n", "filters = [\"- *.skip\"]\n");
+    write(&bed.local, "new.txt", "new");
+    write(&bed.local, "x.skip", "skipped");
+
+    let report = bed.run().await;
+
+    assert_eq!(report, ran_ok(Mode::Resync));
+    assert_eq!(names(&bed.remote), ["base.txt", "new.txt"]);
+    let state = bed.state().await;
+    assert!(state.gate.is_none());
+    let reviewed = state.last_run.and_then(|last| last.auto_reviewed).unwrap();
+    assert_eq!(reviewed.gate, GateKind::NeedsReviewFiltersChanged);
+    assert!(!reviewed.counts.deletes());
+    assert!(
+        bed.notices.titles().is_empty(),
+        "{:?}",
+        bed.notices.titles()
+    );
+}
+
+#[tokio::test]
+async fn a_filters_change_waits_for_review_at_manual() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "base.txt", "base");
+    bed.first_sync().await;
+    bed.write_config(true, &["- *.skip"]);
+
+    let report = bed.run().await;
+
+    assert_eq!(
+        report,
+        RunReport::GateSet(GateKind::NeedsReviewFiltersChanged)
+    );
+    assert_eq!(bed.run().await, RunReport::Skipped(SkipReason::Gated));
+    assert!(bed.state().await.gate.unwrap().auto_checked.is_none());
+}
+
+#[tokio::test]
+async fn mass_deletions_are_held_at_deletions_checked_once_and_checked_again_at_a_new_level() {
+    let Some(bed) = bed() else { return };
+    four_files_synced(&bed).await;
+    review_at(&bed, "deletions");
+    delete_three_locally(&bed);
+    assert_eq!(
+        bed.run().await,
+        RunReport::Ran {
+            mode: Mode::Normal,
+            outcome: Outcome::TooManyDeletes
+        }
+    );
+
+    let held = bed.run().await;
+
+    assert_eq!(held, RunReport::Skipped(SkipReason::Gated));
+    assert_eq!(names(&bed.remote), ["a.txt", "b.txt", "c.txt", "d.txt"]);
+    let gate = bed.state().await.gate.unwrap();
+    assert_eq!(gate.kind, GateKind::TooManyDeletes);
+    assert_eq!(gate.auto_checked, Some(ReviewLevel::Deletions));
+    restore_three_locally(&bed);
+    assert_eq!(
+        bed.run().await,
+        RunReport::Skipped(SkipReason::Gated),
+        "the same level does not dry run the gate again"
+    );
+
+    review_at(&bed, "automatic");
+    assert_eq!(bed.run().await, ran_ok(Mode::Force));
+    assert!(bed.state().await.gate.is_none());
+}
+
+#[tokio::test]
+async fn a_mass_deletion_gate_confirms_itself_at_deletions_once_the_preview_deletes_nothing() {
+    let Some(bed) = bed() else { return };
+    four_files_synced(&bed).await;
+    delete_three_locally(&bed);
+    assert_eq!(
+        bed.run().await,
+        RunReport::Ran {
+            mode: Mode::Normal,
+            outcome: Outcome::TooManyDeletes
+        }
+    );
+    assert_eq!(bed.run().await, RunReport::Skipped(SkipReason::Gated));
+    restore_three_locally(&bed);
+    review_at(&bed, "deletions");
+
+    let report = bed.run().await;
+
+    assert_eq!(report, ran_ok(Mode::Force));
+    assert_eq!(names(&bed.remote), ["a.txt", "b.txt", "c.txt", "d.txt"]);
+    let reviewed = bed
+        .state()
+        .await
+        .last_run
+        .and_then(|last| last.auto_reviewed)
+        .unwrap();
+    assert_eq!(reviewed.gate, GateKind::TooManyDeletes);
+    assert_eq!(reviewed.level, ReviewLevel::Deletions);
+    assert!(!reviewed.counts.deletes());
+}
+
+#[tokio::test]
+async fn automatic_confirms_a_mass_deletion_and_the_remote_loses_the_files() {
+    let Some(bed) = bed() else { return };
+    four_files_synced(&bed).await;
+    review_at(&bed, "automatic");
+    delete_three_locally(&bed);
+    assert_eq!(
+        bed.run().await,
+        RunReport::Ran {
+            mode: Mode::Normal,
+            outcome: Outcome::TooManyDeletes
+        }
+    );
+
+    let report = bed.run().await;
+
+    assert_eq!(report, ran_ok(Mode::Force));
+    assert_eq!(names(&bed.remote), ["d.txt"]);
+    let state = bed.state().await;
+    assert!(state.gate.is_none());
+    let reviewed = state.last_run.and_then(|last| last.auto_reviewed).unwrap();
+    assert_eq!(reviewed.gate, GateKind::TooManyDeletes);
+    assert_eq!(reviewed.counts.delete_remote, 3);
+}
+
+#[tokio::test]
+async fn manual_never_confirms_a_gate_by_itself() {
+    let Some(bed) = bed() else { return };
+    four_files_synced(&bed).await;
+    delete_three_locally(&bed);
+    assert_eq!(
+        bed.run().await,
+        RunReport::Ran {
+            mode: Mode::Normal,
+            outcome: Outcome::TooManyDeletes
+        }
+    );
+    restore_three_locally(&bed);
+
+    let report = bed.run().await;
+
+    assert_eq!(report, RunReport::Skipped(SkipReason::Gated));
+    assert!(bed.state().await.gate.unwrap().auto_checked.is_none());
+}
+
+#[tokio::test]
+async fn an_emptied_local_folder_needs_attention_at_every_review_level() {
+    for level in ["manual", "deletions", "automatic"] {
+        let Some(bed) = bed() else { return };
+        let files: Vec<String> = (0..60).map(|n| format!("file-{n:02}.txt")).collect();
+        for name in &files {
+            write(&bed.local, name, name);
+        }
+        bed.first_sync().await;
+        review_at(&bed, level);
+        for name in &files {
+            fs::remove_file(bed.local.join(name)).unwrap();
+        }
+
+        let report = bed.run().await;
+
+        assert!(
+            matches!(
+                report,
+                RunReport::Ran {
+                    mode: Mode::Normal,
+                    outcome: Outcome::NeedsAttention {
+                        fault: Fault::LocalEmpty,
+                        ..
+                    }
+                }
+            ),
+            "{level}: {report:?}"
+        );
+        assert_eq!(names(&bed.remote), files, "{level}");
+        assert_eq!(
+            bed.state().await.gate.map(|gate| gate.kind),
+            Some(GateKind::NeedsAttention),
+            "{level}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_failed_dry_run_leaves_the_gate_unchecked_and_counts_as_a_failure() {
+    let Some(bed) = bed() else { return };
+    review_at(&bed, "automatic");
+    write(&bed.local, "a.txt", "a");
+    let failing = fake_rclone(&bed, r#"{"level":"error","msg":"drive quota exceeded"}"#, 1);
+
+    let report = bed.run_with(&failing).await;
+
+    assert_eq!(report, RunReport::Skipped(SkipReason::Gated));
+    let state = bed.state().await;
+    assert_eq!(state.consecutive_failures, 1);
+    let gate = state.gate.unwrap();
+    assert_eq!(gate.kind, GateKind::NeedsReviewFirstRun);
+    assert!(gate.auto_checked.is_none());
+    assert!(names(&bed.remote).is_empty());
+
+    assert_eq!(bed.run().await, ran_ok(Mode::Resync));
 }

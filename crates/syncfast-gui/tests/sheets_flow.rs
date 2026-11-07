@@ -7,7 +7,7 @@ use syncfast_core::bisync::ReviewKind;
 use syncfast_core::bisync_log::RunSummary;
 use syncfast_core::preview::Preview;
 use syncfast_core::state::{DisplayStatus, GateKind};
-use syncfast_gui::backend::{Command, Event};
+use syncfast_gui::backend::{Command, CreatedSync, Event};
 use syncfast_gui::sheet_io::PreviewFailure;
 use syncfast_gui::sheets::{Sheets, Surroundings};
 use syncfast_gui::ui::account_sheet::{AccountAction, AccountMode, ConnectRequest, Secret};
@@ -50,6 +50,13 @@ fn found(hash: &str) -> Preview {
         excluded_repos: Vec::new(),
         summary: RunSummary::default(),
     }
+}
+
+fn sync_created(confirmed_automatically: bool) -> Event {
+    Event::SyncCreated(Ok(CreatedSync {
+        id: "dev".into(),
+        confirmed_automatically,
+    }))
 }
 
 fn new_sync() -> NewSync {
@@ -242,7 +249,7 @@ fn creating_a_sync_sends_it_to_the_backend_and_then_opens_its_first_review() {
         &Action::AddSyncSheet(AddSyncAction::Create(new_sync())),
         &around(&[], false),
     );
-    let review = sheets.handle_event(&Event::SyncCreated(Ok("dev".into())));
+    let review = sheets.handle_event(&sync_created(false));
 
     assert_eq!(created, [Command::CreateSync(new_sync())]);
     assert_eq!(
@@ -252,6 +259,21 @@ fn creating_a_sync_sends_it_to_the_backend_and_then_opens_its_first_review() {
             kind: ReviewKind::Resync
         }]
     );
+}
+
+#[test]
+fn a_sync_confirmed_automatically_closes_the_sheet_and_opens_no_review() {
+    let mut sheets = sheets();
+    sheets.apply(&Action::AddSync, &around(&[], false));
+    sheets.apply(
+        &Action::AddSyncSheet(AddSyncAction::Create(new_sync())),
+        &around(&[], false),
+    );
+
+    let commands = sheets.handle_event(&sync_created(true));
+
+    assert_eq!(commands, []);
+    assert!(!sheets.is_open());
 }
 
 #[test]
@@ -295,7 +317,7 @@ fn get_started_without_an_account_chains_account_then_add_sync_then_review() {
         &Action::AddSyncSheet(AddSyncAction::Create(new_sync())),
         &around(&[], true),
     );
-    let review = sheets.handle_event(&Event::SyncCreated(Ok("dev".into())));
+    let review = sheets.handle_event(&sync_created(false));
 
     assert_eq!(account, [Command::LoadRemotes]);
     assert_eq!(

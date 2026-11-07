@@ -1,13 +1,24 @@
 //! Adding, removing, pausing and resuming syncs, and `apply`.
 
 use std::path::Path;
+use std::time::Duration;
 
 use serde::Serialize;
 
+use super::views::load_state;
 use super::{OpError, Ops, PairView};
+use crate::behavior::{Behavior, ReviewLevel};
 use crate::config::{Config, Pair, expand_tilde, unique_id};
 use crate::filters::PRESETS;
 use crate::rclone::RcloneError;
+use crate::state::{ConfirmMarker, GateKind, is_running};
+
+/// How long `add` waits for the round that checks the first review.
+const FIRST_ROUND_WAIT: Duration = Duration::from_secs(10);
+
+fn waits_for_review(id: &str) -> String {
+    format!("Run `review show` for \"{id}\": the first sync waits for a review.")
+}
 
 /// What `add` needs to create a sync. Everything the config validates is
 /// checked by the config, with its own messages.
@@ -143,15 +154,42 @@ impl Ops {
         prepare_local(&local, new.create_local).await?;
         self.prepare_remote(new.remote.trim(), new.create_remote)
             .await?;
+        let level = Behavior::for_pair(&config.defaults(), &pair).review;
         Config::edit(&self.paths, |config| config.add_pair(pair)).await??;
-        let warnings = self.reapply(&[]).await;
+        let mut warnings = self.reapply(&[]).await;
+        let next_step = if level == ReviewLevel::Automatic {
+            match self.start_round(&id, FIRST_ROUND_WAIT).await {
+                Ok(_) => self.first_round_next_step(&id).await,
+                Err(error) => {
+                    warnings.push(format!("The first round did not start: {error}"));
+                    waits_for_review(&id)
+                }
+            }
+        } else {
+            waits_for_review(&id)
+        };
         Ok(AddedSync {
             sync: self.pair_view(&id).await?,
             warnings,
-            next_step: format!(
-                "Run `review show` for \"{id}\": the first sync waits for a review."
-            ),
+            next_step,
         })
+    }
+
+    /// The first round of a sync whose review level is `automatic` has run
+    /// its check: either it confirmed the review or the sync still waits.
+    async fn first_round_next_step(&self, id: &str) -> String {
+        let state = load_state(self, id).await;
+        let confirmed = matches!(ConfirmMarker::load(&self.paths, id).await, Ok(Some(_)));
+        let waiting = state
+            .gate
+            .is_some_and(|gate| gate.kind == GateKind::NeedsReviewFirstRun)
+            && !is_running(&self.paths, id)
+            && !confirmed;
+        if waiting {
+            waits_for_review(id)
+        } else {
+            "Syncing started: review confirmed automatically.".to_owned()
+        }
     }
 
     async fn prepare_remote(&self, remote: &str, create: bool) -> Result<(), OpError> {

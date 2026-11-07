@@ -14,12 +14,13 @@ use super::{Action, ViewModel};
 use crate::icons::Icon;
 use crate::theme::{self, size, space};
 
-const SECTIONS: [(&str, &[&str]); 6] = [
+const SECTIONS: [(&str, &[&str]); 7] = [
     ("Schedule", &["watch", "debounce", "max_wait", "interval"]),
     ("Bandwidth", &["limit_upload", "limit_download"]),
     ("Conflicts", &["conflict_resolve", "conflict_loser"]),
     ("Versions", &["versions", "versions_keep_days"]),
     ("Deletions", &["max_delete"]),
+    ("Review", &["review"]),
     ("Advanced", &["resync_mode", "empty_dirs"]),
 ];
 
@@ -165,12 +166,33 @@ fn sections(
             setting(ui, scope, def, &row(def), &mut actions);
         }
         let value_of = |name: &str| settings::key(name).map(|def| row(def).value);
+        if let Some(note) = note(title, &value_of) {
+            ui.add_space(space::S);
+            ui.label(
+                RichText::new(note)
+                    .font(theme::callout())
+                    .color(palette.secondary),
+            );
+        }
         for message in warnings(title, &value_of) {
             ui.add_space(space::S);
             warning_row(ui, &message);
         }
     }
     actions
+}
+
+/// What the chosen value of a section means, said in line under its rows.
+fn note(section: &str, value_of: &dyn Fn(&str) -> Option<Value>) -> Option<&'static str> {
+    match (section, value_of("review")) {
+        ("Review", Some(Value::Choice("manual"))) => {
+            Some("Every first sync, filter change, mode change and mass deletion waits for you.")
+        }
+        ("Review", Some(Value::Choice("deletions"))) => Some(
+            "A review is confirmed automatically when its preview deletes nothing. The first sync of a folder always waits for you.",
+        ),
+        _ => None,
+    }
 }
 
 /// What the values of a section put at risk, said in line under its rows.
@@ -191,6 +213,10 @@ fn warnings(section: &str, value_of: &dyn Fn(&str) -> Option<Value>) -> Vec<Stri
         "Versions" if !kept => {
             vec!["Files replaced or deleted on this computer are not kept.".to_owned()]
         }
+        "Review" if is("review", Value::Choice("automatic")) => vec![
+            "Deletions are confirmed automatically, including mass deletions. Only an empty source folder or a critical error stops a sync."
+                .to_owned(),
+        ],
         _ => Vec::new(),
     }
 }
@@ -424,6 +450,7 @@ fn label(key: &str) -> &'static str {
         "versions" => "Keep replaced files",
         "versions_keep_days" => "Keep for",
         "max_delete" => "Stop when more than this share would be deleted",
+        "review" => "Review",
         "resync_mode" => "When a first sync finds different files",
         "empty_dirs" => "Sync empty folders",
         _ => "",
@@ -432,6 +459,9 @@ fn label(key: &str) -> &'static str {
 
 fn choice_label<'a>(key: &str, name: &'a str) -> &'a str {
     match (key, name) {
+        ("review", "manual") => "Ask every time",
+        ("review", "deletions") => "Ask only for deletions",
+        ("review", "automatic") => "Never ask",
         ("conflict_resolve", "none") => "Keep both",
         ("conflict_loser", "num") => "Rename as .conflictN",
         ("conflict_loser", "pathname") => "Rename as .path1 or .path2",

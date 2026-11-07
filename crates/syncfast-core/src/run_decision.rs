@@ -2,7 +2,9 @@
 //! the spec (step 7). Review is mandatory: only a matching confirmation
 //! marker lets a resync or a `--force` run.
 
+use crate::behavior::ReviewLevel;
 use crate::bisync::{Mode, ReviewKind};
+use crate::preview::ChangeCounts;
 use crate::state::{ConfirmMarker, GateKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,6 +115,44 @@ pub fn decide(input: &DecideInput<'_>) -> Decision {
         return Decision::SetGate(GateKind::NeedsReviewFiltersChanged);
     }
     Decision::Run(Mode::Normal)
+}
+
+/// What the review level makes of a gate that waits for a review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoReview {
+    Confirm,
+    Hold,
+}
+
+/// Whether a dry run could make `level` confirm `gate` by itself. False
+/// for the gates no preview decides: they hold at every level, and so does
+/// the first review of a sync unless the level is `automatic`.
+#[must_use]
+pub fn may_confirm(level: ReviewLevel, gate: GateKind) -> bool {
+    let reviewable = matches!(
+        gate,
+        GateKind::NeedsReviewFirstRun
+            | GateKind::NeedsReviewFiltersChanged
+            | GateKind::TooManyDeletes
+            | GateKind::AllFilesChanged
+    );
+    match level {
+        ReviewLevel::Manual => false,
+        ReviewLevel::Deletions => reviewable && gate != GateKind::NeedsReviewFirstRun,
+        ReviewLevel::Automatic => reviewable,
+    }
+}
+
+/// The review table of the spec (step 4), over the preview of the review
+/// `gate` waits for.
+#[must_use]
+pub fn auto_review(level: ReviewLevel, gate: GateKind, counts: &ChangeCounts) -> AutoReview {
+    let deletes_block = level == ReviewLevel::Deletions && counts.deletes();
+    if may_confirm(level, gate) && !deletes_block {
+        AutoReview::Confirm
+    } else {
+        AutoReview::Hold
+    }
 }
 
 #[cfg(test)]
@@ -448,6 +488,128 @@ mod tests {
     #[test]
     fn healthy_pair_runs_normally() {
         assert_eq!(decide(&input()), Decision::Run(Mode::Normal));
+    }
+
+    #[test]
+    fn an_auto_confirmed_first_run_runs_as_resync_without_a_gate_notice() {
+        let confirmed = marker(ReviewKind::Resync, HASH);
+        let never_synced = DecideInput {
+            applied_filters_hash: None,
+            ..input()
+        };
+
+        for (gate, held) in [
+            (
+                GateKind::NeedsReviewFirstRun,
+                Decision::Skip(SkipReason::Gated),
+            ),
+            (
+                GateKind::ConfigError,
+                Decision::SetGate(GateKind::NeedsReviewFirstRun),
+            ),
+        ] {
+            let waiting = DecideInput {
+                gate: Some(gate),
+                ..never_synced
+            };
+            let released = DecideInput {
+                gate: Some(GateKind::NeedsReviewFirstRun),
+                marker: Some(&confirmed),
+                ..never_synced
+            };
+
+            assert_eq!(decide(&waiting), held, "{gate:?}");
+            assert_eq!(decide(&released), Decision::Run(Mode::Resync), "{gate:?}");
+        }
+    }
+
+    fn counts(delete_local: u32, delete_remote: u32) -> ChangeCounts {
+        ChangeCounts {
+            upload: 4,
+            overwrite_remote: 2,
+            delete_local,
+            delete_remote,
+            ..ChangeCounts::default()
+        }
+    }
+
+    #[test]
+    fn auto_review_follows_the_table_of_levels_gates_and_deletions() {
+        use AutoReview::{Confirm, Hold};
+        use GateKind::{
+            AllFilesChanged, NeedsReviewFiltersChanged, NeedsReviewFirstRun, TooManyDeletes,
+        };
+        use ReviewLevel::{Automatic, Deletions, Manual};
+
+        let nothing = counts(0, 0);
+        let local = counts(1, 0);
+        let remote = counts(0, 3);
+        let table = [
+            (Manual, NeedsReviewFirstRun, nothing, Hold),
+            (Manual, NeedsReviewFiltersChanged, nothing, Hold),
+            (Manual, AllFilesChanged, nothing, Hold),
+            (Manual, TooManyDeletes, nothing, Hold),
+            (Deletions, NeedsReviewFirstRun, nothing, Hold),
+            (Deletions, NeedsReviewFiltersChanged, nothing, Confirm),
+            (Deletions, NeedsReviewFiltersChanged, local, Hold),
+            (Deletions, NeedsReviewFiltersChanged, remote, Hold),
+            (Deletions, AllFilesChanged, nothing, Confirm),
+            (Deletions, AllFilesChanged, remote, Hold),
+            (Deletions, TooManyDeletes, nothing, Confirm),
+            (Deletions, TooManyDeletes, local, Hold),
+            (Deletions, TooManyDeletes, remote, Hold),
+            (Automatic, NeedsReviewFirstRun, nothing, Confirm),
+            (Automatic, NeedsReviewFiltersChanged, remote, Confirm),
+            (Automatic, AllFilesChanged, local, Confirm),
+            (Automatic, TooManyDeletes, remote, Confirm),
+            (Automatic, TooManyDeletes, nothing, Confirm),
+        ];
+
+        for (level, gate, counts, expected) in table {
+            assert_eq!(
+                auto_review(level, gate, &counts),
+                expected,
+                "{level:?} {gate:?} {counts:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_critical_error_is_held_at_every_level() {
+        for level in [
+            ReviewLevel::Manual,
+            ReviewLevel::Deletions,
+            ReviewLevel::Automatic,
+        ] {
+            assert_eq!(
+                auto_review(level, GateKind::NeedsReviewCriticalError, &counts(0, 0)),
+                AutoReview::Hold,
+                "{level:?}"
+            );
+            assert!(!may_confirm(level, GateKind::NeedsReviewCriticalError));
+        }
+    }
+
+    #[test]
+    fn gates_that_are_not_reviews_are_never_confirmed() {
+        for level in [
+            ReviewLevel::Manual,
+            ReviewLevel::Deletions,
+            ReviewLevel::Automatic,
+        ] {
+            for gate in [
+                GateKind::NeedsAttention,
+                GateKind::AuthError,
+                GateKind::ConfigError,
+                GateKind::LocalMissing,
+            ] {
+                assert_eq!(
+                    auto_review(level, gate, &counts(0, 0)),
+                    AutoReview::Hold,
+                    "{level:?} {gate:?}"
+                );
+            }
+        }
     }
 
     #[test]

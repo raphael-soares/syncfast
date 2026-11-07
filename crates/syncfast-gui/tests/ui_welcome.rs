@@ -48,7 +48,10 @@ fn harness(view: WelcomeView) -> Harness<'static, Screen> {
 }
 
 fn fresh(has_remote: bool) -> WelcomeView {
-    WelcomeView { has_remote }
+    WelcomeView {
+        has_remote,
+        review_confirmed_automatically: false,
+    }
 }
 
 #[test]
@@ -83,6 +86,20 @@ fn with_an_account_the_first_step_is_done_and_the_folder_step_is_current() {
 fn steps_follow_the_account_and_the_later_ones_never_count_as_done() {
     assert_eq!(fresh(false).steps(), [Current, Pending, Pending]);
     assert_eq!(fresh(true).steps(), [Done, Current, Pending]);
+}
+
+#[test]
+fn a_first_sync_confirmed_automatically_completes_every_step_and_says_syncing_started() {
+    let confirmed = WelcomeView {
+        has_remote: true,
+        review_confirmed_automatically: true,
+    };
+    let harness = harness(confirmed);
+
+    assert_eq!(confirmed.steps(), [Done, Done, Done]);
+    harness.get_by_label("Connect your Google account, done");
+    harness.get_by_label("Choose a folder, done");
+    harness.get_by_label("Review confirmed automatically, so syncing started., done");
 }
 
 #[test]

@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use fastframe_shell::Waker;
+use syncfast_core::behavior::ReviewLevel;
 use syncfast_core::bisync::ReviewKind;
 use syncfast_core::config::{Config, SettingScope};
 use syncfast_core::conflicts::{Conflict, Resolution};
@@ -149,6 +150,15 @@ pub enum Command {
     RemoveAccount(String),
 }
 
+/// A sync written to the config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreatedSync {
+    pub id: String,
+    /// Its review level is `automatic`: a round was started and no Review
+    /// sheet is needed.
+    pub confirmed_automatically: bool,
+}
+
 /// What the backend tells the UI.
 #[derive(Debug, Clone)]
 pub enum Event {
@@ -179,8 +189,8 @@ pub enum Event {
     LocalCreated(Result<(), String>),
     /// `None`: the dialog was dismissed.
     FolderPicked(Option<PathBuf>),
-    /// The id of the sync that was created, or why it was not.
-    SyncCreated(Result<String, String>),
+    /// The sync that was created, or why it was not.
+    SyncCreated(Result<CreatedSync, String>),
     Preview {
         pair_id: String,
         result: Result<Preview, PreviewFailure>,
@@ -957,11 +967,20 @@ fn spawn_create_sync(context: &Arc<Context>, new: NewSync) {
             Err(text) => Err(text),
         };
         let result = match created {
-            Ok(()) => {
+            Ok(review) => {
                 if let Err(text) = apply_config(&context.paths).await {
                     fail(&context, text);
                 }
-                Ok(id)
+                let confirmed_automatically = review == ReviewLevel::Automatic;
+                if confirmed_automatically
+                    && let Err(text) = start_rounds(std::slice::from_ref(&id)).await
+                {
+                    fail(&context, text);
+                }
+                Ok(CreatedSync {
+                    id,
+                    confirmed_automatically,
+                })
             }
             Err(text) => Err(text),
         };

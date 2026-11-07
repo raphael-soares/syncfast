@@ -406,6 +406,9 @@ pub fn activity(rounds: &[RoundView]) -> String {
                     .map(|(a, b)| a + b)
             ),
         );
+        if round.auto_reviewed.is_some() {
+            out.push_str("\treviewed automatically");
+        }
         if let Some(detail) = &round.detail {
             let _ = write!(out, "\t{detail}");
         }

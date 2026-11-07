@@ -19,10 +19,13 @@ pub fn warning_row(ui: &mut Ui, message: &str) -> egui::Response {
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = space::S;
                 ui.add(Icon::TriangleAlert.image(palette.warning, size::ICON));
-                ui.label(
-                    RichText::new(message)
-                        .font(theme::callout())
-                        .color(palette.text),
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(message)
+                            .font(theme::callout())
+                            .color(palette.text),
+                    )
+                    .wrap(),
                 );
             });
         })
