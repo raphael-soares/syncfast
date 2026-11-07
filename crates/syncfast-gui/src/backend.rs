@@ -19,7 +19,7 @@ use syncfast_core::filters::ExclusionSummary;
 use syncfast_core::flatpak;
 use syncfast_core::network::{Network as _, NetworkManager};
 use syncfast_core::notify::Notice;
-use syncfast_core::ops::first_round_confirmed;
+use syncfast_core::ops::{FIRST_ROUND_WAIT, FirstRound, first_round_confirmed};
 use syncfast_core::paths::Paths;
 use syncfast_core::preview::Preview;
 use syncfast_core::rclone::Rclone;
@@ -159,9 +159,9 @@ pub enum Command {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreatedSync {
     pub id: String,
-    /// Its review level is `automatic`: a round was started and no Review
-    /// sheet is needed.
-    pub confirmed_automatically: bool,
+    /// How its first round stands: only [`FirstRound::Held`] needs the
+    /// Review sheet.
+    pub first_round: FirstRound,
 }
 
 /// What the backend tells the UI.
@@ -779,18 +779,18 @@ fn round_trigger() -> Result<Arc<dyn Trigger>, String> {
     ))
 }
 
-/// Whether the first round of a sync at `automatic` review confirmed it;
-/// a round that cannot start is reported and leaves the review to the user.
-async fn first_round_confirms(context: &Context, id: &str) -> bool {
-    let confirmed = match round_trigger() {
-        Ok(trigger) => first_round_confirmed(&context.paths, &*trigger, id)
+/// How the first round of a sync at `automatic` review stands; a round that
+/// cannot start is reported and leaves the review to the user.
+async fn first_round_of(context: &Context, id: &str) -> FirstRound {
+    let first_round = match round_trigger() {
+        Ok(trigger) => first_round_confirmed(&context.paths, &*trigger, id, FIRST_ROUND_WAIT)
             .await
             .map_err(|err| err.to_string()),
         Err(text) => Err(text),
     };
-    confirmed.unwrap_or_else(|text| {
+    first_round.unwrap_or_else(|text| {
         fail(context, text);
-        false
+        FirstRound::Held
     })
 }
 
@@ -1014,12 +1014,12 @@ fn spawn_create_sync(context: &Arc<Context>, new: NewSync) {
                 if let Err(text) = apply_config(&context.paths).await {
                     fail(&context, text);
                 }
-                let confirmed_automatically =
-                    review == ReviewLevel::Automatic && first_round_confirms(&context, &id).await;
-                Ok(CreatedSync {
-                    id,
-                    confirmed_automatically,
-                })
+                let first_round = if review == ReviewLevel::Automatic {
+                    first_round_of(&context, &id).await
+                } else {
+                    FirstRound::Held
+                };
+                Ok(CreatedSync { id, first_round })
             }
             Err(text) => Err(text),
         };

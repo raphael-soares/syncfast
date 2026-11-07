@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use syncfast_core::config::split_remote;
+use syncfast_core::ops::FirstRound;
 use syncfast_core::state::GateKind;
 
 use crate::backend::{Command, CreatedSync, Event};
@@ -406,7 +407,7 @@ impl Sheets {
                 let Some(new) = session.creating.take() else {
                     return Vec::new();
                 };
-                if created.confirmed_automatically {
+                if created.first_round != FirstRound::Held {
                     self.current = Current::Closed;
                     return Vec::new();
                 }
