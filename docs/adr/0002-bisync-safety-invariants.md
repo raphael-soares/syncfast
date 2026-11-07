@@ -20,7 +20,7 @@
 - A normal round that fails with `Empty prior Path1 listing` or `Empty prior Path2 listing` (the pair was empty on both sides at its last sync, so rclone keeps empty listings and refuses to continue) is retried once in the same `run` as a `--resync`. It needs no review: a resync only copies, and an empty prior listing leaves no known deletion to propagate.
 - A local folder emptied behind the pair's back (an unmounted drive) deletes nothing on the remote: rclone refuses an empty current listing (`Empty current Path1 listing`, exit 7), and that is `Fault::LocalEmpty`, a `needs_attention` gate at once. Covered by `an_emptied_local_folder_needs_attention_at_once_and_the_remote_keeps_every_file`.
 - A failure the user can fix (account, quota, permission, missing remote folder, or transient failures lasting over 6 hours) sets `needs_attention`, the one gate that does not stop rounds. A `state.json` that is not valid JSON is set aside as `state.json.corrupt-<stamp>` and the pair goes back to its first review. An unreadable bisync workdir counts as a failed listing.
-- Google Docs are skipped (`--drive-skip-gdocs`). It is not a setting: the key is rejected until real fixtures decide it (phase 2 spike).
+- Google Docs are skipped (`--drive-skip-gdocs`). It is not a setting: the phase 2 spike rejected an `export` or `url` key (ADR 0010).
 
 ## Consequences
 - Some rounds stop and wait for the user; the UI and tray say so.

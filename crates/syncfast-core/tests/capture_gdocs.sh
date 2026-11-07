@@ -20,7 +20,13 @@ if [[ "$(id -u)" -eq 0 ]]; then
   exit 1
 fi
 
-if existing="$(rclone lsf "$base" 2>/dev/null)" && [[ -n "$existing" ]]; then
+code=0
+existing="$(rclone lsf "$base" 2>/dev/null)" || code=$?
+if [[ "$code" -ne 0 && "$code" -ne 3 ]]; then
+  echo "refusing to run: cannot tell whether $base exists (rclone lsf exit $code)" >&2
+  exit 1
+fi
+if [[ "$code" -eq 0 && -n "$existing" ]]; then
   echo "refusing to run: $base already has content" >&2
   exit 1
 fi
@@ -41,7 +47,7 @@ trap cleanup EXIT
 export_flags=(--drive-export-formats docx,xlsx,pptx,svg)
 url_flags=(--drive-export-formats url)
 
-office() { # office docx|xlsx <file> <text>
+office() {
   python3 - "$@" <<'PY'
 import sys
 import zipfile
@@ -67,7 +73,6 @@ with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
 PY
 }
 
-# Per scenario: fresh local/ state/ seed/ and a remote subfolder of its own.
 setup() {
   rm -rf "$root/local" "$root/state" "$root/seed" "$root/backup"
   mkdir -p "$root/local" "$root/state" "$root/seed"
@@ -118,7 +123,6 @@ prepare() {
   exit 1
 }
 
-# Listing flags: the subset of a bisync flag list that changes what rclone shows.
 list=()
 pick_list_flags() {
   list=()
@@ -131,7 +135,7 @@ pick_list_flags() {
   done
 }
 
-record() { # record <name> <exit> <flags...>
+record() {
   local name="$1" code="$2"
   shift 2
   echo "$code" > "$out/$name.exit"
@@ -146,7 +150,7 @@ record() { # record <name> <exit> <flags...>
   echo "$name: exit $code"
 }
 
-capture() { # capture <name> <flags...>
+capture() {
   local name="$1" code=0
   shift
   rm -f "$out/$name".*
@@ -157,20 +161,18 @@ capture() { # capture <name> <flags...>
   record "$name" "$code" "$@"
 }
 
-# again: the same flags once more, to see whether the result is stable.
-again() { # again <name> <flags...>
+again() {
   local name="$1"
   shift
   capture "${name}_again" "$@"
 }
 
-remote_edit() { # remote_edit <file> <text>: new content for an existing Doc
+remote_edit() {
   office docx "$root/edit.docx" "$2"
   rclone copyto --drive-import-formats docx "$root/edit.docx" "$remote_dir/$1"
 }
 
-# first_sync: what a first run brings to disk, dry run and real.
-first_sync() { # first_sync <prefix> <flags...>
+first_sync() {
   local prefix="$1"
   shift
   setup "${prefix}_first_sync"
@@ -179,8 +181,7 @@ first_sync() { # first_sync <prefix> <flags...>
   capture "${prefix}_first_sync" --resync --resync-mode newer "$@"
 }
 
-# edit_local: a local edit of an exported file, with and without import.
-edit_local() { # edit_local <name> <file> <kind> <import formats|-> <flags...>
+edit_local() {
   local name="$1" file="$2" kind="$3" imp="$4"
   shift 4
   local extra=()
@@ -206,7 +207,7 @@ edit_local_url() {
   capture url_edit_local_recover --resync --resync-mode newer "${url_flags[@]}"
 }
 
-edit_remote() { # edit_remote <prefix> <flags...>
+edit_remote() {
   local prefix="$1"
   shift
   setup "${prefix}_edit_remote"
@@ -239,7 +240,7 @@ edit_both_no_import() {
   capture export_edit_both_no_import "${export_flags[@]}"
 }
 
-no_changes() { # no_changes <prefix> <flags...>
+no_changes() {
   local prefix="$1"
   shift
   setup "${prefix}_no_changes"
@@ -248,8 +249,7 @@ no_changes() { # no_changes <prefix> <flags...>
   capture "${prefix}_no_changes" "$@"
 }
 
-# new_local: a docx created on disk that no Doc corresponds to.
-new_local() { # new_local <name> <import formats|-> <flags...>
+new_local() {
   local name="$1" imp="$2"
   shift 2
   local extra=()
@@ -262,7 +262,7 @@ new_local() { # new_local <name> <import formats|-> <flags...>
   again "$name" "$@" "${extra[@]}"
 }
 
-delete_local() { # delete_local <prefix> <file> <flags...>
+delete_local() {
   local prefix="$1" file="$2"
   shift 2
   setup "${prefix}_delete_local"
@@ -272,7 +272,7 @@ delete_local() { # delete_local <prefix> <file> <flags...>
   capture "${prefix}_delete_local" "$@"
 }
 
-rename_remote() { # rename_remote <prefix> <flags...>: budget Sheet renamed in Drive
+rename_remote() {
   local prefix="$1"
   shift
   setup "${prefix}_rename_remote"
@@ -283,8 +283,7 @@ rename_remote() { # rename_remote <prefix> <flags...>: budget Sheet renamed in D
   again "${prefix}_rename_remote" "$@"
 }
 
-# over_cap: three of four files vanish locally; the cap is 50 percent.
-over_cap() { # over_cap <prefix> <doc1> <doc2> <doc3> <flags...>
+over_cap() {
   local prefix="$1" a="$2" b="$3" c="$4"
   shift 4
   setup "${prefix}_with_max_delete_and_backup_dir1_over_cap"
@@ -295,9 +294,7 @@ over_cap() { # over_cap <prefix> <doc1> <doc2> <doc3> <flags...>
     --max-delete 50 --backup-dir1 "$root/backup/" "$@"
 }
 
-# under_cap: one Doc is deleted in Drive, so the local copy is the one lost
-# and --backup-dir1 should keep it.
-under_cap() { # under_cap <prefix> <flags...>
+under_cap() {
   local prefix="$1"
   shift
   setup "${prefix}_with_max_delete_and_backup_dir1_under_cap"
