@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{harness, pair, view_model};
+use common::{harness, harness_in, pair, view_model};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use syncfast_core::state::GateKind;
 use syncfast_gui::gui_state::SettingsPane;
@@ -29,7 +29,27 @@ fn accounts(remotes: Vec<RemoteRow>) -> ViewModel {
 }
 
 fn screen() -> impl FnMut(&mut egui::Ui, &ViewModel) -> Vec<Action> + 'static {
-    |ui, vm| ui::settings::content(ui, vm)
+    |ui, vm| ui::settings::dialog(ui.ctx(), vm, false)
+}
+
+fn screen_under_an_alert() -> impl FnMut(&mut egui::Ui, &ViewModel) -> Vec<Action> + 'static {
+    |ui, vm| {
+        let mut actions = ui::settings::dialog(ui.ctx(), vm, true);
+        actions.extend(ui::remove_account::show(ui.ctx(), vm));
+        actions
+    }
+}
+
+fn click_at(harness: &egui_kittest::Harness<'_, common::Frame>, pos: egui::Pos2) {
+    harness.hover_at(pos);
+    for pressed in [true, false] {
+        harness.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
 }
 
 #[test]
@@ -187,25 +207,119 @@ fn theme_files_that_could_not_be_read_are_listed() {
 }
 
 #[test]
-fn the_back_button_closes_settings() {
+fn the_close_button_closes_settings() {
     let mut harness = harness(accounts(Vec::new()), screen());
     harness.run();
 
-    harness.get_by_label("Back").click();
+    harness.get_by_label("Close").click();
     harness.run();
 
     assert_eq!(harness.state().actions, [Action::CloseSettings]);
 }
 
 #[test]
-fn escape_closes_settings() {
+fn escape_closes_settings_unless_a_modal_is_above() {
+    let mut open = harness(accounts(Vec::new()), screen());
+    open.run();
+    open.key_press(egui::Key::Escape);
+    open.run();
+    assert_eq!(open.state().actions, [Action::CloseSettings]);
+
+    let mut covered = harness(accounts(Vec::new()), |ui, vm| {
+        ui::settings::dialog(ui.ctx(), vm, true)
+    });
+    covered.run();
+    covered.key_press(egui::Key::Escape);
+    covered.run();
+    assert!(covered.state().actions.is_empty());
+}
+
+#[test]
+fn a_click_outside_the_dialog_closes_it_unless_a_modal_is_above() {
+    let mut open = harness(accounts(Vec::new()), screen());
+    open.run();
+    click_at(&open, egui::pos2(4.0, 4.0));
+    open.run();
+    assert_eq!(open.state().actions, [Action::CloseSettings]);
+
+    let mut covered = harness(accounts(Vec::new()), |ui, vm| {
+        ui::settings::dialog(ui.ctx(), vm, true)
+    });
+    covered.run();
+    click_at(&covered, egui::pos2(4.0, 4.0));
+    covered.run();
+    assert!(covered.state().actions.is_empty());
+}
+
+#[test]
+fn a_click_inside_the_dialog_keeps_it_open() {
     let mut harness = harness(accounts(Vec::new()), screen());
     harness.run();
 
-    harness.key_press(egui::Key::Escape);
+    click_at(&harness, egui::pos2(450.0, 300.0));
     harness.run();
 
-    assert_eq!(harness.state().actions, [Action::CloseSettings]);
+    assert!(harness.state().actions.is_empty());
+}
+
+#[test]
+fn an_alert_over_settings_takes_the_input() {
+    let vm = ViewModel {
+        removing_account: Some("drive".to_owned()),
+        ..accounts(vec![remote("drive", "drive", true)])
+    };
+    let mut harness = harness(vm, screen_under_an_alert());
+    harness.run();
+
+    harness.get_by_label("Appearance").click();
+    harness.run();
+    assert!(harness.state().actions.is_empty());
+
+    harness.get_by_label("Cancel").click();
+    harness.run();
+    assert_eq!(harness.state().actions, [Action::CancelRemoveAccount]);
+}
+
+#[test]
+fn the_sidebar_groups_panes_under_syncs_and_app() {
+    let mut harness = harness(accounts(Vec::new()), screen());
+    harness.run();
+
+    let syncs = harness.get_by_label("Syncs").rect();
+    let accounts = harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, "Accounts")
+        .rect();
+    let app = harness.get_by_label("App").rect();
+    let appearance = harness.get_by_label("Appearance").rect();
+
+    assert!(syncs.top() < accounts.top());
+    assert!(accounts.top() < app.top());
+    assert!(app.top() < appearance.top());
+}
+
+#[test]
+fn the_dialog_fits_the_smallest_window_in_both_themes() {
+    let window = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(760.0, 520.0));
+    for palette in [
+        syncfast_gui::theme::Palette::light(),
+        syncfast_gui::theme::Palette::dark(),
+    ] {
+        let mut harness = harness_in(
+            accounts(vec![remote("drive", "drive", true)]),
+            window.size(),
+            palette,
+            screen(),
+        );
+        harness.run();
+
+        for label in ["Close", "Appearance", "Add Google Drive Account…"] {
+            let rect = harness.get_by_label(label).rect();
+            assert!(
+                window.shrink(20.0).contains_rect(rect),
+                "{label}: {rect:?} is outside the dialog"
+            );
+        }
+    }
 }
 
 #[test]

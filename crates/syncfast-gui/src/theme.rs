@@ -330,6 +330,8 @@ pub mod size {
     pub const WINDOW_DEFAULT: [f32; 2] = [960.0, 640.0];
     pub const WINDOW_MIN: [f32; 2] = [760.0, 520.0];
     pub const SHEET_WIDTH: f32 = 560.0;
+    pub const DIALOG_MAX: [f32; 2] = [880.0, 620.0];
+    pub const DIALOG_SIDEBAR: f32 = 200.0;
     /// A sheet is at most this fraction of the window tall.
     pub const SHEET_MAX_HEIGHT: f32 = 0.8;
     pub const SWITCH: [f32; 2] = [40.0, 22.0];

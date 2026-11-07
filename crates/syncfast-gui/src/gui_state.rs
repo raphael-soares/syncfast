@@ -50,15 +50,43 @@ pub enum SettingsPane {
     Appearance,
 }
 
+/// The sidebar groups the panes of Settings sit under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsGroup {
+    Syncs,
+    App,
+}
+
+impl SettingsGroup {
+    pub const ALL: [Self; 2] = [Self::Syncs, Self::App];
+
+    #[must_use]
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Syncs => "Syncs",
+            Self::App => "App",
+        }
+    }
+}
+
 impl SettingsPane {
+    /// In the order the sidebar lists them, group by group.
     pub const ALL: [Self; 2] = [Self::Accounts, Self::Appearance];
 
-    /// The pane's name, which is also the title of the window while it is shown.
+    /// The pane's name, shown in the sidebar and as the title of its content.
     #[must_use]
     pub fn title(self) -> &'static str {
         match self {
             Self::Accounts => "Accounts",
             Self::Appearance => "Appearance",
+        }
+    }
+
+    #[must_use]
+    pub fn group(self) -> SettingsGroup {
+        match self {
+            Self::Accounts => SettingsGroup::Syncs,
+            Self::Appearance => SettingsGroup::App,
         }
     }
 }

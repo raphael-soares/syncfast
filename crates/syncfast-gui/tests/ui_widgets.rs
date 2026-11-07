@@ -9,7 +9,8 @@ use syncfast_gui::theme::{self, Palette, ThemeChoice, Themes};
 use syncfast_gui::ui::widgets::{
     AlertButton, BadgeSize, FolderNode, FolderTree, NodeState, PrimaryKind, SheetAction,
     SheetButtons, SidebarRow, TreeAction, alert, destructive_button, folder_tree, icon_button,
-    inline_error, progress_bar, segmented, sheet, sidebar_row, status_badge, switch, text_field,
+    inline_error, progress_bar, segmented, setting_row, sheet, sidebar_row, status_badge, switch,
+    text_field,
 };
 
 /// Installs the theme, and tells whether fonts are usable: `set_fonts` takes
@@ -566,4 +567,53 @@ fn reload_picks_up_a_theme_written_after_the_first_scan() {
     themes.reload();
 
     assert_eq!(themes.names(), ["late.json"]);
+}
+
+#[test]
+fn a_setting_row_puts_the_label_and_caption_left_of_the_control_and_centers_them() {
+    let mut harness = harness(
+        |ui, (): &mut ()| {
+            setting_row(ui, "Theme", Some("Follows the desktop"), |ui| {
+                ui.button("Choose")
+            });
+        },
+        (),
+    );
+    harness.run();
+
+    let label = harness.get_by_label("Theme").rect();
+    let caption = harness.get_by_label("Follows the desktop").rect();
+    let control = harness.get_by_label("Choose").rect();
+
+    assert!(label.right() <= control.left());
+    assert!(caption.right() <= control.left());
+    assert!(label.bottom() <= caption.top());
+    let text = label.union(caption);
+    assert!((text.center().y - control.center().y).abs() < 2.0);
+}
+
+#[test]
+fn a_setting_row_grows_when_its_caption_wraps_instead_of_spilling_into_the_next_row() {
+    let mut harness = harness(
+        |ui, (): &mut ()| {
+            ui.set_max_width(320.0);
+            setting_row(
+                ui,
+                "Theme",
+                Some("A long caption that has to wrap onto several lines in a narrow column"),
+                |ui| ui.button("Choose"),
+            );
+            setting_row(ui, "Next", None, |ui| ui.button("Other"));
+        },
+        (),
+    );
+    harness.run();
+
+    let caption = harness.get_by_label_contains("A long caption").rect();
+    let control = harness.get_by_label("Choose").rect();
+    let next = harness.get_by_label("Next").rect();
+
+    assert!(caption.height() > 2.0 * 13.0, "the caption did not wrap");
+    assert!(caption.right() <= control.left());
+    assert!(caption.bottom() <= next.top());
 }

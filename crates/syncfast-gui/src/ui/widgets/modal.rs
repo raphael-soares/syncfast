@@ -1,4 +1,4 @@
-use egui::{Context, Id, Key, Order, Sense};
+use egui::{Context, Id, Key, LayerId, Order, Sense};
 
 use crate::theme;
 
@@ -6,17 +6,20 @@ use crate::theme;
 ///
 /// Drawn on `Order::Middle`, under the panels (`Order::Foreground`): a click
 /// on a click-sensitive area raises it within its order, so a scrim sharing
-/// the panel's order could end up over it.
+/// the panel's order could end up over it. It raises itself every frame to
+/// stay over the Settings dialog, which shares this order.
 pub(super) fn scrim(ctx: &Context, id: Id) {
     let palette = theme::palette(ctx);
     let screen = ctx.content_rect();
-    egui::Area::new(id.with("scrim"))
+    let id = id.with("scrim");
+    egui::Area::new(id)
         .order(Order::Middle)
         .fixed_pos(screen.min)
         .show(ctx, |ui| {
             let (rect, _) = ui.allocate_exact_size(screen.size(), Sense::click_and_drag());
             ui.painter().rect_filled(rect, 0.0, palette.shadow);
         });
+    ctx.move_to_top(LayerId::new(Order::Middle, id));
 }
 
 /// Drops keyboard focus from the window below on the first frame a modal is

@@ -48,10 +48,10 @@ pub fn view_model(pairs: Vec<PairRow>, selected: Option<&str>) -> ViewModel {
 
 /// Installs the theme and tells whether fonts are usable: `set_fonts` takes
 /// effect on the next pass, so the first one must not draw.
-fn ready(ui: &Ui) -> bool {
+fn ready(ui: &Ui, palette: &Palette) -> bool {
     theme::install_with(
         ui.ctx(),
-        &Palette::dark(),
+        palette,
         fastframe_text::TextRendering::platform_default(),
     );
     ui.ctx().fonts(|fonts| {
@@ -64,22 +64,30 @@ fn ready(ui: &Ui) -> bool {
 /// Draws `screen` with the view model every frame and collects its actions.
 pub fn harness(
     vm: ViewModel,
+    screen: impl FnMut(&mut Ui, &ViewModel) -> Vec<Action> + 'static,
+) -> Harness<'static, Frame> {
+    harness_in(vm, egui::vec2(900.0, 600.0), Palette::dark(), screen)
+}
+
+/// Like [`harness`], in a window of `size` painted with `palette`.
+pub fn harness_in(
+    vm: ViewModel,
+    size: egui::Vec2,
+    palette: Palette,
     mut screen: impl FnMut(&mut Ui, &ViewModel) -> Vec<Action> + 'static,
 ) -> Harness<'static, Frame> {
-    let mut harness = Harness::builder()
-        .with_size(egui::vec2(900.0, 600.0))
-        .build_ui_state(
-            move |ui, frame: &mut Frame| {
-                if ready(ui) {
-                    let actions = screen(ui, &frame.vm);
-                    frame.actions.extend(actions);
-                }
-            },
-            Frame {
-                vm,
-                actions: Vec::new(),
-            },
-        );
+    let mut harness = Harness::builder().with_size(size).build_ui_state(
+        move |ui, frame: &mut Frame| {
+            if ready(ui, &palette) {
+                let actions = screen(ui, &frame.vm);
+                frame.actions.extend(actions);
+            }
+        },
+        Frame {
+            vm,
+            actions: Vec::new(),
+        },
+    );
     harness.run_ok();
     harness
 }
