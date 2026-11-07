@@ -15,7 +15,6 @@ use crate::rclone::RcloneError;
 use crate::state::{ConfirmMarker, GateKind, State, is_running};
 use crate::watch::Trigger;
 
-/// How long `add` waits for the round that checks the first review.
 /// How long the first round of a new sync is waited for.
 pub const FIRST_ROUND_WAIT: Duration = Duration::from_secs(10);
 
