@@ -339,22 +339,28 @@ fn text_control(
 ) {
     let title = label(field.def.name);
     let palette = theme::palette(ui.ctx());
-    let shown = match field.row.value {
-        Value::Bandwidth(_) => Some(value_label(field.def.name, &field.row.value)),
-        _ => suffix(field.def.name).map(str::to_owned),
-    };
-    if let Some(shown) = shown {
-        ui.label(
-            RichText::new(shown)
-                .font(theme::body())
-                .color(palette.secondary),
-        );
-    }
+    ui.allocate_ui_with_layout(
+        egui::vec2(size::SETTING_UNIT, size::CONTROL_HEIGHT),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            if let Some(unit) = suffix(field.def.name) {
+                ui.label(
+                    RichText::new(unit)
+                        .font(theme::body())
+                        .color(palette.secondary),
+                );
+            }
+        },
+    );
     let mut text = typed.unwrap_or_else(|| match field.row.value {
         Value::Bandwidth(Bandwidth::Off) => String::new(),
         value => value.to_string(),
     });
-    let response = inline_field(ui, title, &mut text, size::SETTING_FIELD);
+    let hint = match field.def.access {
+        Access::Bandwidth { .. } => "Unlimited",
+        _ => "",
+    };
+    let response = inline_field(ui, title, &mut text, hint, size::SETTING_FIELD);
     if response.changed() {
         *error = None;
         field.keep(ui, Some(text.clone()), None);

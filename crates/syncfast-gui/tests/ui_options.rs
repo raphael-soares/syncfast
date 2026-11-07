@@ -306,6 +306,7 @@ fn the_options_fit_the_minimum_window_in_both_themes() {
             "Check Drive every",
             "Limit uploads to",
             "Limit downloads to",
+            "Stop when more than this share would be deleted",
             "When a first sync finds different files",
         ] {
             let rect = harness.get_all_by_label(label).next().unwrap().rect();
@@ -465,7 +466,7 @@ fn bandwidth_is_unlimited_until_a_limit_is_set() {
     harness.run();
 
     assert_eq!(harness.query_all_by_label("Default: Unlimited").count(), 2);
-    assert_eq!(harness.query_all_by_label("Unlimited").count(), 2);
+    assert!(harness.query_by_label("Unlimited").is_none());
 }
 
 #[test]
@@ -477,19 +478,55 @@ fn a_limit_reads_in_binary_units_and_says_what_it_overrides() {
     let mut harness = harness(vm, screen());
     harness.run();
 
-    harness.get_by_label("2 MiB/s");
-    harness.get_by_label("1 GiB/s");
+    for (label, value) in [("Limit uploads to", "2M"), ("Limit downloads to", "1G")] {
+        let field = harness.get_by_role_and_label(Role::TextInput, label);
+        assert_eq!(field.accesskit_node().value(), Some(value.to_owned()));
+    }
     harness.get_by_label("Overrides the default (Unlimited)");
     harness.get_by_label("Overrides the default (500 KiB/s)");
 }
 
 #[test]
 fn an_inherited_limit_is_shown_as_the_default() {
-    let mut harness = harness(options("limit_upload = \"500K\"", ""), screen());
+    let mut harness = harness(
+        options("limit_upload = \"500K\"\nlimit_download = \"1G\"", ""),
+        screen(),
+    );
     harness.run();
 
     harness.get_by_label("Default: 500 KiB/s");
-    harness.get_by_label("500 KiB/s");
+    harness.get_by_label("Default: 1 GiB/s");
+}
+
+#[test]
+fn every_number_field_of_the_options_ends_at_the_same_edge() {
+    let vm = options(
+        "",
+        "limit_upload = \"2M\"\nversions_keep_days = 30\nmax_delete = 20\n",
+    );
+    let mut harness = harness_in(vm, egui::vec2(900.0, 1400.0), Palette::dark(), screen());
+    harness.run();
+
+    let right = |harness: &Harness<'static, Frame>, label: &str| {
+        harness
+            .get_by_role_and_label(Role::TextInput, label)
+            .rect()
+            .right()
+    };
+    let reference = right(&harness, "Check Drive every");
+    for label in [
+        "Wait after changes",
+        "Limit uploads to",
+        "Limit downloads to",
+        "Keep for",
+        "Stop when more than this share would be deleted",
+    ] {
+        let edge = right(&harness, label);
+        assert!(
+            (edge - reference).abs() < 0.5,
+            "{label} ends at {edge}, not {reference}"
+        );
+    }
 }
 
 #[test]
