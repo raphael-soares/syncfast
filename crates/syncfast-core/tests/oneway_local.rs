@@ -52,7 +52,7 @@ struct Bed {
 }
 
 #[allow(clippy::print_stderr)]
-async fn bed(mode: &str) -> Option<Bed> {
+fn bed(mode: &str) -> Option<Bed> {
     let Ok(found) = Rclone::from_env() else {
         eprintln!("skipping: rclone is not installed");
         return None;
@@ -227,7 +227,7 @@ fn numbered(count: usize) -> Vec<String> {
 
 #[tokio::test]
 async fn upload_never_deletes_and_replaces_a_changed_file() {
-    let Some(bed) = bed("upload").await else {
+    let Some(bed) = bed("upload") else {
         return;
     };
     write(&bed.local, "changed.txt", "the new local text");
@@ -263,7 +263,7 @@ async fn upload_never_deletes_and_replaces_a_changed_file() {
 
 #[tokio::test]
 async fn download_keeps_the_replaced_local_file_in_versions() {
-    let Some(bed) = bed("download").await else {
+    let Some(bed) = bed("download") else {
         return;
     };
     write(&bed.local, "changed.txt", "old");
@@ -291,7 +291,7 @@ async fn download_keeps_the_replaced_local_file_in_versions() {
 
 #[tokio::test]
 async fn mirror_up_deletes_extras_and_they_land_in_the_remote_versions() {
-    let Some(bed) = bed("mirror_up").await else {
+    let Some(bed) = bed("mirror_up") else {
         return;
     };
     write(&bed.local, "a.txt", "a");
@@ -311,7 +311,7 @@ async fn mirror_up_deletes_extras_and_they_land_in_the_remote_versions() {
 
 #[tokio::test]
 async fn mirror_down_deletes_extras_locally_and_they_land_in_versions() {
-    let Some(bed) = bed("mirror_down").await else {
+    let Some(bed) = bed("mirror_down") else {
         return;
     };
     write(&bed.remote, "a.txt", "a");
@@ -336,7 +336,7 @@ async fn an_empty_mirror_source_needs_attention_and_the_destination_keeps_every_
         ("mirror_down", Fault::RemoteEmpty),
     ] {
         for level in ["manual", "deletions", "automatic"] {
-            let Some(bed) = bed(mode).await else { return };
+            let Some(bed) = bed(mode) else { return };
             let (source, destination) = if mode == "mirror_up" {
                 (&bed.local, &bed.remote)
             } else {
@@ -391,7 +391,7 @@ async fn an_empty_mirror_source_needs_attention_and_the_destination_keeps_every_
 
 #[tokio::test]
 async fn more_deletions_than_max_delete_stops_at_too_many_deletes_and_the_confirmed_review_runs() {
-    let Some(bed) = bed("mirror_up").await else {
+    let Some(bed) = bed("mirror_up") else {
         return;
     };
     for name in numbered(10) {
@@ -443,7 +443,7 @@ async fn more_deletions_than_max_delete_stops_at_too_many_deletes_and_the_confir
 #[tokio::test]
 async fn the_first_mirror_run_is_held_at_manual_and_deletions_and_confirms_itself_at_automatic() {
     for level in ["manual", "deletions", "automatic"] {
-        let Some(bed) = bed("mirror_up").await else {
+        let Some(bed) = bed("mirror_up") else {
             return;
         };
         bed.set_mode("mirror_up", level, "");
@@ -472,7 +472,7 @@ async fn the_first_mirror_run_is_held_at_manual_and_deletions_and_confirms_itsel
 
 #[tokio::test]
 async fn leaving_and_returning_to_bisync_rebuilds_the_listings() {
-    let Some(bed) = bed("bisync").await else {
+    let Some(bed) = bed("bisync") else {
         return;
     };
     write(&bed.local, "a.txt", "a");
@@ -512,7 +512,7 @@ async fn leaving_and_returning_to_bisync_rebuilds_the_listings() {
 
 #[tokio::test]
 async fn a_confirmation_given_in_one_mode_does_not_start_another_mode_uncapped() {
-    let Some(bed) = bed("bisync").await else {
+    let Some(bed) = bed("bisync") else {
         return;
     };
     write(&bed.local, "a.txt", "a");
@@ -533,7 +533,7 @@ async fn a_confirmation_given_in_one_mode_does_not_start_another_mode_uncapped()
 
 #[tokio::test]
 async fn remote_versions_are_purged_by_the_date_in_the_folder_name() {
-    let Some(bed) = bed("mirror_up").await else {
+    let Some(bed) = bed("mirror_up") else {
         return;
     };
     write(&bed.local, "a.txt", "a");

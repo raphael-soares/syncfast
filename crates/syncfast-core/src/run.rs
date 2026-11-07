@@ -15,7 +15,7 @@ use crate::behavior::{Behavior, GoogleDocs, ReviewLevel, SyncMode};
 use crate::bisync::{
     Fault, Outcome, RoundMode, bisync_args, classify, is_empty_prior_listing, log_file, stamp,
 };
-use crate::bisync_log::{LogLine, read_log, summarize};
+use crate::bisync_log::{LogLine, RunSummary, read_log, summarize};
 use crate::config::{Config, GlobalConfigError, Pair, PairError};
 use crate::conflicts::{Naming, find_conflicts};
 use crate::filters::{self, DirMatcher, FiltersError, FiltersFile};
@@ -725,17 +725,7 @@ impl Round<'_> {
         } = attempt;
         let finished = env.now().timestamp();
         let behavior = self.behavior;
-        let (outcome, mut summary) = if behavior.mode.is_one_way() {
-            (
-                classify_oneway(exit_code, &lines),
-                summarize_oneway(&changes, behavior.mode, exit_code),
-            )
-        } else {
-            (
-                classify(exit_code, &lines, &env.paths.bisync_workdir(id)),
-                summarize(&lines),
-            )
-        };
+        let (outcome, mut summary) = self.judge(exit_code, &lines, &changes);
         let alerts: Vec<Alert> = summary
             .conflicts_new
             .filter(|count| *count > 0)
@@ -785,6 +775,25 @@ impl Round<'_> {
             ConfirmMarker::remove(env.paths, id).await?;
         }
         Ok((mode, outcome))
+    }
+
+    fn judge(&self, exit_code: i32, lines: &[LogLine], changes: &str) -> (Outcome, RunSummary) {
+        let mode = self.behavior.mode;
+        if mode.is_one_way() {
+            (
+                classify_oneway(exit_code, lines),
+                summarize_oneway(changes, mode, exit_code),
+            )
+        } else {
+            (
+                classify(
+                    exit_code,
+                    lines,
+                    &self.env.paths.bisync_workdir(&self.pair.id),
+                ),
+                summarize(lines),
+            )
+        }
     }
 
     /// The floor of the one-way modes: a source with no file to send is
