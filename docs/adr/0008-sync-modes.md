@@ -23,3 +23,6 @@ Phase 1 had one way to sync, `rclone bisync`. Some folders only need to go one w
 - The one-way fixtures (`oneway_*`) pin `--combined` under `--dry-run`, the `--max-delete` exit code and text, and the early exit of `lsf`; an rclone upgrade that changes them fails the tests.
 - Syncs on the same account that sit at its root overlap a `mirror_up` sync's versions folder, so the config rejects them (`remote folder overlaps "<name>"`).
 - `upload` replaces a newer remote file with an older local one, as `rclone copy` does. Drive keeps the replaced revision.
+- A `--max-delete` stop (exit 7) is not a clean stop. rclone deletes the first N files and aborts, so a mirror that hits the cap has already deleted up to N files, kept in versions when those are on. The gate says how many (`N files were already deleted before the stop ...`) and the review lists only what is left.
+- A confirmed review is tied to the mode it was shown for: the marker records the mode and is ignored and dropped when the mode differs, so a confirmation never starts another mode uncapped.
+- Activity reads one-way rounds from the report kept next to their log (`runs/<stamp>.<mode>.changes`), with `classify_oneway` and `summarize_oneway`, because those logs have no bisync closing notice.

@@ -19,6 +19,8 @@ The **Mode** section of a sync's **Options** tab chooses what the sync does. It 
 
 Changing the mode holds the sync for a review of its next round. A mirror never runs from an empty source folder: the sync needs attention and the destination keeps every file. Watching for changes only exists in modes that read this computer, conflicts only in **Two-way**, and the rows that do nothing in a mode are hidden. Going back to **Two-way** asks for a review that rebuilds the comparison between both sides.
 
+A mirror that stops at the deletion cap has already deleted up to that many files before the stop. The sync says how many, and the review shows what is left. Those files are kept as versions when versions are on.
+
 ## App
 
 - **General**: **Start syncfast when you log in** starts syncfast hidden in the tray when you log in. It is available in the Flatpak install, where the desktop is asked through the Background portal. If the desktop refuses, the row says so and the setting stays as you chose it. On Hyprland the desktop does not run the entry, so the row tells you to start `syncfast-gui --start-hidden` from your own Hyprland config.
