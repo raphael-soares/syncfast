@@ -839,19 +839,19 @@ fn the_mode_row_offers_every_mode_and_says_what_the_current_one_does() {
     let mut harness = harness(options("", "mode = \"upload\"\n"), screen());
     harness.run();
 
-    harness.get_by_label("Mode");
+    harness.get_by_role_and_label(Role::ComboBox, "Mode");
     assert_eq!(
         harness
-            .get_by_role_and_label(Role::ComboBox, "Sync mode")
+            .get_by_role_and_label(Role::ComboBox, "Mode")
             .value()
             .as_deref(),
         Some("Upload only")
     );
-    harness.get_by_label("New and changed files go to Drive. Nothing is deleted there.");
+    harness.get_by_label_contains("Nothing is ever deleted");
     harness.get_by_label("Changing the mode holds this sync for a review.");
 
     harness
-        .get_by_role_and_label(Role::ComboBox, "Sync mode")
+        .get_by_role_and_label(Role::ComboBox, "Mode")
         .click();
     harness.run();
     for name in [
@@ -869,13 +869,35 @@ fn the_mode_row_offers_every_mode_and_says_what_the_current_one_does() {
 }
 
 #[test]
-fn a_mirror_mode_warns_about_what_it_deletes() {
-    let mut harness = harness(options("", "mode = \"mirror_down\"\n"), screen());
-    harness.run();
+fn a_mirror_mode_warns_about_what_it_deletes_and_whether_it_is_kept() {
+    let warns = |pair_settings: &str, needle: &str| {
+        let mut harness = harness(options("", pair_settings), screen());
+        harness.run();
+        harness.query_all_by_label_contains(needle).count() > 0
+    };
 
-    harness.get_by_label(
-        "Files that exist only on this computer are deleted. The ones replaced or deleted go to the versions folder.",
-    );
+    assert!(warns(
+        "mode = \"mirror_down\"\n",
+        "kept as versions for 30 days"
+    ));
+    assert!(warns(
+        "mode = \"mirror_down\"\n",
+        "An empty folder on Drive is never mirrored"
+    ));
+    assert!(warns(
+        "mode = \"mirror_up\"\n",
+        "An empty folder is never mirrored"
+    ));
+    assert!(warns(
+        "mode = \"mirror_up\"\nversions = false\n",
+        "deleted there and not kept"
+    ));
+    assert!(!warns(
+        "mode = \"mirror_up\"\nversions = false\n",
+        "kept as versions"
+    ));
+    assert!(!warns("mode = \"upload\"\n", "never mirrored"));
+    assert!(!warns("", "never mirrored"));
 }
 
 #[test]

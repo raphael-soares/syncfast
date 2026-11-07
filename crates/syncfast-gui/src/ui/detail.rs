@@ -11,7 +11,7 @@ use super::format::{progress_fraction, progress_line};
 use super::menu::{self, Tone};
 use super::relative::synced;
 use super::widgets::{
-    BadgeSize, ButtonKind, button_with_icon, icon_button, inline_error, primary_button,
+    BadgeSize, ButtonKind, button_with_icon, chip, icon_button, inline_error, primary_button,
     progress_bar, segmented, status_badge, toolbar,
 };
 use super::{Action, PairRow, ViewModel, activity, conflicts, filters, options};
@@ -103,7 +103,7 @@ fn pair_detail(ui: &mut Ui, vm: &ViewModel, pair: &PairRow, palette: &Palette) -
         pause_button(ui, pair, &mut actions);
         sync_button(ui, pair, &mut actions);
         if sync_mode != SyncMode::Bisync {
-            mode_chip(ui, sync_mode);
+            chip(ui, options::mode_label(sync_mode.name()));
         }
     });
     padded(ui, |ui| {
@@ -143,24 +143,6 @@ fn tabs_of(mode: SyncMode) -> Vec<DetailTab> {
         .into_iter()
         .filter(|tab| *tab != DetailTab::Conflicts || mode == SyncMode::Bisync)
         .collect()
-}
-
-fn mode_chip(ui: &mut Ui, mode: SyncMode) {
-    let palette = theme::palette(ui.ctx());
-    let text = options::mode_label(mode.name());
-    let response = egui::Frame::new()
-        .stroke(egui::Stroke::new(1.0, palette.secondary))
-        .corner_radius(radius::CARD)
-        .inner_margin(Margin::symmetric(8, 2))
-        .show(ui, |ui| {
-            ui.label(
-                RichText::new(text)
-                    .font(theme::callout())
-                    .color(palette.secondary),
-            )
-        })
-        .response;
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
 }
 
 fn sync_button(ui: &mut Ui, pair: &PairRow, actions: &mut Vec<Action>) {
@@ -232,11 +214,19 @@ fn card_text(pair: &PairRow, now: jiff::Timestamp) -> CardText {
             | GateKind::NeedsReviewCriticalError
             | GateKind::NeedsReviewModeChanged
             | GateKind::TooManyDeletes
-            | GateKind::AllFilesChanged => CardText {
-                phrase: "Review what will change before syncing resumes.".to_owned(),
-                detail: None,
-                button: Some(("Review…", Action::OpenReview(pair.id.clone()))),
-            },
+            | GateKind::AllFilesChanged => {
+                let review = "Review what will change before syncing resumes.";
+                let stopped = gate == GateKind::TooManyDeletes && !pair.gate_detail.is_empty();
+                CardText {
+                    phrase: if stopped {
+                        format!("{} {review}", pair.gate_detail)
+                    } else {
+                        review.to_owned()
+                    },
+                    detail: None,
+                    button: Some(("Review…", Action::OpenReview(pair.id.clone()))),
+                }
+            }
             GateKind::AuthError => CardText {
                 phrase: format!(
                     "Reconnect \"{}\" in Settings > Accounts.",

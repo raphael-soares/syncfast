@@ -300,14 +300,14 @@ fn warnings(section: &str, value_of: &dyn Fn(&str) -> Option<Value>) -> Vec<Stri
     let is = |name: &str, wanted: Value| value_of(name) == Some(wanted);
     let kept = !is("versions", Value::Bool(false));
     match section {
-        "Mode" if is("mode", Value::Choice("mirror_up")) => vec![
-            "Files that exist only on Drive are deleted. The ones replaced or deleted are kept in .syncfast-versions on Drive."
-                .to_owned(),
-        ],
-        "Mode" if is("mode", Value::Choice("mirror_down")) => vec![
-            "Files that exist only on this computer are deleted. The ones replaced or deleted go to the versions folder."
-                .to_owned(),
-        ],
+        "Mode" if is("mode", Value::Choice("mirror_up")) => vec![format!(
+            "Drive becomes an exact copy of this folder. Files that exist only on Drive are deleted there{} An empty folder is never mirrored.",
+            kept_clause(&is, value_of)
+        )],
+        "Mode" if is("mode", Value::Choice("mirror_down")) => vec![format!(
+            "This folder becomes an exact copy of Drive. Files that exist only on this computer are deleted{} An empty folder on Drive is never mirrored.",
+            kept_clause(&is, value_of)
+        )],
         "Conflicts" if is("conflict_loser", Value::Choice("delete")) => {
             let message = match value_of("versions_keep_days") {
                 Some(days) if kept => format!(
@@ -326,6 +326,23 @@ fn warnings(section: &str, value_of: &dyn Fn(&str) -> Option<Value>) -> Vec<Stri
                 .to_owned(),
         ],
         _ => Vec::new(),
+    }
+}
+
+/// How a mirror says what happens to the files it deletes: kept for the
+/// versions period, or not kept at all.
+fn kept_clause(
+    is: &dyn Fn(&str, Value) -> bool,
+    value_of: &dyn Fn(&str) -> Option<Value>,
+) -> String {
+    match value_of("versions_keep_days") {
+        Some(days) if !is("versions", Value::Bool(false)) => {
+            format!(
+                " and kept as versions for {}.",
+                value_label("versions_keep_days", &days)
+            )
+        }
+        _ => " and not kept.".to_owned(),
     }
 }
 
@@ -591,7 +608,7 @@ fn label(key: &str) -> &'static str {
         "review" => "Review",
         "resync_mode" => "When a first sync finds different files",
         "empty_dirs" => "Sync empty folders",
-        "mode" => "Sync mode",
+        "mode" => "Mode",
         "notifications.needs_action" => "Needs action",
         "notifications.conflicts" => "Conflicts",
         FAILURES_AFTER => "Failures",
@@ -608,13 +625,18 @@ pub fn mode_label(name: &str) -> &str {
     choice_label("mode", name)
 }
 
+/// The caption of the mode row. The mirrors have none: their legend is the
+/// warning under the section.
 fn mode_caption(name: &str) -> &'static str {
     match name {
-        "upload" => "New and changed files go to Drive. Nothing is deleted there.",
-        "download" => "New and changed files come to this computer. Nothing is deleted here.",
-        "mirror_up" => "Drive becomes a copy of this folder.",
-        "mirror_down" => "This folder becomes a copy of Drive.",
-        _ => "Changes on either side are copied to the other.",
+        "upload" => {
+            "New and changed files on this computer are copied to Drive. Nothing is ever deleted."
+        }
+        "download" => {
+            "New and changed files on Drive are copied to this computer. Nothing is ever deleted. Replaced files are kept as versions."
+        }
+        "mirror_up" | "mirror_down" => "",
+        _ => "Changes on either side reach the other. Deleted files are deleted on both sides.",
     }
 }
 

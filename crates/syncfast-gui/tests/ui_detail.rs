@@ -6,7 +6,7 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
-use syncfast_core::behavior::ReviewLevel;
+use syncfast_core::behavior::{ReviewLevel, SyncMode};
 use syncfast_core::bisync::Fault;
 use syncfast_core::bisync_log::{Progress, RunSummary};
 use syncfast_core::preview::ChangeCounts;
@@ -129,6 +129,69 @@ fn a_long_sync_path_is_cut_short_before_the_actions_in_the_smallest_window() {
         title_right <= actions_left,
         "{title_right} > {actions_left}"
     );
+}
+
+fn mirrored(mode: SyncMode, local: &str) -> PairRow {
+    let mut row = pair(DisplayStatus::UpToDate);
+    row.local = local.into();
+    row.effective.behavior.mode = mode;
+    row
+}
+
+#[test]
+fn the_mode_chip_never_overlaps_the_subtitle_or_the_actions_in_the_smallest_window() {
+    let local =
+        "/home/ada/Documents/Projects/Archive/2025/Quarterly Reports/Finance and Accounting";
+    let mut vm = view(mirrored(SyncMode::MirrorDown, local));
+    vm.sidebar_width = 200.0;
+    let harness = harness_sized(vm, egui::vec2(760.0, 520.0));
+
+    let chip = harness.get_by_label("Mirror to this computer").rect();
+    let subtitle = harness
+        .get_by_label(&format!("{local} \u{2190} gdrive:Notes"))
+        .rect();
+    let actions_left = ["More", "Pause", "Sync Now"]
+        .map(|label| harness.get_by_label(label).rect().left())
+        .into_iter()
+        .fold(f32::INFINITY, f32::min);
+
+    assert!(!chip.intersects(subtitle), "{chip:?} {subtitle:?}");
+    assert!(chip.right() <= actions_left, "{chip:?} {actions_left}");
+}
+
+#[test]
+fn a_two_way_sync_has_no_mode_chip_and_a_one_way_list_row_names_its_mode() {
+    let two_way = harness_sized(
+        view(mirrored(SyncMode::Bisync, "/home/ada/Notes")),
+        egui::vec2(960.0, 640.0),
+    );
+    let upload = harness_sized(
+        view(mirrored(SyncMode::Upload, "/home/ada/Notes")),
+        egui::vec2(960.0, 640.0),
+    );
+
+    assert_eq!(two_way.query_all_by_label("Upload only").count(), 0);
+    assert!(upload.query_all_by_label("Upload only").count() >= 1);
+    assert!(
+        upload
+            .query_all_by_label_contains("Upload only \u{b7} ")
+            .count()
+            >= 1
+    );
+}
+
+#[test]
+fn a_mirror_stopped_by_the_delete_cap_says_what_it_already_deleted() {
+    let stopped = "3 files were already deleted before the stop. Deleted files are kept in the versions folder of this sync.";
+    let mut row = mirrored(SyncMode::MirrorDown, "/home/ada/Notes");
+    row.status = DisplayStatus::NeedsReview;
+    row.gate = Some(GateKind::TooManyDeletes);
+    row.gate_detail = stopped.into();
+    let harness = harness_sized(view(row), egui::vec2(960.0, 640.0));
+
+    harness.get_by_label(&format!(
+        "{stopped} Review what will change before syncing resumes."
+    ));
 }
 
 fn shown_times(harness: &Harness<'_, Screen>, text: &str) -> usize {
