@@ -18,6 +18,7 @@ use syncfast_core::conflicts::{Conflict, Resolution};
 use syncfast_core::filters::ExclusionSummary;
 use syncfast_core::flatpak;
 use syncfast_core::network::{Network as _, NetworkManager};
+use syncfast_core::notify::Notice;
 use syncfast_core::paths::Paths;
 use syncfast_core::preview::Preview;
 use syncfast_core::rclone::Rclone;
@@ -29,9 +30,10 @@ use tokio::sync::{
 };
 use tokio::task::{AbortHandle, JoinSet};
 
+use crate::app_settings;
 use crate::gui_state::{self, GuiState};
 use crate::instance::Inbox;
-use crate::notices::{Notices, notice_for};
+use crate::notices::Notices;
 use crate::pair_tools;
 use crate::sheet_io::{self, PreviewFailure};
 use crate::snapshot::{self, Snapshot};
@@ -65,7 +67,7 @@ pub enum Command {
     /// Pause (`false`) or resume (`true`) every sync, then `apply`.
     SetAllEnabled(bool),
     /// Show the notification the `run` command asked for.
-    Notify(String),
+    Notify(Notice),
     SaveGuiState(GuiState),
     /// Read the theme files again, after `reload-themes`.
     ReloadThemes,
@@ -412,11 +414,7 @@ async fn run(
                 match command {
                     Command::Shutdown => break,
                     Command::WindowVisible(now) => visible = now,
-                    Command::Notify(id) => {
-                        if let Some(notice) = notice_for(&context.paths, &id).await {
-                            notices.show(&notice);
-                        }
-                    }
+                    Command::Notify(notice) => notices.show(&notice),
                     Command::SaveGuiState(state) => save_gui_state(&context, state).await,
                     Command::ReloadThemes => spawn_reload_themes(&context),
                     Command::SetAutostart(enabled) => spawn_set_autostart(&context, enabled),
@@ -563,7 +561,11 @@ async fn save_gui_state(context: &Context, state: GuiState) {
             return;
         }
     };
-    let written = tokio::task::spawn_blocking(move || fastframe_file::write(&path, json)).await;
+    let written = tokio::task::spawn_blocking(move || {
+        let json = app_settings::keep_old_theme(&path, json);
+        fastframe_file::write(&path, json)
+    })
+    .await;
     match written {
         Ok(Ok(())) => {}
         Ok(Err(err)) => log::warn!("cannot save the window state: {err}"),

@@ -186,27 +186,24 @@ impl App {
         self.geometry
     }
 
-    /// Asks the desktop when the config wants a different autostart than the
-    /// one it last agreed to.
-    fn follow_autostart(&mut self) {
+    /// What to ask the desktop, when the config wants a different autostart
+    /// than the one it last agreed to.
+    fn follow_autostart(&mut self) -> Option<bool> {
         if self.snapshot.config_error.is_some() {
-            return;
+            return None;
         }
         let wanted = self.snapshot.defaults.app.autostart;
         if wanted == self.gui.autostart_applied {
             self.autostart.asked = None;
             self.autostart.view.refused = false;
-            return;
+            return None;
         }
         let applied = self.gui.autostart_applied;
         let state = &mut self.autostart;
-        if let Some(enabled) =
-            autostart::to_ask(state.view.in_flatpak, wanted, applied, state.asked)
-        {
-            state.asked = Some(enabled);
-            state.view.refused = false;
-            self.backend.send(Command::SetAutostart(enabled));
-        }
+        let enabled = autostart::to_ask(state.view.in_flatpak, wanted, applied, state.asked)?;
+        state.asked = Some(enabled);
+        state.view.refused = false;
+        Some(enabled)
     }
 
     fn selected_id(&self) -> Option<String> {
@@ -385,7 +382,9 @@ impl App {
                 }
                 self.finish_welcome();
                 self.load_runs_if_stale();
-                self.follow_autostart();
+                if let Some(enabled) = self.follow_autostart() {
+                    self.backend.send(Command::SetAutostart(enabled));
+                }
                 let selected = self.selected_id();
                 if let Some(command) = self
                     .screens
@@ -459,7 +458,7 @@ impl App {
             match request {
                 Request::Show => self.actions.push(Action::ShowWindow),
                 Request::ReloadThemes => self.backend.send(Command::ReloadThemes),
-                Request::Notify(id) => self.backend.send(Command::Notify(id)),
+                Request::Notify(notice) => self.backend.send(Command::Notify(notice)),
                 Request::Opened(id) => {
                     self.actions.push(Action::ShowWindow);
                     self.actions.push(Action::SelectPair(id.clone()));
@@ -1274,5 +1273,78 @@ mod tests {
         for planned in [CloseIntent::Hide, CloseIntent::Reopen, CloseIntent::Quit] {
             assert_eq!(on_close_requested(planned, false), CloseRequest::Proceed);
         }
+    }
+
+    fn wanting_autostart(app: &mut App, in_flatpak: bool) {
+        app.autostart.view.in_flatpak = in_flatpak;
+        app.snapshot.defaults.app.autostart = true;
+    }
+
+    fn answer(app: &mut App, granted: bool) {
+        app.handle_event(Event::Autostart {
+            enabled: true,
+            granted,
+        });
+    }
+
+    #[test]
+    fn a_wish_for_autostart_is_asked_once_and_not_repeated_by_later_snapshots() {
+        let (_dir, mut app) = app();
+        wanting_autostart(&mut app, true);
+
+        assert_eq!(app.follow_autostart(), Some(true));
+        assert_eq!(app.follow_autostart(), None);
+        assert_eq!(app.follow_autostart(), None);
+    }
+
+    #[test]
+    fn a_grant_is_recorded_and_ends_the_asking() {
+        let (_dir, mut app) = app();
+        wanting_autostart(&mut app, true);
+        app.follow_autostart();
+
+        answer(&mut app, true);
+
+        assert!(app.gui.autostart_applied);
+        assert!(!app.autostart.view.refused);
+        assert_eq!(app.follow_autostart(), None);
+    }
+
+    #[test]
+    fn a_denial_is_shown_keeps_the_wish_and_is_not_asked_again_until_the_wish_changes() {
+        let (_dir, mut app) = app();
+        wanting_autostart(&mut app, true);
+        app.follow_autostart();
+
+        answer(&mut app, false);
+
+        assert!(app.autostart.view.refused);
+        assert!(!app.gui.autostart_applied);
+        assert!(app.snapshot.defaults.app.autostart);
+        assert_eq!(app.follow_autostart(), None);
+        assert!(app.autostart.view.refused);
+
+        app.snapshot.defaults.app.autostart = false;
+        assert_eq!(app.follow_autostart(), None);
+        assert!(!app.autostart.view.refused);
+        app.snapshot.defaults.app.autostart = true;
+        assert_eq!(app.follow_autostart(), Some(true));
+    }
+
+    #[test]
+    fn outside_the_flatpak_the_desktop_is_never_asked() {
+        let (_dir, mut app) = app();
+        wanting_autostart(&mut app, false);
+
+        assert_eq!(app.follow_autostart(), None);
+    }
+
+    #[test]
+    fn a_config_that_cannot_be_read_asks_nothing() {
+        let (_dir, mut app) = app();
+        wanting_autostart(&mut app, true);
+        app.snapshot.config_error = Some("broken".into());
+
+        assert_eq!(app.follow_autostart(), None);
     }
 }

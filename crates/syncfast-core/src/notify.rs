@@ -22,7 +22,7 @@ const BISYNC_ABORTED: &str = "Bisync aborted";
 const DEFAULT_FAILURES_AFTER: u8 = 3;
 const DELIVERY_WAIT: Duration = Duration::from_secs(5);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Notice {
     pub pair_id: String,
     pub title: String,
@@ -311,8 +311,9 @@ impl Notifier for NativeNotifier {
     }
 }
 
-/// Asks the running GUI to show the notice (`notify <id>`, so a click opens
-/// the window) and falls back to `fallback` when nobody answers.
+/// Asks the running GUI to show the notice (`notify <json of the notice>`, so
+/// a click opens the window) and falls back to `fallback` when nobody answers.
+/// The GUI shows exactly what was decided here and decides nothing itself.
 pub struct DesktopNotifier {
     slot: Slot,
     fallback: Box<dyn Notifier>,
@@ -346,7 +347,14 @@ impl Default for DesktopNotifier {
 
 impl Notifier for DesktopNotifier {
     fn notify(&self, notice: &Notice) {
-        match self.slot.send(&format!("notify {}", notice.pair_id)) {
+        let request = match serde_json::to_string(notice) {
+            Ok(json) => format!("notify {json}"),
+            Err(err) => {
+                log::warn!("cannot encode the notification: {err}");
+                return;
+            }
+        };
+        match self.slot.send(&request) {
             Ok(_) => {}
             Err(err) => {
                 log::debug!("no syncfast window answered ({err}); notifying directly");
@@ -711,7 +719,15 @@ mod tests {
 
         notifier.notify(&some_notice());
 
-        assert_eq!(*requests.lock().unwrap(), vec!["notify docs".to_owned()]);
+        let sent = requests.lock().unwrap().clone();
+        assert_eq!(
+            sent,
+            vec![format!(
+                "notify {}",
+                serde_json::to_string(&some_notice()).unwrap()
+            )]
+        );
+        assert!(!sent[0].contains('\n'));
         assert!(recorder.0.lock().unwrap().is_empty());
     }
 

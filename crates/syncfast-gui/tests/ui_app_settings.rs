@@ -99,6 +99,50 @@ fn a_notification_row_names_its_default_under_its_description() {
 }
 
 #[test]
+fn failures_after_zero_shows_an_empty_field_hinting_off_next_to_the_default() {
+    let vm = pane(
+        "[notifications]\nfailures_after = 0\n",
+        SettingsPane::Notifications,
+    );
+    let mut harness = harness(vm, notifications());
+    harness.run();
+
+    let field = harness.get_by_role_and_label(egui::accesskit::Role::TextInput, "Failures");
+    assert_eq!(field.value().unwrap_or_default(), "");
+    harness.get_by_label_contains("Default: 3");
+    harness.get_by_label("Reset to Default");
+}
+
+#[test]
+fn clearing_the_failures_field_writes_zero() {
+    let vm = pane(
+        "[notifications]\nfailures_after = 5\n",
+        SettingsPane::Notifications,
+    );
+    let mut harness = harness(vm, notifications());
+    harness.run();
+
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::TextInput, "Failures")
+        .click();
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    harness.run_steps(2);
+    harness.key_press(egui::Key::Backspace);
+    harness.run_steps(2);
+    harness.key_press(egui::Key::Enter);
+    harness.run_steps(4);
+
+    assert_eq!(
+        harness.state().actions,
+        [Action::SetSetting {
+            scope: SettingScope::Defaults,
+            key: "notifications.failures_after".into(),
+            value: "0".into(),
+        }]
+    );
+}
+
+#[test]
 fn outside_the_flatpak_the_autostart_row_says_where_it_is_available() {
     let mut harness = harness(pane("", SettingsPane::General), general());
     harness.run();

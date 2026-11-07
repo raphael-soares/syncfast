@@ -105,6 +105,20 @@ fn forget_old_theme(file: &Path) {
     }
 }
 
+/// `json` (a window state about to be saved to `file`) with the old theme
+/// `file` still holds, so a move that has not happened yet is not lost.
+#[must_use]
+pub fn keep_old_theme(file: &Path, json: String) -> String {
+    let Some(old) = old_theme(file) else {
+        return json;
+    };
+    let Ok(Value::Object(mut object)) = serde_json::from_str::<Value>(&json) else {
+        return json;
+    };
+    object.insert(KEY.to_owned(), Value::String(old));
+    serde_json::to_string_pretty(&object).unwrap_or(json)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,5 +230,36 @@ mod tests {
 
         assert_eq!(started, ThemeChoice::System);
         assert_eq!(gui_json(&paths)["theme"], "dark");
+    }
+
+    #[test]
+    fn a_window_state_saved_before_the_move_succeeds_still_carries_the_old_theme() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(&dir);
+        write_gui(&paths, r#"{"theme": "noctalia.json"}"#);
+        std::fs::create_dir_all(paths.config_file().parent().unwrap()).unwrap();
+        std::fs::write(paths.config_file(), "version = [").unwrap();
+        let _ = migrate_theme(&paths);
+        let file = gui_state::file(&paths);
+        let saved = crate::gui_state::GuiState::default().to_json().unwrap();
+
+        fastframe_file::write(&file, keep_old_theme(&file, saved)).unwrap();
+        std::fs::write(paths.config_file(), "version = 2\n").unwrap();
+        let started = migrate_theme(&paths);
+
+        assert_eq!(started, ThemeChoice::Named("noctalia.json".into()));
+    }
+
+    #[test]
+    fn without_an_old_theme_the_saved_state_is_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(&dir);
+        write_gui(&paths, r#"{"welcome_done": true}"#);
+        let saved = crate::gui_state::GuiState::default().to_json().unwrap();
+
+        assert_eq!(
+            keep_old_theme(&gui_state::file(&paths), saved.clone()),
+            saved
+        );
     }
 }
