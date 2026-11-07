@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/raphael-soares/syncfast/compare/v0.7.0...v0.8.0) (2026-11-07)
+
+
+### Features
+
+* per-sync bandwidth limits and a schedule summary ([#70](https://github.com/raphael-soares/syncfast/issues/70)) ([a7a02c2](https://github.com/raphael-soares/syncfast/commit/a7a02c24db49b63713c4804f296508e9bfb0aafe))
+
 ## [0.7.0](https://github.com/raphael-soares/syncfast/compare/v0.6.0...v0.7.0) (2026-11-07)
 
 
