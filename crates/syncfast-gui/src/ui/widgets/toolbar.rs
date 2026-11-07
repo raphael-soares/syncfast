@@ -7,7 +7,7 @@ use super::palette_of;
 /// The detail toolbar: `title` (title2) and `subtitle` (callout, secondary)
 /// on the left, `actions` on the right. Actions are laid out right to left,
 /// so add the rightmost one first. Title and subtitle take the width the
-/// actions leave and are cut short with `…`; the subtitle shows in full on
+/// actions leave and are cut short with `…`; a cut text shows in full on
 /// hover.
 pub fn toolbar(ui: &mut Ui, title: &str, subtitle: &str, actions: impl FnOnce(&mut Ui)) {
     let palette = palette_of(ui);
@@ -19,13 +19,15 @@ pub fn toolbar(ui: &mut Ui, title: &str, subtitle: &str, actions: impl FnOnce(&m
             bottom: 12,
         })
         .show(ui, |ui| {
-            let title = RichText::new(title)
+            let title_text = RichText::new(title)
                 .font(theme::title2())
                 .color(palette.text);
             let subtitle_text = RichText::new(subtitle)
                 .font(theme::callout())
                 .color(palette.secondary);
-            let text_height = line_height(ui, &title) + line_height(ui, &subtitle_text);
+            let title_size = natural_size(ui, &title_text);
+            let subtitle_size = natural_size(ui, &subtitle_text);
+            let text_height = title_size.y + subtitle_size.y;
             let band = Rect::from_min_size(
                 ui.available_rect_before_wrap().min,
                 Vec2::new(ui.available_width(), text_height),
@@ -49,15 +51,20 @@ pub fn toolbar(ui: &mut Ui, title: &str, subtitle: &str, actions: impl FnOnce(&m
                     .layout(Layout::top_down(Align::Min)),
             );
             text.spacing_mut().item_spacing.y = 0.0;
-            text.add(Label::new(title).truncate());
-            text.add(Label::new(subtitle_text).truncate())
-                .on_hover_text(subtitle);
+            let shown = text.add(Label::new(title_text).truncate());
+            if title_size.x > text_width {
+                shown.on_hover_text(title);
+            }
+            let shown = text.add(Label::new(subtitle_text).truncate());
+            if subtitle_size.x > text_width {
+                shown.on_hover_text(subtitle);
+            }
 
             ui.allocate_rect(band.union(controls.min_rect()), Sense::hover());
         });
 }
 
-fn line_height(ui: &Ui, text: &RichText) -> f32 {
+fn natural_size(ui: &Ui, text: &RichText) -> Vec2 {
     egui::WidgetText::from(text.clone())
         .into_galley(
             ui,
@@ -66,5 +73,4 @@ fn line_height(ui: &Ui, text: &RichText) -> f32 {
             egui::TextStyle::Body,
         )
         .size()
-        .y
 }
