@@ -73,8 +73,7 @@ pub fn classify_backup(
         return BackupOutcome::Locked;
     }
     BackupOutcome::Transient {
-        detail: last_message(stderr_lines)
-            .unwrap_or_else(|| fallback_detail(exit_code, has_snapshot)),
+        detail: last_message(stderr_lines).unwrap_or_else(|| fallback_detail(exit_code)),
     }
 }
 
@@ -85,13 +84,13 @@ fn needs_attention(fault: Fault, exit_code: Option<i32>, stderr_lines: &[String]
         .and_then(|line| message_of(line));
     let detail = naming
         .or_else(|| last_message(stderr_lines))
-        .unwrap_or_else(|| fallback_detail(exit_code, false));
+        .unwrap_or_else(|| fallback_detail(exit_code));
     BackupOutcome::NeedsAttention { fault, detail }
 }
 
-fn fallback_detail(exit_code: Option<i32>, has_snapshot: bool) -> String {
+fn fallback_detail(exit_code: Option<i32>) -> String {
     match exit_code {
-        Some(EXIT_OK) if !has_snapshot => "restic finished without a snapshot".to_owned(),
+        Some(EXIT_OK) => "restic finished without a snapshot".to_owned(),
         Some(code) => format!("exit code {code}"),
         None => "killed by a signal".to_owned(),
     }
@@ -392,6 +391,49 @@ mod tests {
                 "{text}"
             );
         }
+    }
+
+    #[test]
+    fn row_7_names_the_fault_with_the_message_of_a_json_error_line() {
+        let stderr = vec![
+            r#"{"message_type":"error","error":{"message":"directory not found"},"during":"x","item":"y"}"#
+                .to_owned(),
+            r#"{"message_type":"exit_error","code":1,"message":"Fatal: unable to save snapshot"}"#.to_owned(),
+        ];
+
+        assert_eq!(
+            classify_backup(Some(1), None, &stderr),
+            BackupOutcome::NeedsAttention {
+                fault: Fault::RemoteMissing,
+                detail: "directory not found".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn row_7_ignores_a_broken_json_line_when_it_picks_the_detail() {
+        let stderr = vec![
+            r"{broken: directory not found".to_owned(),
+            "the plain line".to_owned(),
+        ];
+
+        assert_eq!(
+            classify_backup(Some(1), None, &stderr),
+            BackupOutcome::NeedsAttention {
+                fault: Fault::RemoteMissing,
+                detail: "the plain line".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn row_2_does_not_count_a_broken_json_line_that_ends_like_a_skipped_source() {
+        let stderr = vec![r"{broken /gone does not exist, skipping".to_owned()];
+
+        assert_eq!(
+            classify_backup(Some(3), Some(&snapshot()), &stderr),
+            BackupOutcome::OkWithWarnings { warnings: 0 }
+        );
     }
 
     #[test]

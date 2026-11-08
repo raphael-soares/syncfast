@@ -568,4 +568,22 @@ mod tests {
         assert_eq!(take_request(&paths, "docs"), None);
         assert!(!file.exists());
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_request_is_deleted_so_it_does_not_ask_again() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        let file = paths.backup_request_file("docs");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "{}").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&file).is_ok() {
+            return;
+        }
+
+        assert_eq!(take_request(&paths, "docs"), None);
+        assert!(!file.exists());
+    }
 }

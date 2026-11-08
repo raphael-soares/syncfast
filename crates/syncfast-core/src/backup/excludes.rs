@@ -465,4 +465,19 @@ mod tests {
         assert!(write_excludes(&path, "b\n").unwrap());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "b\n");
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_excludes_file_is_an_error_not_a_rewrite() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("excludes.txt");
+        std::fs::write(&path, "old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&path).is_ok() {
+            return;
+        }
+
+        assert!(write_excludes(&path, "new").is_err());
+    }
 }
