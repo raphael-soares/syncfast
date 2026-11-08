@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/raphael-soares/syncfast/compare/v0.16.1...v0.17.0) (2026-11-08)
+
+
+### Features
+
+* let agents list, run, create and restore backups without the key ([#96](https://github.com/raphael-soares/syncfast/issues/96)) ([cd2a408](https://github.com/raphael-soares/syncfast/commit/cd2a408406131dd8aff3d6fe7010487dbd7001f0))
+
 ## [0.16.1](https://github.com/raphael-soares/syncfast/compare/v0.16.0...v0.16.1) (2026-11-08)
 
 
