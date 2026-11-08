@@ -20,7 +20,6 @@ use crate::ui::{Action, RemoteRow};
 use syncfast_core::backup::key::Key;
 use syncfast_core::backup::keystore::KeyBackend;
 
-/// What the owner of the sheets has to do after the sheet reacted.
 #[derive(Debug, Default)]
 pub struct Outcome {
     pub commands: Vec<Command>,
@@ -88,7 +87,6 @@ pub enum BackupSheet {
     Remove(Box<RemoveSession>),
 }
 
-/// What the sheets know that is not theirs.
 #[derive(Debug, Clone, Copy)]
 pub struct Shared<'a> {
     pub remotes: &'a [RemoteRow],
@@ -258,7 +256,6 @@ impl BackupSheet {
         })])
     }
 
-    /// `LoadDirs` and `MakeDir` of the destination tree.
     pub fn dirs_action(&mut self, action: &AddSyncAction) -> Vec<Command> {
         let Self::Wizard(session) = self else {
             return Vec::new();
@@ -414,7 +411,6 @@ impl BackupSheet {
         }
     }
 
-    /// Draws the sheet and returns what the user did.
     pub fn show(&mut self, ctx: &egui::Context, shared: &Shared<'_>) -> Vec<Action> {
         match self {
             Self::Wizard(session) => session.show(ctx, shared),

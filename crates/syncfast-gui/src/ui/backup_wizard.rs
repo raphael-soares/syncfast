@@ -42,7 +42,6 @@ const EVERY: [(&str, Every); 3] = [
 const KEEP_NAMES: [&str; 4] = ["daily", "weekly", "monthly", "yearly"];
 const KEEP_MAX: u16 = 999;
 
-/// The backups that exist, as the sheets need them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackupFacts {
     pub id: String,
@@ -51,7 +50,6 @@ pub struct BackupFacts {
     pub key_unsaved: bool,
 }
 
-/// Which sheet of the backup flows asked for what.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BackupSheetAction {
     Cancel,
@@ -99,7 +97,6 @@ pub struct CheckRequest {
     pub dest: String,
 }
 
-/// What `KeyStore::probe` found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyStoreFacts {
     Probing,
@@ -108,7 +105,6 @@ pub enum KeyStoreFacts {
     Unavailable(String),
 }
 
-/// An error of the last backend call, shown on the step it belongs to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepError {
     pub step: Step,
@@ -164,7 +160,6 @@ impl fmt::Debug for TypedKey {
     }
 }
 
-/// What the user has entered so far in either flow.
 #[derive(Debug, Clone)]
 #[allow(clippy::struct_excessive_bools)] // independent form switches
 pub struct WizardState {
@@ -193,9 +188,7 @@ pub struct WizardState {
     pub show_typed_key: bool,
     answers: HashMap<String, Option<String>>,
     asked: HashSet<String>,
-    /// A create or add call is running.
     pub busy: bool,
-    /// The error of the last call, shown on the step it belongs to.
     pub error: Option<StepError>,
 }
 
@@ -266,7 +259,6 @@ impl WizardState {
         self.remote_path = Some(join_rel(parent, child));
     }
 
-    /// The answer of the backend to the check asked with `token`.
     pub fn record(&mut self, token: String, problem: Option<String>) {
         self.answers.insert(token, problem);
     }
@@ -288,7 +280,6 @@ impl WizardState {
         self.error = None;
     }
 
-    /// The call failed for something `step` shows.
     pub fn fail(&mut self, step: Step, text: String) {
         self.busy = false;
         self.error = Some(StepError { step, text });
@@ -442,7 +433,6 @@ impl WizardState {
         )
     }
 
-    /// What `Create` asks for; `None` while a step is not valid.
     fn new_backup(&self, home: &Path, taken: &[BackupFacts]) -> Option<NewBackup> {
         let dest = self.destination(home).ok()?;
         let keep = self.keep().ok()?;
@@ -469,7 +459,6 @@ impl WizardState {
         })
     }
 
-    /// The paths, presets and rules a `Test Filters` run uses.
     #[must_use]
     pub fn filter_request(&self) -> BackupSheetAction {
         BackupSheetAction::TestFilters {
@@ -507,7 +496,6 @@ fn step_title(flow: Flow, step: Step) -> &'static str {
     }
 }
 
-/// What comes from outside the sheet. Immutable.
 #[derive(Debug, Clone, Copy)]
 pub struct WizardView<'a> {
     pub remotes: &'a [RemoteRow],
@@ -520,7 +508,6 @@ pub struct WizardView<'a> {
     pub key_file: Option<&'a KeyFileOutcome>,
 }
 
-/// Whether Continue works on this step, and what to tell the user.
 struct Gate {
     ready: bool,
     problem: Option<String>,
@@ -580,15 +567,13 @@ fn gate(view: &WizardView<'_>, state: &WizardState) -> Gate {
             Ok(dest) => answer(state, &destination_token(state, &dest)),
         },
         Step::Schedule => Gate::of(true, state.schedule_problem()),
-        Step::Filters => Gate::of(
-            true,
-            state
+        Step::Filters => Gate {
+            ready: state
                 .filters()
                 .problems_for(FilterTarget::Backup)
-                .into_iter()
-                .next()
-                .map(|(_, text)| text),
-        ),
+                .is_empty(),
+            problem: None,
+        },
         Step::Name => Gate::ready(),
         Step::Key => match state.flow {
             Flow::New => match (&state.key, &state.key_error) {
@@ -629,8 +614,6 @@ fn destination_token(state: &WizardState, dest: &str) -> String {
     }
 }
 
-/// The question the current step needs answered, when its inputs are
-/// complete.
 fn check_for(view: &WizardView<'_>, state: &WizardState) -> Option<CheckRequest> {
     match state.step {
         Step::Folders if !state.folders.is_empty() => Some(CheckRequest {
@@ -664,7 +647,6 @@ fn emit_dirs(actions: &mut Vec<Action>, action: AddSyncAction) {
     actions.push(Action::AddSyncSheet(action));
 }
 
-/// Draws the sheet of the flow and returns what the user did.
 pub fn show(ctx: &egui::Context, view: &WizardView<'_>, state: &mut WizardState) -> Vec<Action> {
     let flow = state.flow;
     let step = state.step;
@@ -680,6 +662,7 @@ pub fn show(ctx: &egui::Context, view: &WizardView<'_>, state: &mut WizardState)
         primary_kind: PrimaryKind::Normal,
         primary_enabled: gate.ready && !state.busy,
         back: step != state.sequence()[0] && !(flow == Flow::New && step == last),
+        cancel: true,
     };
     let names: Vec<&str> = state
         .sequence()
@@ -764,6 +747,7 @@ fn body(
     gate: &Gate,
     actions: &mut Vec<Action>,
 ) {
+    backup_keys::wrap_labels(ui);
     match state.step {
         Step::Folders => folders_step(ui, state, actions),
         Step::Destination => destination_step(ui, view, state, actions),
@@ -801,16 +785,18 @@ fn folders_step(ui: &mut Ui, state: &mut WizardState, actions: &mut Vec<Action>)
     let mut remove = None;
     for (index, folder) in state.folders.iter().enumerate() {
         ui.horizontal(|ui| {
-            ui.add(Icon::Folder.image(palette.secondary, size::ICON));
-            ui.label(
-                RichText::new(folder.display().to_string())
-                    .font(theme::body())
-                    .color(palette.text),
-            );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if widgets::icon_button(ui, Icon::X, "Remove Folder").clicked() {
                     remove = Some(index);
                 }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add(Icon::Folder.image(palette.secondary, size::ICON));
+                    ui.label(
+                        RichText::new(folder.display().to_string())
+                            .font(theme::body())
+                            .color(palette.text),
+                    );
+                });
             });
         });
     }
