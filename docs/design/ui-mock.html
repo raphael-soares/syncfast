@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>syncfast UI mock (phase 1)</title>
+<title>syncfast UI mock (phases 1 to 3)</title>
 <style>
 :root{
   --window:#0F1114;--panel:#15181C;--surface:#1D2127;--surface-hover:#262B33;--surface-active:#2F353F;
@@ -104,6 +104,42 @@ h1.caption{font-size:15px;font-weight:600;color:var(--secondary);margin:0 0 -28p
 .tray .sep{height:1px;background:var(--outline);margin:4px 2px}
 .trayicon{position:absolute;right:30px;top:12px;width:22px;height:22px}
 .mono{font-family:ui-monospace,monospace;font-size:12px}
+
+.menu{position:absolute;z-index:5;min-width:210px;background:var(--overlay);border:1px solid var(--outline);border-radius:8px;box-shadow:0 4px 16px var(--shadow);padding:6px}
+.btn{white-space:nowrap}
+.menu{text-transform:none;letter-spacing:0;font-size:13px;font-weight:400;color:var(--text)}
+.menu .mi{padding:6px 10px;border-radius:6px;display:flex;justify-content:space-between;gap:16px;white-space:nowrap}
+.menu .mi.dis{color:var(--dim)}
+.menu .mi.hov{background:var(--surface-hover)}
+.menu .mi.danger{color:var(--danger)}
+.menu .sep{height:1px;background:var(--outline);margin:4px 2px}
+.tray.st{position:static;width:215px;font-size:12px}
+.side-sec{border-top:1px solid var(--outline);margin:8px 0 0;padding-top:4px}
+.empty{display:flex;flex-direction:column;align-items:center;gap:8px;padding:14px 8px;color:var(--secondary);text-align:center}
+.empty b{color:var(--text)}
+.keybox{background:var(--surface);border:1px solid var(--outline);border-radius:8px;padding:14px 16px;display:flex;flex-wrap:wrap;gap:8px 6px;font-family:ui-monospace,monospace;font-size:15px;line-height:20px;letter-spacing:.04em}
+.keybox .dash{color:var(--dim)}
+.cb{width:16px;height:16px;border-radius:4px;border:1.5px solid var(--secondary);display:inline-grid;place-items:center;flex:none}
+.cb.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.cb .ico{width:12px;height:12px}
+.alert{width:380px;background:var(--overlay);border:1px solid var(--outline);border-radius:10px;box-shadow:0 6px 24px var(--shadow);padding:20px;display:flex;flex-direction:column;gap:10px}
+.alert h2{margin:0;font-size:15px;line-height:20px;font-weight:600}
+.alert .foot{display:flex;gap:8px;justify-content:flex-end;padding-top:6px}
+.alert .btn.default{outline:2px solid var(--accent);outline-offset:1px}
+.agrid{display:grid;grid-template-columns:1fr 1fr;gap:28px 24px;padding:32px;justify-items:center;align-items:start}
+.hint{font-size:12px;line-height:15px;color:var(--secondary)}
+.pick{display:flex;align-items:center;gap:10px;padding:8px 12px;border:1px solid var(--outline);border-radius:8px}
+.pick.on{border-color:var(--accent);background:var(--surface)}
+.radio{width:14px;height:14px;border-radius:7px;border:1.5px solid var(--secondary);flex:none}
+.radio.on{border-color:var(--accent);background:radial-gradient(var(--accent) 45%,transparent 50%)}
+.sheet .seg{margin:0}
+.cap-note{font-size:12px;line-height:15px;color:var(--secondary)}
+.hl{background:var(--surface-active)}
+.statelab{margin:14px 20px 4px;font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.02em}
+.kpair{display:flex;gap:12px}
+.kpair .field{flex:1}
+.pane-title{font-size:15px;font-weight:600}
+.link{color:var(--accent);text-decoration:underline}
 </style>
 </head>
 <body>
@@ -129,6 +165,16 @@ h1.caption{font-size:15px;font-weight:600;color:var(--secondary);margin:0 0 -28p
   <symbol id="rotate" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></symbol>
   <symbol id="fsync" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v.5"/><path d="M12 10v4h4"/><path d="m12 14 1.53-1.53a5 5 0 0 1 8 1.06"/><path d="M22 22v-4h-4"/><path d="m22 18-1.53 1.53a5 5 0 0 1-8-1.06"/></symbol>
   <symbol id="x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+
+  <symbol id="archive" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></symbol>
+  <symbol id="key" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"/><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/></symbol>
+  <symbol id="shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></symbol>
+  <symbol id="clouddown" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m2 2 20 20"/><path d="M5.782 5.782A7 7 0 0 0 9 19h8.5a4.5 4.5 0 0 0 1.307-.193"/><path d="M21.532 16.5A4.5 4.5 0 0 0 17.5 10h-1.79A7.008 7.008 0 0 0 10 5.07"/></symbol>
+  <symbol id="drive" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" x2="2" y1="12" y2="12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><line x1="6" x2="6.01" y1="16" y2="16"/><line x1="10" x2="10.01" y1="16" y2="16"/></symbol>
+  <symbol id="clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></symbol>
+  <symbol id="file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></symbol>
+  <symbol id="ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+  <symbol id="save" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></symbol>
  </defs>
 </svg>
 
@@ -400,5 +446,577 @@ h1.caption{font-size:15px;font-weight:600;color:var(--secondary);margin:0 0 -28p
   </div>
  </div>
 </div>
+<h1 class="caption">9. Backups in the sidebar; a backup running (Snapshots tab, a snapshot from another machine, Backups header menu open)</h1>
+<div class="win">
+ <div class="titlebar">Projects</div>
+ <div class="body">
+<div class="sidebar">
+<div class="side-head">Syncs <button class="iconbtn" title="Add Sync…"><svg class="ico"><use href="#plus"/></svg></button></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Google Drive</div><div class="s">Synced 3 min ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Udesc</div><div class="s">Synced 2 hours ago</div></div><svg class="ico" style="color:var(--warning);"><use href="#eye"/></svg></div>
+<div class="side-sec"></div>
+<div class="side-head">Backups <span style="position:relative;display:flex;gap:2px"><button class="iconbtn" title="New Backup…"><svg class="ico"><use href="#plus"/></svg></button><button class="iconbtn" title="More"><svg class="ico"><use href="#more"/></svg></button><div class="menu" style="top:26px;right:0"><div class="mi hov">Add Existing Backup…</div></div></span></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Documents</div><div class="s">Backed up 2 hours ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Pictures</div><div class="s">Backed up 3 days ago</div></div><svg class="ico" style="color:var(--danger);"><use href="#alert"/></svg></div>
+<div class="row sel"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Projects</div><div class="s">Backing up…</div></div><svg class="ico" style="color:var(--accent);"><use href="#refresh"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Archive</div><div class="s">Backed up yesterday</div></div><svg class="ico" style="color:var(--dim);"><use href="#drive"/></svg></div>
+</div>
+<div class="main">
+<div class="toolbar"><div><div class="name">Projects</div><div class="path">2 folders → gdrive:Backups/projects</div></div><div class="spacer"></div><button class="btn primary" disabled><svg class="ico"><use href="#refresh"/></svg>Back Up Now</button><button class="btn secondary"><svg class="ico"><use href="#pause"/></svg>Pause</button><span style="position:relative"><button class="btn secondary" title="More"><svg class="ico"><use href="#more"/></svg></button></span></div>
+<div class="card"><span class="badge accent"><svg class="ico"><use href="#refresh"/></svg>Backing up…</span><div class="bar"><i style="width:36%"></i></div><div class="callout">1,204 of 3,310 files · 812 MB/2.1 GB · 4 min left</div><div class="sub">Current: ~/Code/syncfast/docs/design/ui-mock.html</div></div>
+<div class="seg"><span class="on">Snapshots</span><span class="">Activity</span><span class="">Settings</span></div>
+<div class="list">
+<div class="lrow hl" style="min-height:52px"><div style="width:140px"><div>Today 03:00</div></div><span class="cnt" style="width:160px">3,310 files · 2.1 GB</span><span class="cnt" style="width:70px">+48 MB</span><span style="flex:1"></span><button class="btn secondary">Browse Files…</button><button class="btn secondary">Restore Snapshot…</button></div>
+<div class="lrow" style="min-height:52px"><div style="width:140px"><div>Yesterday 03:00</div></div><span class="cnt" style="width:160px">3,298 files · 2.1 GB</span><span class="cnt" style="width:70px">+212 MB</span><span style="flex:1"></span><button class="btn secondary">Browse Files…</button><button class="btn secondary">Restore Snapshot…</button></div>
+<div class="lrow" style="min-height:52px"><div style="width:140px"><div>Nov 5, 22:41</div><div class="sub" style="display:flex;gap:4px;align-items:center;margin-top:2px"><svg class="ico" style="color:var(--dim);width:12px;height:12px"><use href="#drive"/></svg>laptop-old</div></div><span class="cnt" style="width:160px">3,102 files · 2.0 GB</span><span class="cnt" style="width:70px">+1.1 GB</span><span style="flex:1"></span><button class="btn secondary">Browse Files…</button><button class="btn secondary">Restore Snapshot…</button></div>
+<div class="lrow" style="min-height:52px"><div style="width:140px"><div>Nov 5, 03:00</div></div><span class="cnt" style="width:160px">3,291 files · 2.1 GB</span><span class="cnt" style="width:70px">+9 MB</span><span style="flex:1"></span><button class="btn secondary">Browse Files…</button><button class="btn secondary">Restore Snapshot…</button></div>
+<div class="lrow" style="min-height:52px"><div style="width:140px"><div>Nov 4, 03:00</div></div><span class="cnt" style="width:160px">3,290 files · 2.1 GB</span><span class="cnt" style="width:70px">+31 MB</span><span style="flex:1"></span><button class="btn secondary">Browse Files…</button><button class="btn secondary">Restore Snapshot…</button></div>
+</div>
+</div></div>
+</div>
+
+<h1 class="caption">10. Sidebar without backups: the section shows a small empty state</h1>
+<div class="win">
+ <div class="titlebar">Google Drive</div>
+ <div class="body">
+<div class="sidebar">
+<div class="side-head">Syncs <button class="iconbtn" title="Add Sync…"><svg class="ico"><use href="#plus"/></svg></button></div>
+<div class="row sel"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Google Drive</div><div class="s">Synced 3 min ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Udesc</div><div class="s">Synced 2 hours ago</div></div><svg class="ico" style="color:var(--warning);"><use href="#eye"/></svg></div>
+<div class="side-sec"></div>
+<div class="side-head">Backups <span style="position:relative;display:flex;gap:2px"><button class="iconbtn" title="New Backup…"><svg class="ico"><use href="#plus"/></svg></button><button class="iconbtn" title="More"><svg class="ico"><use href="#more"/></svg></button></span></div>
+<div class="empty"><b>No backups yet</b><button class="btn secondary"><svg class="ico"><use href="#plus"/></svg>New Backup…</button></div>
+</div>
+<div class="main">
+<div class="toolbar"><div><div class="name">Google Drive</div><div class="path">~/Drive ↔ gdrive:</div></div><div class="spacer"></div><button class="btn primary"><svg class="ico"><use href="#refresh"/></svg>Sync Now</button><button class="btn secondary"><svg class="ico"><use href="#pause"/></svg>Pause</button><span style="position:relative"><button class="btn secondary" title="More"><svg class="ico"><use href="#more"/></svg></button></span></div>
+<div class="card"><span class="badge ok"><svg class="ico"><use href="#check"/></svg>Up to date</span></div>
+</div></div>
+</div>
+
+<h1 class="caption">11. Tray menu, backup lines: up to date, backing up, needs attention, no backups (Back Up All Now disabled)</h1>
+<div class="win" style="height:330px">
+ <div class="titlebar">Tray</div>
+<div style="flex:1;display:flex;gap:16px;padding:24px;align-items:flex-start;justify-content:center"><div class="tray st"><div class="mi dis">All syncs up to date</div><div class="mi dis">Backups up to date</div><div class="sep"></div><div class="mi">Show syncfast</div><div class="mi">Sync All Now</div><div class="mi">Back Up All Now</div><div class="mi">Pause All</div><div class="sep"></div><div class="mi">Settings…</div><div class="mi">Quit syncfast</div></div><div class="tray st"><div class="mi dis">All syncs up to date</div><div class="mi dis">Backing up…</div><div class="sep"></div><div class="mi">Show syncfast</div><div class="mi">Sync All Now</div><div class="mi">Back Up All Now</div><div class="mi">Pause All</div><div class="sep"></div><div class="mi">Settings…</div><div class="mi">Quit syncfast</div></div><div class="tray st"><div class="mi dis">All syncs up to date</div><div class="mi dis">2 backups need attention</div><div class="sep"></div><div class="mi">Show syncfast</div><div class="mi">Sync All Now</div><div class="mi">Back Up All Now</div><div class="mi">Pause All</div><div class="sep"></div><div class="mi">Settings…</div><div class="mi">Quit syncfast</div></div><div class="tray st"><div class="mi dis">No syncs yet</div><div class="mi dis">No backups yet</div><div class="sep"></div><div class="mi">Show syncfast</div><div class="mi">Sync All Now</div><div class="mi dis">Back Up All Now</div><div class="mi">Pause All</div><div class="sep"></div><div class="mi">Settings…</div><div class="mi">Quit syncfast</div></div></div></div>
+
+<h1 class="caption">12. Backup detail: Save the backup key card, Needs attention, toolbar menu with Check Now submenu (Activity tab)</h1>
+<div class="win">
+ <div class="titlebar">Pictures</div>
+ <div class="body">
+<div class="sidebar">
+<div class="side-head">Syncs <button class="iconbtn" title="Add Sync…"><svg class="ico"><use href="#plus"/></svg></button></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Google Drive</div><div class="s">Synced 3 min ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Udesc</div><div class="s">Synced 2 hours ago</div></div><svg class="ico" style="color:var(--warning);"><use href="#eye"/></svg></div>
+<div class="side-sec"></div>
+<div class="side-head">Backups <span style="position:relative;display:flex;gap:2px"><button class="iconbtn" title="New Backup…"><svg class="ico"><use href="#plus"/></svg></button><button class="iconbtn" title="More"><svg class="ico"><use href="#more"/></svg></button></span></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Documents</div><div class="s">Backed up 2 hours ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row sel"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Pictures</div><div class="s">Backed up 3 days ago</div></div><svg class="ico" style="color:var(--danger);"><use href="#alert"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Projects</div><div class="s">Never backed up</div></div><svg class="ico" style="color:var(--accent);"><use href="#key"/></svg></div>
+</div>
+<div class="main">
+<div class="toolbar"><div><div class="name">Pictures</div><div class="path">1 folder → gdrive:Backups/pictures</div></div><div class="spacer"></div><button class="btn primary"><svg class="ico"><use href="#refresh"/></svg>Back Up Now</button><button class="btn secondary"><svg class="ico"><use href="#pause"/></svg>Pause</button><span style="position:relative"><button class="btn secondary" title="More"><svg class="ico"><use href="#more"/></svg></button><div class="menu" style="top:32px;right:0"><div class="mi hov">Show Key…</div><div class="mi">Check Now<svg class="ico"><use href="#chev"/></svg></div><div class="mi">Open Destination Folder</div><div class="sep"></div><div class="mi danger">Remove Backup…</div></div><div class="menu" style="top:60px;right:222px;min-width:150px"><div class="mi">Quick Check</div><div class="mi">Check Sample</div><div class="mi">Full Check…</div></div></span></div>
+<div class="card"><div style="display:flex;gap:8px;align-items:center;font-weight:600;color:var(--accent)"><svg class="ico"><use href="#key"/></svg>Save the backup key</div><div class="callout">An agent created this backup. Save its key now; without it you cannot restore on another computer.</div><div><button class="btn secondary">Show Key…</button></div></div>
+<div class="card" style="margin-top:10px"><span class="badge danger"><svg class="ico"><use href="#alert"/></svg>Needs attention</span><div class="callout">~/Pictures is missing. Backups resume when it is back.</div></div>
+<div class="seg"><span class="">Snapshots</span><span class="on">Activity</span><span class="">Settings</span></div>
+<div class="list">
+<div class="lrow"><span class="when">Today 03:00</span><span class="dur">1 s</span><span class="res"><span class="badge danger"><svg class="ico"><use href="#alert"/></svg>Needs attention</span></span><span class="cnt">source missing</span></div>
+<div class="lrow"><span class="when">Yesterday 03:00</span><span class="dur">2 min</span><span class="res"><span class="badge ok"><svg class="ico"><use href="#check"/></svg>Up to date</span></span><span class="cnt">+14 new · 38 MB</span></div>
+<div class="lrow"><span class="when">Nov 6, 03:10</span><span class="dur">4 min</span><span class="res"><span class="badge ok"><svg class="ico"><use href="#check"/></svg>Check OK</span></span><span class="cnt">Sample check · OK</span></div>
+<div class="lrow"><span class="when">Nov 5, 03:00</span><span class="dur">2 min</span><span class="res"><span class="badge ok"><svg class="ico"><use href="#check"/></svg>Up to date</span></span><span class="cnt">+3 new · 1.2 MB</span></div>
+<div class="lrow"><span class="when">Nov 4, 03:20</span><span class="dur">1 h 10 min</span><span class="res"><span class="badge danger"><svg class="ico"><use href="#alert"/></svg>Check failed</span></span><span class="cnt">Full check · 2 errors</span></div>
+</div>
+</div></div>
+</div>
+
+<h1 class="caption">13. Backup detail: the status card for each state, with the repair button of each fault</h1>
+<div class="win" style="height:900px">
+ <div class="titlebar">Documents</div>
+<div class="main" style="padding-bottom:16px"><div class="statelab">Up to date</div><div class="card"><span class="badge ok"><svg class="ico"><use href="#check"/></svg>Up to date</span><div class="callout">Backed up Nov 8, 2026 at 03:00. 14 new or changed files, 38 MB added.</div></div>
+<div class="statelab">Up to date, with warnings</div><div class="card"><span class="badge ok"><svg class="ico"><use href="#check"/></svg>Up to date</span><div class="callout">Backed up Nov 8, 2026 at 03:00. 3 files could not be read.</div></div>
+<div class="statelab">Needs attention, auth_error</div><div class="card"><span class="badge danger"><svg class="ico"><use href="#alert"/></svg>Needs attention</span><div class="callout">Google Drive refused the account. Reconnect it to continue.</div><div><button class="btn primary">Reconnect Account…</button></div></div>
+<div class="statelab">Needs attention, key_missing or wrong_key</div><div class="card"><span class="badge danger"><svg class="ico"><use href="#alert"/></svg>Needs attention</span><div class="callout">The key for this backup is missing on this computer.</div><div><button class="btn primary">Enter Key…</button></div></div>
+<div class="statelab">Needs attention, repo_damaged</div><div class="card"><span class="badge danger"><svg class="ico"><use href="#alert"/></svg>Needs attention</span><div class="callout">The check found damaged data. Backups are paused until you review it.</div><div><button class="btn primary">Check Again</button></div></div>
+<div class="statelab">Destination not available</div><div class="card"><span class="badge dim"><svg class="ico"><use href="#drive"/></svg>Destination not available</span><div class="callout">/run/media/raphael/Backup is not available. Backups resume when it is back.</div></div>
+<div class="statelab">Checking…</div><div class="card"><span class="badge accent"><svg class="ico"><use href="#shield"/></svg>Checking…</span><div class="bar"><i style="width:100%;opacity:.35"></i></div></div>
+</div></div>
+
+<h1 class="caption">14. Backup detail, Settings tab (one block per setting; Save, then Saved.)</h1>
+<div class="win" style="height:1560px">
+ <div class="titlebar">Projects</div>
+ <div class="body">
+<div class="sidebar">
+<div class="side-head">Syncs <button class="iconbtn" title="Add Sync…"><svg class="ico"><use href="#plus"/></svg></button></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Google Drive</div><div class="s">Synced 3 min ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Udesc</div><div class="s">Synced 2 hours ago</div></div><svg class="ico" style="color:var(--warning);"><use href="#eye"/></svg></div>
+<div class="side-sec"></div>
+<div class="side-head">Backups <span style="position:relative;display:flex;gap:2px"><button class="iconbtn" title="New Backup…"><svg class="ico"><use href="#plus"/></svg></button><button class="iconbtn" title="More"><svg class="ico"><use href="#more"/></svg></button></span></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Documents</div><div class="s">Backed up 2 hours ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Pictures</div><div class="s">Backed up 3 days ago</div></div><svg class="ico" style="color:var(--danger);"><use href="#alert"/></svg></div>
+<div class="row sel"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Projects</div><div class="s">Backed up 4 min ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+</div>
+<div class="main">
+<div class="toolbar"><div><div class="name">Projects</div><div class="path">2 folders → gdrive:Backups/projects</div></div><div class="spacer"></div><button class="btn primary"><svg class="ico"><use href="#refresh"/></svg>Back Up Now</button><button class="btn secondary"><svg class="ico"><use href="#pause"/></svg>Pause</button><span style="position:relative"><button class="btn secondary" title="More"><svg class="ico"><use href="#more"/></svg></button></span></div>
+<div class="card"><span class="badge ok"><svg class="ico"><use href="#check"/></svg>Up to date</span><div class="callout">Backed up Nov 8, 2026 at 03:00. 14 new or changed files, 38 MB added.</div></div>
+<div class="seg"><span class="">Snapshots</span><span class="">Activity</span><span class="on">Settings</span></div>
+<div class="opts">
+<div class="sec-title" style="margin-top:0">Folders</div>
+<div class="srow"><div class="lab" style="display:flex;gap:8px;align-items:center"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg>~/Code</div><div class="ctl"><button class="iconbtn" title="Remove Folder"><svg class="ico"><use href="#x"/></svg></button></div></div>
+<div class="srow"><div class="lab" style="display:flex;gap:8px;align-items:center"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg>~/Documents/Faculdade</div><div class="ctl"><button class="iconbtn" title="Remove Folder"><svg class="ico"><use href="#x"/></svg></button></div></div>
+<div class="srow"><div class="lab" style="display:flex;gap:8px;align-items:center"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg>~/Documents/Antigos</div><div class="ctl"><span class="badge warning" style="font-weight:500"><svg class="ico"><use href="#alert"/></svg>Missing</span><button class="iconbtn" title="Remove Folder"><svg class="ico"><use href="#x"/></svg></button></div></div>
+<div style="margin-top:8px"><button class="btn secondary"><svg class="ico"><use href="#plus"/></svg>Add Folder…</button></div>
+<div class="sec-title">Destination</div>
+<div class="srow"><div class="lab">gdrive:Backups/projects</div></div>
+<div class="sec-title">Schedule</div>
+<div class="srow"><div class="lab">Back up</div><div class="ctl"><span class="cmb">Every day<svg class="ico"><use href="#chevd"/></svg></span></div></div>
+<div class="sec-title">Keep</div>
+<div class="srow"><div class="lab">Daily</div><div class="ctl"><span class="fld">7</span></div></div>
+<div class="srow"><div class="lab">Weekly</div><div class="ctl"><span class="fld">4</span></div></div>
+<div class="srow"><div class="lab">Monthly</div><div class="ctl"><span class="fld">6</span></div></div>
+<div class="srow"><div class="lab">Yearly</div><div class="ctl"><span class="fld">0</span></div></div>
+<div class="sec-title">Options</div>
+<div class="srow"><div class="lab">Stay on one file system</div><div class="ctl"><span class="tgl on"></span></div></div>
+<div class="srow"><div class="lab">Upload limit</div><div class="ctl"><span class="fld hint">Unlimited</span></div></div>
+<div class="srow"><div class="lab">Download limit</div><div class="ctl"><span class="fld hint">Unlimited</span></div></div>
+<div class="sec-title">Filters</div>
+<div class="srow"><div class="lab">System junk files</div><div class="ctl"><span class="tgl on"></span></div></div>
+<div class="srow"><div class="lab">Developer folders</div><div class="ctl"><span class="tgl"></span></div></div>
+<div class="srow"><div class="lab">Build artifacts and caches<div class="cap">Leaves out node_modules, target, .venv and caches. They can be rebuilt.</div></div><div class="ctl"><span class="tgl on"></span></div></div>
+<div class="srow"><div class="lab">Git repositories</div><div class="ctl"><span class="tgl"></span></div></div>
+<div class="field" style="margin-top:10px"><label>Custom rules</label><div class="input" style="height:56px;align-items:flex-start;padding-top:6px;font-family:ui-monospace,monospace;font-size:12px">- *.iso</div></div>
+<div style="margin-top:10px;display:flex;gap:8px;align-items:center"><button class="btn secondary">Test Filters</button><span class="spacer"></span><button class="btn primary">Save</button></div>
+<div class="callout" style="margin-top:8px">Saved. Files you left out stay in older snapshots until they expire.</div>
+</div></div></div>
+</div>
+
+<h1 class="caption">15. Lowering a keep value asks first</h1>
+<div class="win">
+ <div class="titlebar">Projects</div>
+ <div class="body">
+<div class="sidebar">
+<div class="side-head">Syncs <button class="iconbtn" title="Add Sync…"><svg class="ico"><use href="#plus"/></svg></button></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Google Drive</div><div class="s">Synced 3 min ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Udesc</div><div class="s">Synced 2 hours ago</div></div><svg class="ico" style="color:var(--warning);"><use href="#eye"/></svg></div>
+<div class="side-sec"></div>
+<div class="side-head">Backups <span style="position:relative;display:flex;gap:2px"><button class="iconbtn" title="New Backup…"><svg class="ico"><use href="#plus"/></svg></button><button class="iconbtn" title="More"><svg class="ico"><use href="#more"/></svg></button></span></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Documents</div><div class="s">Backed up 2 hours ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Pictures</div><div class="s">Backed up 3 days ago</div></div><svg class="ico" style="color:var(--danger);"><use href="#alert"/></svg></div>
+<div class="row sel"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Projects</div><div class="s">Backed up 4 min ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+</div>
+<div class="main">
+<div class="toolbar"><div><div class="name">Projects</div><div class="path">2 folders → gdrive:Backups/projects</div></div><div class="spacer"></div><button class="btn primary"><svg class="ico"><use href="#refresh"/></svg>Back Up Now</button><button class="btn secondary"><svg class="ico"><use href="#pause"/></svg>Pause</button><span style="position:relative"><button class="btn secondary" title="More"><svg class="ico"><use href="#more"/></svg></button></span></div>
+<div class="seg"><span class="">Snapshots</span><span class="">Activity</span><span class="on">Settings</span></div>
+<div class="opts"><div class="sec-title" style="margin-top:0">Keep</div>
+<div class="srow"><div class="lab">Daily</div><div class="ctl"><span class="fld">3</span></div></div>
+<div class="srow"><div class="lab">Weekly</div><div class="ctl"><span class="fld">4</span></div></div>
+<div class="srow"><div class="lab">Monthly</div><div class="ctl"><span class="fld">6</span></div></div>
+<div class="srow"><div class="lab">Yearly<div class="cap">Off</div></div><div class="ctl"><span class="fld">0</span></div></div>
+</div></div></div>
+<div class="scrim" style="align-items:center;padding-top:0"><div class="alert"><h2>Delete older snapshots?</h2><div class="callout" style="color:var(--text)">The next backup permanently deletes the snapshots outside the new policy from gdrive:Backups/projects.</div><div class="foot"><button class="btn secondary default">Cancel</button><button class="btn destructive">Save and Delete Old Snapshots</button></div></div></div>
+</div>
+
+<h1 class="caption">16. Alerts: Show Key, Stay on one file system off, Full Check, Remove Backup (box off and on). Cancel is the default button</h1>
+<div class="win" style="height:900px">
+ <div class="titlebar">Alerts</div>
+<div class="agrid"><div class="alert"><h2>Show the backup key?</h2><div class="callout" style="color:var(--text)">Anyone who sees this key can read your backed-up files.</div><div class="foot"><button class="btn secondary default">Cancel</button><button class="btn primary">Show Key</button></div></div><div class="alert"><h2>Include mounted drives and subvolumes?</h2><div class="callout" style="color:var(--text)">Folders mounted inside these folders, including Btrfs subvolumes and rclone mounts, are backed up too.</div><div class="foot"><button class="btn secondary default">Cancel</button><button class="btn primary">Turn Off</button></div></div><div class="alert"><h2>Read all backup data?</h2><div class="callout" style="color:var(--text)">This downloads everything from gdrive:Backups/projects and can take hours.</div><div class="foot"><button class="btn secondary default">Cancel</button><button class="btn primary">Check</button></div></div><div class="alert"><h2>Remove "Projects"?</h2><div class="callout" style="color:var(--text)">syncfast will stop backing up these folders. The backup stays at gdrive:Backups/projects and can be added again with Add Existing Backup….</div><div style="display:flex;gap:8px;align-items:center"><span class="cb"></span>Also delete the key from this computer</div><div class="foot"><button class="btn secondary default">Cancel</button><button class="btn destructive">Remove</button></div></div><div class="alert"><h2>Remove "Projects"?</h2><div class="callout" style="color:var(--text)">syncfast will stop backing up these folders. The backup stays at gdrive:Backups/projects and can be added again with Add Existing Backup….</div><div style="display:flex;gap:8px;align-items:center"><span class="cb on"><svg class="ico"><use href="#check"/></svg></span>Also delete the key from this computer</div><div class="hint">You will need the key you saved to open this backup again.</div><div class="foot"><button class="btn secondary default">Cancel</button><button class="btn destructive">Remove</button></div></div></div></div>
+
+<h1 class="caption">17. New Backup, step 1 Folders (host keyring note)</h1>
+<div class="win">
+ <div class="titlebar">Backups</div>
+ <div class="body"><div class="sidebar">
+<div class="side-head">Syncs <button class="iconbtn" title="Add Sync…"><svg class="ico"><use href="#plus"/></svg></button></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Google Drive</div><div class="s">Synced 3 min ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Udesc</div><div class="s">Synced 2 hours ago</div></div><svg class="ico" style="color:var(--warning);"><use href="#eye"/></svg></div>
+<div class="side-sec"></div>
+<div class="side-head">Backups <span style="position:relative;display:flex;gap:2px"><button class="iconbtn" title="New Backup…"><svg class="ico"><use href="#plus"/></svg></button><button class="iconbtn" title="More"><svg class="ico"><use href="#more"/></svg></button></span></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Documents</div><div class="s">Backed up 2 hours ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Pictures</div><div class="s">Backed up 3 days ago</div></div><svg class="ico" style="color:var(--danger);"><use href="#alert"/></svg></div>
+<div class="row sel"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Projects</div><div class="s">Backing up…</div></div><svg class="ico" style="color:var(--accent);"><use href="#refresh"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Archive</div><div class="s">Backed up yesterday</div></div><svg class="ico" style="color:var(--dim);"><use href="#drive"/></svg></div>
+</div>
+<div class="main"></div></div>
+ <div class="scrim"><div class="sheet">
+<div class="steps"><b>Folders</b>›<span>Destination</span>›<span>Schedule</span>›<span>Filters</span>›<span>Name</span>›<span>Your Backup Key</span></div>
+<h2>Folders</h2>
+<div class="list" style="margin:0;border:1px solid var(--outline);border-radius:8px"><div class="lrow" style="padding:0 12px;min-height:40px"><span><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg></span><span style="flex:1">~/Documents</span><button class="iconbtn" title="Remove Folder"><svg class="ico"><use href="#x"/></svg></button></div>
+<div class="lrow" style="padding:0 12px;min-height:40px"><span><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg></span><span style="flex:1">~/Pictures</span><button class="iconbtn" title="Remove Folder"><svg class="ico"><use href="#x"/></svg></button></div>
+</div>
+<div><button class="btn secondary"><svg class="ico"><use href="#plus"/></svg>Add Folder…</button></div>
+<div class="callout">Folders on another disk inside these folders are not included. Add them as their own folder.</div>
+<div class="callout">Using the host keyring. See docs/guide/backup.md.</div>
+<div class="foot"><button class="btn secondary left">Cancel</button><button class="btn primary">Continue</button></div>
+</div></div>
+</div>
+
+<h1 class="caption">18. New Backup, step 1 Folders with no key storage (Continue disabled)</h1>
+<div class="win">
+ <div class="titlebar">Backups</div>
+ <div class="body"><div class="sidebar">
+<div class="side-head">Syncs <button class="iconbtn" title="Add Sync…"><svg class="ico"><use href="#plus"/></svg></button></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Google Drive</div><div class="s">Synced 3 min ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Udesc</div><div class="s">Synced 2 hours ago</div></div><svg class="ico" style="color:var(--warning);"><use href="#eye"/></svg></div>
+<div class="side-sec"></div>
+<div class="side-head">Backups <span style="position:relative;display:flex;gap:2px"><button class="iconbtn" title="New Backup…"><svg class="ico"><use href="#plus"/></svg></button><button class="iconbtn" title="More"><svg class="ico"><use href="#more"/></svg></button></span></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Documents</div><div class="s">Backed up 2 hours ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Pictures</div><div class="s">Backed up 3 days ago</div></div><svg class="ico" style="color:var(--danger);"><use href="#alert"/></svg></div>
+<div class="row sel"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Projects</div><div class="s">Backing up…</div></div><svg class="ico" style="color:var(--accent);"><use href="#refresh"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Archive</div><div class="s">Backed up yesterday</div></div><svg class="ico" style="color:var(--dim);"><use href="#drive"/></svg></div>
+</div>
+<div class="main"></div></div>
+ <div class="scrim"><div class="sheet">
+<div class="steps"><b>Folders</b>›<span>Destination</span>›<span>Schedule</span>›<span>Filters</span>›<span>Name</span>›<span>Your Backup Key</span></div>
+<h2>Folders</h2>
+<div class="list" style="margin:0;border:1px solid var(--outline);border-radius:8px"><div class="lrow" style="padding:0 12px;min-height:40px"><span><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg></span><span style="flex:1">~/Documents</span><button class="iconbtn" title="Remove Folder"><svg class="ico"><use href="#x"/></svg></button></div>
+</div>
+<div><button class="btn secondary"><svg class="ico"><use href="#plus"/></svg>Add Folder…</button></div>
+<div class="callout">Folders on another disk inside these folders are not included. Add them as their own folder.</div>
+<div class="err"><svg class="ico"><use href="#alert"/></svg>Cannot reach the key storage: no portal. Backups need the Secret portal or a Secret Service; see docs/guide/backup.md.</div>
+<div class="foot"><button class="btn secondary left">Cancel</button><button class="btn primary" disabled>Continue</button></div>
+</div></div>
+</div>
+
+<h1 class="caption">19. New Backup, step 2 Destination: Google Drive (no "Entire gdrive" row)</h1>
+<div class="win" style="height:700px">
+ <div class="titlebar">Backups</div>
+ <div class="body"><div class="sidebar">
+<div class="side-head">Syncs <button class="iconbtn" title="Add Sync…"><svg class="ico"><use href="#plus"/></svg></button></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Google Drive</div><div class="s">Synced 3 min ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Udesc</div><div class="s">Synced 2 hours ago</div></div><svg class="ico" style="color:var(--warning);"><use href="#eye"/></svg></div>
+<div class="side-sec"></div>
+<div class="side-head">Backups <span style="position:relative;display:flex;gap:2px"><button class="iconbtn" title="New Backup…"><svg class="ico"><use href="#plus"/></svg></button><button class="iconbtn" title="More"><svg class="ico"><use href="#more"/></svg></button></span></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Documents</div><div class="s">Backed up 2 hours ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Pictures</div><div class="s">Backed up 3 days ago</div></div><svg class="ico" style="color:var(--danger);"><use href="#alert"/></svg></div>
+<div class="row sel"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Projects</div><div class="s">Backing up…</div></div><svg class="ico" style="color:var(--accent);"><use href="#refresh"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Archive</div><div class="s">Backed up yesterday</div></div><svg class="ico" style="color:var(--dim);"><use href="#drive"/></svg></div>
+</div>
+<div class="main"></div></div>
+ <div class="scrim"><div class="sheet">
+<div class="steps"><span>Folders</span>›<b>Destination</b>›<span>Schedule</span>›<span>Filters</span>›<span>Name</span>›<span>Your Backup Key</span></div>
+<h2>Destination</h2>
+<div class="seg"><span class="on">Google Drive</span><span>This Computer</span></div>
+<div class="pick on"><span class="radio on"></span><div style="flex:1"><b>gdrive</b> · Google Drive<div class="hint">Uses rclone's shared client ID</div></div></div>
+<div class="pick"><span class="radio"></span><div style="flex:1"><b>trabalho</b> · Google Drive</div></div>
+<div><button class="btn secondary"><svg class="ico"><use href="#plus"/></svg>Add Google Drive Account…</button></div>
+<div class="tree"><div class="tr sel"><span class="ch"><svg class="ico"><use href="#chev"/></svg></span><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg>Backups</div><div class="tr"><span class="ch"><svg class="ico"><use href="#chev"/></svg></span><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg>Faculdade</div><div class="tr"><span class="ch"><svg class="ico"><use href="#chev"/></svg></span><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg>Fotos</div><div class="tr"><span class="ch"><svg class="ico"><use href="#chev"/></svg></span><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg>Pessoal</div></div>
+<div><button class="btn secondary"><svg class="ico"><use href="#plus"/></svg>New Folder…</button></div>
+<div class="hint">Choose a folder only for this backup. Do not use a folder that a sync uses.</div>
+<div class="foot"><button class="btn secondary left">Cancel</button><button class="btn secondary">Back</button><button class="btn primary">Continue</button></div>
+</div></div>
+</div>
+
+<h1 class="caption">20. New Backup, step 2 Destination: This Computer with a destination error</h1>
+<div class="win">
+ <div class="titlebar">Backups</div>
+ <div class="body"><div class="sidebar">
+<div class="side-head">Syncs <button class="iconbtn" title="Add Sync…"><svg class="ico"><use href="#plus"/></svg></button></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Google Drive</div><div class="s">Synced 3 min ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Udesc</div><div class="s">Synced 2 hours ago</div></div><svg class="ico" style="color:var(--warning);"><use href="#eye"/></svg></div>
+<div class="side-sec"></div>
+<div class="side-head">Backups <span style="position:relative;display:flex;gap:2px"><button class="iconbtn" title="New Backup…"><svg class="ico"><use href="#plus"/></svg></button><button class="iconbtn" title="More"><svg class="ico"><use href="#more"/></svg></button></span></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Documents</div><div class="s">Backed up 2 hours ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Pictures</div><div class="s">Backed up 3 days ago</div></div><svg class="ico" style="color:var(--danger);"><use href="#alert"/></svg></div>
+<div class="row sel"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Projects</div><div class="s">Backing up…</div></div><svg class="ico" style="color:var(--accent);"><use href="#refresh"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Archive</div><div class="s">Backed up yesterday</div></div><svg class="ico" style="color:var(--dim);"><use href="#drive"/></svg></div>
+</div>
+<div class="main"></div></div>
+ <div class="scrim"><div class="sheet">
+<div class="steps"><span>Folders</span>›<b>Destination</b>›<span>Schedule</span>›<span>Filters</span>›<span>Name</span>›<span>Your Backup Key</span></div>
+<h2>Destination</h2>
+<div class="seg"><span>Google Drive</span><span class="on">This Computer</span></div>
+<div class="field"><label>Folder</label><div style="display:flex;gap:8px"><div class="input" style="flex:1">/run/media/raphael/Backup/syncfast</div><button class="btn secondary">Choose…</button></div></div>
+<div class="err"><svg class="ico"><use href="#alert"/></svg>The destination folder is not empty.</div>
+<div class="foot"><button class="btn secondary left">Cancel</button><button class="btn secondary">Back</button><button class="btn primary" disabled>Continue</button></div>
+</div></div>
+</div>
+
+<h1 class="caption">21. New Backup, step 3 Schedule (defaults, Advanced closed)</h1>
+<div class="win">
+ <div class="titlebar">Backups</div>
+ <div class="body"><div class="sidebar">
+<div class="side-head">Syncs <button class="iconbtn" title="Add Sync…"><svg class="ico"><use href="#plus"/></svg></button></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Google Drive</div><div class="s">Synced 3 min ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Udesc</div><div class="s">Synced 2 hours ago</div></div><svg class="ico" style="color:var(--warning);"><use href="#eye"/></svg></div>
+<div class="side-sec"></div>
+<div class="side-head">Backups <span style="position:relative;display:flex;gap:2px"><button class="iconbtn" title="New Backup…"><svg class="ico"><use href="#plus"/></svg></button><button class="iconbtn" title="More"><svg class="ico"><use href="#more"/></svg></button></span></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Documents</div><div class="s">Backed up 2 hours ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Pictures</div><div class="s">Backed up 3 days ago</div></div><svg class="ico" style="color:var(--danger);"><use href="#alert"/></svg></div>
+<div class="row sel"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Projects</div><div class="s">Backing up…</div></div><svg class="ico" style="color:var(--accent);"><use href="#refresh"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Archive</div><div class="s">Backed up yesterday</div></div><svg class="ico" style="color:var(--dim);"><use href="#drive"/></svg></div>
+</div>
+<div class="main"></div></div>
+ <div class="scrim"><div class="sheet">
+<div class="steps"><span>Folders</span>›<span>Destination</span>›<b>Schedule</b>›<span>Filters</span>›<span>Name</span>›<span>Your Backup Key</span></div>
+<h2>Schedule</h2>
+<div class="srow" style="border:0"><div class="lab">Back up</div><div class="ctl"><span class="cmb">Every day<svg class="ico"><use href="#chevd"/></svg></span></div></div>
+<div style="display:flex;align-items:center;gap:12px"><div class="callout" style="flex:1;color:var(--text)">Keep 7 daily, 4 weekly and 6 monthly snapshots.</div><button class="btn secondary">Customize…</button></div>
+<div class="hint">Older snapshots are deleted from the destination after each backup.</div>
+<div class="group"><div class="gh"><svg class="ico" style="color:var(--dim);"><use href="#chev"/></svg>Advanced</div></div>
+<div class="foot"><button class="btn secondary left">Cancel</button><button class="btn secondary">Back</button><button class="btn primary">Continue</button></div>
+</div></div>
+</div>
+
+<h1 class="caption">22. New Backup, step 3 Schedule (Customize open with Yearly 2, Advanced open with one file system off)</h1>
+<div class="win" style="height:760px">
+ <div class="titlebar">Backups</div>
+ <div class="body"><div class="sidebar">
+<div class="side-head">Syncs <button class="iconbtn" title="Add Sync…"><svg class="ico"><use href="#plus"/></svg></button></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Google Drive</div><div class="s">Synced 3 min ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Udesc</div><div class="s">Synced 2 hours ago</div></div><svg class="ico" style="color:var(--warning);"><use href="#eye"/></svg></div>
+<div class="side-sec"></div>
+<div class="side-head">Backups <span style="position:relative;display:flex;gap:2px"><button class="iconbtn" title="New Backup…"><svg class="ico"><use href="#plus"/></svg></button><button class="iconbtn" title="More"><svg class="ico"><use href="#more"/></svg></button></span></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Documents</div><div class="s">Backed up 2 hours ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Pictures</div><div class="s">Backed up 3 days ago</div></div><svg class="ico" style="color:var(--danger);"><use href="#alert"/></svg></div>
+<div class="row sel"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Projects</div><div class="s">Backing up…</div></div><svg class="ico" style="color:var(--accent);"><use href="#refresh"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Archive</div><div class="s">Backed up yesterday</div></div><svg class="ico" style="color:var(--dim);"><use href="#drive"/></svg></div>
+</div>
+<div class="main"></div></div>
+ <div class="scrim"><div class="sheet">
+<div class="steps"><span>Folders</span>›<span>Destination</span>›<b>Schedule</b>›<span>Filters</span>›<span>Name</span>›<span>Your Backup Key</span></div>
+<h2>Schedule</h2>
+<div class="srow" style="border:0"><div class="lab">Back up</div><div class="ctl"><span class="cmb">Every day<svg class="ico"><use href="#chevd"/></svg></span></div></div>
+<div style="display:flex;align-items:center;gap:12px"><div class="callout" style="flex:1;color:var(--text)">Keep 7 daily, 4 weekly, 6 monthly and 2 yearly snapshots.</div><button class="btn secondary">Customize…</button></div>
+<div class="kpair"><div class="field"><label>Daily</label><div class="input">7</div></div><div class="field"><label>Weekly</label><div class="input">4</div></div><div class="field"><label>Monthly</label><div class="input">6</div></div><div class="field"><label>Yearly</label><div class="input">2</div></div></div>
+<div class="hint">Older snapshots are deleted from the destination after each backup.</div>
+<div class="group"><div class="gh"><svg class="ico" style="color:var(--dim);"><use href="#chevd"/></svg>Advanced</div><div class="gb" style="padding:6px 12px 10px;font-family:inherit;font-size:13px;line-height:16px;color:var(--text)"><div class="srow" style="min-height:36px"><div class="lab">Stay on one file system</div><div class="ctl"><span class="tgl"></span></div></div><div class="callout" style="padding:6px 0">Mounted drives, rclone mounts and Btrfs subvolumes inside these folders are backed up too.</div><div class="srow" style="min-height:36px"><div class="lab">Upload limit</div><div class="ctl"><span class="fld hint">Unlimited</span></div></div><div class="srow" style="min-height:36px;border:0"><div class="lab">Download limit</div><div class="ctl"><span class="fld hint">Unlimited</span></div></div></div></div>
+<div class="foot"><button class="btn secondary left">Cancel</button><button class="btn secondary">Back</button><button class="btn primary">Continue</button></div>
+</div></div>
+</div>
+
+<h1 class="caption">23. New Backup, step 4 Filters (same editor as the sync, Developer folders warning)</h1>
+<div class="win" style="height:760px">
+ <div class="titlebar">Backups</div>
+ <div class="body"><div class="sidebar">
+<div class="side-head">Syncs <button class="iconbtn" title="Add Sync…"><svg class="ico"><use href="#plus"/></svg></button></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Google Drive</div><div class="s">Synced 3 min ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Udesc</div><div class="s">Synced 2 hours ago</div></div><svg class="ico" style="color:var(--warning);"><use href="#eye"/></svg></div>
+<div class="side-sec"></div>
+<div class="side-head">Backups <span style="position:relative;display:flex;gap:2px"><button class="iconbtn" title="New Backup…"><svg class="ico"><use href="#plus"/></svg></button><button class="iconbtn" title="More"><svg class="ico"><use href="#more"/></svg></button></span></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Documents</div><div class="s">Backed up 2 hours ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Pictures</div><div class="s">Backed up 3 days ago</div></div><svg class="ico" style="color:var(--danger);"><use href="#alert"/></svg></div>
+<div class="row sel"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Projects</div><div class="s">Backing up…</div></div><svg class="ico" style="color:var(--accent);"><use href="#refresh"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Archive</div><div class="s">Backed up yesterday</div></div><svg class="ico" style="color:var(--dim);"><use href="#drive"/></svg></div>
+</div>
+<div class="main"></div></div>
+ <div class="scrim"><div class="sheet">
+<div class="steps"><span>Folders</span>›<span>Destination</span>›<span>Schedule</span>›<b>Filters</b>›<span>Name</span>›<span>Your Backup Key</span></div>
+<h2>Filters</h2>
+<div class="srow" style="min-height:36px"><div class="lab">System junk files</div><div class="ctl"><span class="tgl on"></span></div></div>
+<div class="srow" style="min-height:36px"><div class="lab">Developer folders<div class="cap">This also leaves out .git folders, so repository history is not backed up.</div></div><div class="ctl"><span class="tgl on"></span></div></div>
+<div class="srow" style="min-height:36px"><div class="lab">Build artifacts and caches<div class="cap">Leaves out node_modules, target, .venv and caches. They can be rebuilt.</div><div class="cap">Build folders (build/, dist/) are not part of this preset. Add them as custom rules if they only hold output.</div></div><div class="ctl"><span class="tgl on"></span></div></div>
+<div class="srow" style="min-height:36px"><div class="lab">Git repositories<div class="cap">This leaves out every folder that holds a .git.</div></div><div class="ctl"><span class="tgl"></span></div></div>
+<div class="field"><label>Custom rules</label><div class="input" style="height:48px;align-items:flex-start;padding-top:6px;font-family:ui-monospace,monospace;font-size:12px">- *.iso</div></div>
+<div><button class="btn secondary">Test Filters</button> <span class="cap-note" style="margin-left:8px">38 of 3,310 files excluded · 1.2 GB</span></div>
+<div class="foot"><button class="btn secondary left">Cancel</button><button class="btn secondary">Back</button><button class="btn primary">Continue</button></div>
+</div></div>
+</div>
+
+<h1 class="caption">24. New Backup, step 5 Name</h1>
+<div class="win">
+ <div class="titlebar">Backups</div>
+ <div class="body"><div class="sidebar">
+<div class="side-head">Syncs <button class="iconbtn" title="Add Sync…"><svg class="ico"><use href="#plus"/></svg></button></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Google Drive</div><div class="s">Synced 3 min ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Udesc</div><div class="s">Synced 2 hours ago</div></div><svg class="ico" style="color:var(--warning);"><use href="#eye"/></svg></div>
+<div class="side-sec"></div>
+<div class="side-head">Backups <span style="position:relative;display:flex;gap:2px"><button class="iconbtn" title="New Backup…"><svg class="ico"><use href="#plus"/></svg></button><button class="iconbtn" title="More"><svg class="ico"><use href="#more"/></svg></button></span></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Documents</div><div class="s">Backed up 2 hours ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Pictures</div><div class="s">Backed up 3 days ago</div></div><svg class="ico" style="color:var(--danger);"><use href="#alert"/></svg></div>
+<div class="row sel"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Projects</div><div class="s">Backing up…</div></div><svg class="ico" style="color:var(--accent);"><use href="#refresh"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Archive</div><div class="s">Backed up yesterday</div></div><svg class="ico" style="color:var(--dim);"><use href="#drive"/></svg></div>
+</div>
+<div class="main"></div></div>
+ <div class="scrim"><div class="sheet">
+<div class="steps"><span>Folders</span>›<span>Destination</span>›<span>Schedule</span>›<span>Filters</span>›<b>Name</b>›<span>Your Backup Key</span></div>
+<h2>Name</h2>
+<div class="field"><label>Name</label><div class="input">Documents</div></div><div class="foot-note" style="font-size:11px">Backup id: documents</div>
+<div class="foot"><button class="btn secondary left">Cancel</button><button class="btn secondary">Back</button><button class="btn primary">Continue</button></div>
+</div></div>
+</div>
+
+<h1 class="caption">25. New Backup, last step Your Backup Key (only Cancel and I Saved the Key; the same sheet opens from the Save the backup key card)</h1>
+<div class="win" style="height:700px">
+ <div class="titlebar">Backups</div>
+ <div class="body"><div class="sidebar">
+<div class="side-head">Syncs <button class="iconbtn" title="Add Sync…"><svg class="ico"><use href="#plus"/></svg></button></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Google Drive</div><div class="s">Synced 3 min ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Udesc</div><div class="s">Synced 2 hours ago</div></div><svg class="ico" style="color:var(--warning);"><use href="#eye"/></svg></div>
+<div class="side-sec"></div>
+<div class="side-head">Backups <span style="position:relative;display:flex;gap:2px"><button class="iconbtn" title="New Backup…"><svg class="ico"><use href="#plus"/></svg></button><button class="iconbtn" title="More"><svg class="ico"><use href="#more"/></svg></button></span></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Documents</div><div class="s">Backed up 2 hours ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Pictures</div><div class="s">Backed up 3 days ago</div></div><svg class="ico" style="color:var(--danger);"><use href="#alert"/></svg></div>
+<div class="row sel"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Projects</div><div class="s">Backing up…</div></div><svg class="ico" style="color:var(--accent);"><use href="#refresh"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Archive</div><div class="s">Backed up yesterday</div></div><svg class="ico" style="color:var(--dim);"><use href="#drive"/></svg></div>
+</div>
+<div class="main"></div></div>
+ <div class="scrim"><div class="sheet">
+<div class="steps"><span>Folders</span>›<span>Destination</span>›<span>Schedule</span>›<span>Filters</span>›<span>Name</span>›<b>Your Backup Key</b></div>
+<h2>Your Backup Key</h2>
+<div class="callout" style="color:var(--text)">This key opens your backup. syncfast cannot recover it, and without it the backup cannot be read. Keep it somewhere safe.</div>
+<div class="keybox"><span>KQ4R</span><span class="dash">-</span><span>7HXW</span><span class="dash">-</span><span>2MVD</span><span class="dash">-</span><span>NB5T</span><span class="dash">-</span><span>JPAE</span><span class="dash">-</span><span>XZ3C</span><span class="dash">-</span><span>6GLS</span><span class="dash">-</span><span>OYF2</span><span class="dash">-</span><span>UWRI</span><span class="dash">-</span><span>DKA7</span><span class="dash">-</span><span>HNQ5</span><span class="dash">-</span><span>BTM3</span><span class="dash">-</span><span>VE6J</span></div><div style="display:flex;align-items:center;gap:12px"><button class="btn secondary"><svg class="ico"><use href="#save"/></svg>Save Key to File…</button><span class="cap-note">The file is not encrypted.</span></div>
+<div class="foot"><button class="btn secondary left">Cancel</button><button class="btn primary">I Saved the Key</button></div>
+</div></div>
+</div>
+
+<h1 class="caption">26. Show Key… after confirming (primary is Done)</h1>
+<div class="win" style="height:640px">
+ <div class="titlebar">Projects</div>
+ <div class="body"><div class="sidebar">
+<div class="side-head">Syncs <button class="iconbtn" title="Add Sync…"><svg class="ico"><use href="#plus"/></svg></button></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Google Drive</div><div class="s">Synced 3 min ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Udesc</div><div class="s">Synced 2 hours ago</div></div><svg class="ico" style="color:var(--warning);"><use href="#eye"/></svg></div>
+<div class="side-sec"></div>
+<div class="side-head">Backups <span style="position:relative;display:flex;gap:2px"><button class="iconbtn" title="New Backup…"><svg class="ico"><use href="#plus"/></svg></button><button class="iconbtn" title="More"><svg class="ico"><use href="#more"/></svg></button></span></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Documents</div><div class="s">Backed up 2 hours ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Pictures</div><div class="s">Backed up 3 days ago</div></div><svg class="ico" style="color:var(--danger);"><use href="#alert"/></svg></div>
+<div class="row sel"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Projects</div><div class="s">Backing up…</div></div><svg class="ico" style="color:var(--accent);"><use href="#refresh"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Archive</div><div class="s">Backed up yesterday</div></div><svg class="ico" style="color:var(--dim);"><use href="#drive"/></svg></div>
+</div>
+<div class="main"></div></div>
+ <div class="scrim"><div class="sheet">
+<h2>Your Backup Key</h2>
+<div class="callout" style="color:var(--text)">This key opens your backup. syncfast cannot recover it, and without it the backup cannot be read. Keep it somewhere safe.</div>
+<div class="keybox"><span>KQ4R</span><span class="dash">-</span><span>7HXW</span><span class="dash">-</span><span>2MVD</span><span class="dash">-</span><span>NB5T</span><span class="dash">-</span><span>JPAE</span><span class="dash">-</span><span>XZ3C</span><span class="dash">-</span><span>6GLS</span><span class="dash">-</span><span>OYF2</span><span class="dash">-</span><span>UWRI</span><span class="dash">-</span><span>DKA7</span><span class="dash">-</span><span>HNQ5</span><span class="dash">-</span><span>BTM3</span><span class="dash">-</span><span>VE6J</span></div><div style="display:flex;align-items:center;gap:12px"><button class="btn secondary"><svg class="ico"><use href="#save"/></svg>Save Key to File…</button><span class="cap-note">The file is not encrypted.</span></div>
+<div class="foot"><button class="btn primary">Done</button></div>
+</div></div>
+</div>
+
+<h1 class="caption">27. Enter Key… (Needs attention with key_missing or wrong_key)</h1>
+<div class="win">
+ <div class="titlebar">Pictures</div>
+ <div class="body"><div class="sidebar">
+<div class="side-head">Syncs <button class="iconbtn" title="Add Sync…"><svg class="ico"><use href="#plus"/></svg></button></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Google Drive</div><div class="s">Synced 3 min ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Udesc</div><div class="s">Synced 2 hours ago</div></div><svg class="ico" style="color:var(--warning);"><use href="#eye"/></svg></div>
+<div class="side-sec"></div>
+<div class="side-head">Backups <span style="position:relative;display:flex;gap:2px"><button class="iconbtn" title="New Backup…"><svg class="ico"><use href="#plus"/></svg></button><button class="iconbtn" title="More"><svg class="ico"><use href="#more"/></svg></button></span></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Documents</div><div class="s">Backed up 2 hours ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Pictures</div><div class="s">Backed up 3 days ago</div></div><svg class="ico" style="color:var(--danger);"><use href="#alert"/></svg></div>
+<div class="row sel"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Projects</div><div class="s">Backing up…</div></div><svg class="ico" style="color:var(--accent);"><use href="#refresh"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Archive</div><div class="s">Backed up yesterday</div></div><svg class="ico" style="color:var(--dim);"><use href="#drive"/></svg></div>
+</div>
+<div class="main"></div></div>
+ <div class="scrim"><div class="sheet">
+<h2>Enter Key</h2>
+<div class="field"><label>Backup key</label><div class="input"><span class="mono" style="letter-spacing:.2em">••••-••••-••••-••••-••••-••••</span><span class="spacer"></span></div></div><div style="display:flex;gap:8px;align-items:center"><span class="tgl"></span>Show</div>
+<div class="err"><svg class="ico"><use href="#alert"/></svg>That key does not open this backup.</div>
+<div class="foot"><button class="btn secondary left">Cancel</button><button class="btn primary">Save Key</button></div>
+</div></div>
+</div>
+
+<h1 class="caption">28. Add Existing Backup, step 1 Destination (the folder must hold a backup)</h1>
+<div class="win" style="height:700px">
+ <div class="titlebar">Backups</div>
+ <div class="body"><div class="sidebar">
+<div class="side-head">Syncs <button class="iconbtn" title="Add Sync…"><svg class="ico"><use href="#plus"/></svg></button></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Google Drive</div><div class="s">Synced 3 min ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Udesc</div><div class="s">Synced 2 hours ago</div></div><svg class="ico" style="color:var(--warning);"><use href="#eye"/></svg></div>
+<div class="side-sec"></div>
+<div class="side-head">Backups <span style="position:relative;display:flex;gap:2px"><button class="iconbtn" title="New Backup…"><svg class="ico"><use href="#plus"/></svg></button><button class="iconbtn" title="More"><svg class="ico"><use href="#more"/></svg></button></span></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Documents</div><div class="s">Backed up 2 hours ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Pictures</div><div class="s">Backed up 3 days ago</div></div><svg class="ico" style="color:var(--danger);"><use href="#alert"/></svg></div>
+<div class="row sel"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Projects</div><div class="s">Backing up…</div></div><svg class="ico" style="color:var(--accent);"><use href="#refresh"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Archive</div><div class="s">Backed up yesterday</div></div><svg class="ico" style="color:var(--dim);"><use href="#drive"/></svg></div>
+</div>
+<div class="main"></div></div>
+ <div class="scrim"><div class="sheet">
+<div class="steps"><b>Destination</b>›<span>Key</span>›<span>Name</span></div>
+<h2>Add Existing Backup</h2>
+<div class="seg"><span class="on">Google Drive</span><span>This Computer</span></div>
+<div class="pick on"><span class="radio on"></span><div style="flex:1"><b>gdrive</b> · Google Drive</div></div>
+<div class="tree"><div class="tr sel"><span class="ch"><svg class="ico"><use href="#chev"/></svg></span><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg>Backups</div><div class="tr"><span class="ch"><svg class="ico"><use href="#chev"/></svg></span><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg>Faculdade</div><div class="tr"><span class="ch"><svg class="ico"><use href="#chev"/></svg></span><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg>Fotos</div></div>
+<div class="err"><svg class="ico"><use href="#alert"/></svg>No backup was found in that folder.</div>
+<div class="foot"><button class="btn secondary left">Cancel</button><button class="btn primary" disabled>Continue</button></div>
+</div></div>
+</div>
+
+<h1 class="caption">29. Add Existing Backup, step 2 Key (masked with a Show switch; here shown, wrong key)</h1>
+<div class="win">
+ <div class="titlebar">Backups</div>
+ <div class="body"><div class="sidebar">
+<div class="side-head">Syncs <button class="iconbtn" title="Add Sync…"><svg class="ico"><use href="#plus"/></svg></button></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Google Drive</div><div class="s">Synced 3 min ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Udesc</div><div class="s">Synced 2 hours ago</div></div><svg class="ico" style="color:var(--warning);"><use href="#eye"/></svg></div>
+<div class="side-sec"></div>
+<div class="side-head">Backups <span style="position:relative;display:flex;gap:2px"><button class="iconbtn" title="New Backup…"><svg class="ico"><use href="#plus"/></svg></button><button class="iconbtn" title="More"><svg class="ico"><use href="#more"/></svg></button></span></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Documents</div><div class="s">Backed up 2 hours ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Pictures</div><div class="s">Backed up 3 days ago</div></div><svg class="ico" style="color:var(--danger);"><use href="#alert"/></svg></div>
+<div class="row sel"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Projects</div><div class="s">Backing up…</div></div><svg class="ico" style="color:var(--accent);"><use href="#refresh"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Archive</div><div class="s">Backed up yesterday</div></div><svg class="ico" style="color:var(--dim);"><use href="#drive"/></svg></div>
+</div>
+<div class="main"></div></div>
+ <div class="scrim"><div class="sheet">
+<div class="steps"><span>Destination</span>›<b>Key</b>›<span>Name</span></div>
+<h2>Backup key</h2>
+<div class="field"><label>Backup key</label><div class="input"><span class="mono" style="letter-spacing:.1em">KQ4R-7HXW-2MVD-NB5T-JPAE-XZ3C-6GLS-OYF2-UWRI-DKA7-HNQ5-BTM3-VE6K</span></div></div><div style="display:flex;gap:8px;align-items:center"><span class="tgl on"></span>Show</div>
+<div class="err"><svg class="ico"><use href="#alert"/></svg>That key does not open this backup.</div>
+<div class="foot"><button class="btn secondary left">Cancel</button><button class="btn secondary">Back</button><button class="btn primary">Continue</button></div>
+</div></div>
+</div>
+
+<h1 class="caption">30. Settings > Backups: Secret portal</h1>
+<div class="win">
+ <div class="titlebar">Google Drive</div>
+ <div class="body"><div class="sidebar">
+<div class="side-head">Syncs <button class="iconbtn" title="Add Sync…"><svg class="ico"><use href="#plus"/></svg></button></div>
+<div class="row sel"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Google Drive</div><div class="s">Synced 3 min ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Udesc</div><div class="s">Synced 2 hours ago</div></div><svg class="ico" style="color:var(--warning);"><use href="#eye"/></svg></div>
+<div class="side-sec"></div>
+<div class="side-head">Backups <span style="position:relative;display:flex;gap:2px"><button class="iconbtn" title="New Backup…"><svg class="ico"><use href="#plus"/></svg></button><button class="iconbtn" title="More"><svg class="ico"><use href="#more"/></svg></button></span></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Documents</div><div class="s">Backed up 2 hours ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+</div>
+<div class="main"></div></div>
+<div class="dlg-scrim"><div class="dialog"><div class="dlg-head">Settings<button class="iconbtn" title="Close"><svg class="ico"><use href="#x"/></svg></button></div><div class="dlg-body"><div class="dlg-side"><div class="dlg-group" style="margin-top:0">Syncs</div><div class="row" style="min-height:32px"><svg class="ico" style="color:var(--secondary);"><use href="#user"/></svg>Accounts</div><div class="row" style="min-height:32px"><svg class="ico" style="color:var(--secondary);"><use href="#settings"/></svg>Defaults</div><div class="dlg-group">Backups</div><div class="row sel" style="min-height:32px"><svg class="ico"><use href="#key"/></svg>Backups</div><div class="dlg-group">App</div><div class="row" style="min-height:32px"><svg class="ico" style="color:var(--secondary);"><use href="#power"/></svg>General</div><div class="row" style="min-height:32px"><svg class="ico" style="color:var(--secondary);"><use href="#bell"/></svg>Notifications</div><div class="row" style="min-height:32px"><svg class="ico" style="color:var(--secondary);"><use href="#palette"/></svg>Appearance</div></div><div class="dlg-main"><div class="pane-title">Backups</div>
+<div class="sec-title" style="margin-top:4px">Key storage</div>
+<div>Secret portal</div>
+<div><button class="btn secondary">Test Key Storage</button> <span class="cap-note" style="margin-left:8px">Available</span></div>
+<div class="sec-title">restic</div>
+<div class="srow"><div class="lab">Version</div><div class="ctl">0.19.1</div></div>
+<div style="margin-top:12px"><span class="link">docs/guide/backup.md</span> <svg class="ico" style="color:var(--accent);width:12px;height:12px"><use href="#ext"/></svg></div>
+</div></div></div></div>
+</div>
+
+<h1 class="caption">31. Settings > Backups: host keyring (with the warning)</h1>
+<div class="win">
+ <div class="titlebar">Google Drive</div>
+ <div class="body"><div class="sidebar">
+<div class="side-head">Syncs <button class="iconbtn" title="Add Sync…"><svg class="ico"><use href="#plus"/></svg></button></div>
+<div class="row sel"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Google Drive</div><div class="s">Synced 3 min ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Udesc</div><div class="s">Synced 2 hours ago</div></div><svg class="ico" style="color:var(--warning);"><use href="#eye"/></svg></div>
+<div class="side-sec"></div>
+<div class="side-head">Backups <span style="position:relative;display:flex;gap:2px"><button class="iconbtn" title="New Backup…"><svg class="ico"><use href="#plus"/></svg></button><button class="iconbtn" title="More"><svg class="ico"><use href="#more"/></svg></button></span></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Documents</div><div class="s">Backed up 2 hours ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+</div>
+<div class="main"></div></div>
+<div class="dlg-scrim"><div class="dialog"><div class="dlg-head">Settings<button class="iconbtn" title="Close"><svg class="ico"><use href="#x"/></svg></button></div><div class="dlg-body"><div class="dlg-side"><div class="dlg-group" style="margin-top:0">Syncs</div><div class="row" style="min-height:32px"><svg class="ico" style="color:var(--secondary);"><use href="#user"/></svg>Accounts</div><div class="row" style="min-height:32px"><svg class="ico" style="color:var(--secondary);"><use href="#settings"/></svg>Defaults</div><div class="dlg-group">Backups</div><div class="row sel" style="min-height:32px"><svg class="ico"><use href="#key"/></svg>Backups</div><div class="dlg-group">App</div><div class="row" style="min-height:32px"><svg class="ico" style="color:var(--secondary);"><use href="#power"/></svg>General</div><div class="row" style="min-height:32px"><svg class="ico" style="color:var(--secondary);"><use href="#bell"/></svg>Notifications</div><div class="row" style="min-height:32px"><svg class="ico" style="color:var(--secondary);"><use href="#palette"/></svg>Appearance</div></div><div class="dlg-main"><div class="pane-title">Backups</div>
+<div class="sec-title" style="margin-top:4px">Key storage</div>
+<div>Host keyring (Secret Service)</div>
+<div class="warn-row" style="margin-top:8px"><svg class="ico" style="color:var(--warning);margin-top:1px"><use href="#triangle"/></svg><div class="callout" style="color:var(--text)">The Flatpak can read every secret in your keyring. Routing the Secret portal is safer; see docs/guide/backup.md.</div></div>
+<div><button class="btn secondary">Test Key Storage</button> <span class="cap-note" style="margin-left:8px">Available</span></div>
+<div class="sec-title">restic</div>
+<div class="srow"><div class="lab">Version</div><div class="ctl">0.19.1</div></div>
+<div style="margin-top:12px"><span class="link">docs/guide/backup.md</span> <svg class="ico" style="color:var(--accent);width:12px;height:12px"><use href="#ext"/></svg></div>
+</div></div></div></div>
+</div>
+
+<h1 class="caption">32. Settings > Backups: no key storage</h1>
+<div class="win">
+ <div class="titlebar">Google Drive</div>
+ <div class="body"><div class="sidebar">
+<div class="side-head">Syncs <button class="iconbtn" title="Add Sync…"><svg class="ico"><use href="#plus"/></svg></button></div>
+<div class="row sel"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Google Drive</div><div class="s">Synced 3 min ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#folder"/></svg><div class="grow"><div class="t">Udesc</div><div class="s">Synced 2 hours ago</div></div><svg class="ico" style="color:var(--warning);"><use href="#eye"/></svg></div>
+<div class="side-sec"></div>
+<div class="side-head">Backups <span style="position:relative;display:flex;gap:2px"><button class="iconbtn" title="New Backup…"><svg class="ico"><use href="#plus"/></svg></button><button class="iconbtn" title="More"><svg class="ico"><use href="#more"/></svg></button></span></div>
+<div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Documents</div><div class="s">Backed up 2 hours ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
+</div>
+<div class="main"></div></div>
+<div class="dlg-scrim"><div class="dialog"><div class="dlg-head">Settings<button class="iconbtn" title="Close"><svg class="ico"><use href="#x"/></svg></button></div><div class="dlg-body"><div class="dlg-side"><div class="dlg-group" style="margin-top:0">Syncs</div><div class="row" style="min-height:32px"><svg class="ico" style="color:var(--secondary);"><use href="#user"/></svg>Accounts</div><div class="row" style="min-height:32px"><svg class="ico" style="color:var(--secondary);"><use href="#settings"/></svg>Defaults</div><div class="dlg-group">Backups</div><div class="row sel" style="min-height:32px"><svg class="ico"><use href="#key"/></svg>Backups</div><div class="dlg-group">App</div><div class="row" style="min-height:32px"><svg class="ico" style="color:var(--secondary);"><use href="#power"/></svg>General</div><div class="row" style="min-height:32px"><svg class="ico" style="color:var(--secondary);"><use href="#bell"/></svg>Notifications</div><div class="row" style="min-height:32px"><svg class="ico" style="color:var(--secondary);"><use href="#palette"/></svg>Appearance</div></div><div class="dlg-main"><div class="pane-title">Backups</div>
+<div class="sec-title" style="margin-top:4px">Key storage</div>
+<div class="err" style="align-items:flex-start"><svg class="ico" style="margin-top:2px"><use href="#alert"/></svg><div>No Secret portal and no Secret Service answered. See docs/guide/backup.md.</div></div>
+<div><button class="btn secondary">Test Key Storage</button></div>
+<div class="sec-title">restic</div>
+<div class="srow"><div class="lab">Version</div><div class="ctl">0.19.1</div></div>
+<div style="margin-top:12px"><span class="link">docs/guide/backup.md</span> <svg class="ico" style="color:var(--accent);width:12px;height:12px"><use href="#ext"/></svg></div>
+</div></div></div></div>
+</div>
+
 </body>
 </html>
