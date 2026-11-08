@@ -290,19 +290,23 @@ fn folders(
     section(ui, "Folders", palette);
     let mut remove = None;
     for (index, folder) in draft.paths.iter().enumerate() {
-        ui.horizontal(|ui| {
-            ui.add(Icon::Folder.image(palette.secondary, size::ICON));
-            ui.label(
-                RichText::new(folder.display().to_string())
-                    .font(theme::body())
-                    .color(palette.text),
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        egui::containers::Sides::new().shrink_left().show(
+            ui,
+            |ui| {
+                ui.add(Icon::Folder.image(palette.secondary, size::ICON));
+                let text = folder.display().to_string();
+                ui.add(
+                    egui::Label::new(RichText::new(&text).font(theme::body()).color(palette.text))
+                        .truncate(),
+                )
+                .on_hover_text(&text);
+            },
+            |ui| {
                 if icon_button(ui, Icon::X, "Remove Folder").clicked() {
                     remove = Some(index);
                 }
-            });
-        });
+            },
+        );
         if missing.contains(folder) {
             ui.label(
                 RichText::new("This folder is missing.")

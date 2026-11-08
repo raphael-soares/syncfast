@@ -15,9 +15,10 @@ use syncfast_core::backup::lifecycle::{self, LifecycleEnv};
 use syncfast_core::backup::restore_job::{
     self, DetachedRestoreStarter, RestoreEnv, RestoreError, RestoreReport, RestoreRequest,
 };
+use syncfast_core::backup::run::KEY_ABSENT;
 use syncfast_core::backup::run_decision::{BackupRequest, save_request};
 use syncfast_core::backup::snapshots::SnapshotView;
-use syncfast_core::backup::state::CheckKind;
+use syncfast_core::backup::state::{CheckKind, is_running};
 use syncfast_core::backup::test_filters::{FilterTest, run_filter_test};
 use syncfast_core::config::Config;
 use syncfast_core::flatpak;
@@ -27,7 +28,7 @@ use syncfast_core::restic::{self, Repository, Restic};
 use syncfast_core::units::{ApplyEnv, SystemdMode, UserSystemctl};
 use syncfast_core::watch::Trigger;
 
-const NO_KEY: &str = "The key for this backup is missing on this computer.";
+pub const BUSY_BACKUP: &str = "This backup is running. Try again when it finishes.";
 
 /// Everything a lifecycle operation borrows from, owned in one place.
 #[expect(
@@ -144,7 +145,7 @@ impl Tools {
             .get(backup_id)
             .await
             .map_err(|err| err.to_string())?
-            .ok_or_else(|| NO_KEY.to_owned())
+            .ok_or_else(|| KEY_ABSENT.to_owned())
     }
 
     /// How many files and bytes the rules of `backup` leave out of its
@@ -179,28 +180,19 @@ fn repository_of(paths: &Paths, backup: &BackupConfig) -> Result<Repository, Str
     )
 }
 
-/// Asks the next round of a backup for `kind` of check.
+/// Asks the next round of a backup for `kind` of check. A round that is
+/// running has already taken its request, so a new one would wait for the
+/// next scheduled round.
 ///
 /// # Errors
-/// The request file cannot be written.
+/// The backup is running, or the request file cannot be written.
 pub async fn request_check(paths: &Paths, backup_id: &str, kind: CheckKind) -> Result<(), String> {
+    if is_running(paths, backup_id) {
+        return Err(BUSY_BACKUP.to_owned());
+    }
     save_request(paths, backup_id, BackupRequest::Check(kind))
         .await
         .map_err(|err| err.to_string())
-}
-
-/// The backups that are not paused.
-///
-/// # Errors
-/// The config cannot be read.
-pub async fn enabled_backups(paths: &Paths) -> Result<Vec<String>, String> {
-    let config = Config::load(paths).await.map_err(|err| err.to_string())?;
-    Ok(config
-        .backups()
-        .iter()
-        .filter(|backup| backup.enabled)
-        .map(|backup| backup.id.clone())
-        .collect())
 }
 
 /// Pauses or resumes a backup in the config; `false` when there is none.
@@ -266,6 +258,35 @@ fn version_of(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn paths_in(root: &std::path::Path) -> Paths {
+        Paths::new(
+            root.join("home"),
+            root.join("config"),
+            root.join("state"),
+            root.join("data"),
+            root.join("run"),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_check_is_not_asked_of_a_backup_that_is_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        std::fs::create_dir_all(paths.runtime_subdir()).unwrap();
+        let lock = std::fs::File::create(paths.backup_lock_file("docs")).unwrap();
+        lock.try_lock().unwrap();
+
+        let busy = request_check(&paths, "docs", CheckKind::Full).await;
+
+        assert_eq!(busy, Err(BUSY_BACKUP.to_owned()));
+        assert!(!paths.backup_request_file("docs").exists());
+        drop(lock);
+        request_check(&paths, "docs", CheckKind::Full)
+            .await
+            .unwrap();
+        assert!(paths.backup_request_file("docs").exists());
+    }
 
     #[test]
     fn the_version_is_the_second_word_of_the_first_line() {

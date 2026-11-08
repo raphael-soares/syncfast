@@ -979,9 +979,10 @@ fn spawn_backup_all(context: &Arc<Context>) {
         context.emitter.clone(),
         "starting every backup",
         async move {
-            match backup_tools::enabled_backups(&context.paths).await {
-                Ok(ids) => spawn_backup(&context, ids),
-                Err(text) => fail(&context, text),
+            let snapshot = snapshot::load(&context.paths).await;
+            match snapshot.config_error {
+                None => spawn_backup(&context, snapshot.runnable_backups()),
+                Some(text) => fail(&context, text),
             }
         },
     );

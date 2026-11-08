@@ -30,9 +30,11 @@ A backup stops by itself, and does not delete anything, when it cannot run safel
 | The backup folder is missing. | The destination folder was moved or deleted on Drive, or the disk shows an empty folder. Restore it, then press **Back Up Now**. |
 | `<destination>` is not available. | Plug in the disk. This appears when it has been away much longer than the schedule. |
 | The key for this backup is missing on this computer. | Press **Enter Key…** and type the key you saved. |
+| The saved key does not open this backup. | The key on this computer is not the one of this backup. Press **Enter Key…** and type the right one. |
 | `<folder>` is missing. | The folder was moved, renamed or is on an unmounted disk. Put it back, or remove it from **Folders** in the **Settings** tab. No snapshot is made while a folder is missing. |
 | `<folder>` is empty. | If the folder is on a disk, mount it. An empty folder is never backed up, so an unmounted disk cannot replace good snapshots. |
-| Backups have failed since `<date>`: … | Open the **Activity** tab and read the last lines of a failed run. |
+| The account of this backup was disconnected. | The Google Drive account no longer exists in syncfast. Add it again in **Settings…**, **Accounts**, then press **Back Up Now**. |
+| Backups keep failing. Backups have failed since `<date>`: … | Open the **Activity** tab and read the last lines of a failed run. |
 | Old snapshots could not be cleaned up: … | The backups work, but retention could not delete old data. Read the reason. The cleanup is tried again after every backup; the card shows after the third failure in a row and goes away when one works. |
 | The check found damaged data. Backups are paused until you review it. | See [Backups are paused after a check](#backups-are-paused-after-a-check). |
 | A message from the configuration | The backup is invalid, for example a destination that now overlaps a sync. Fix it in the **Settings** tab. |

@@ -156,20 +156,9 @@ fn account_of(backup: &BackupSnapshot) -> Option<String> {
     }
 }
 
-/// A gate that is not `needs_attention` holds the backup, and so does a
-/// damaged repository; the next attempt of any other `needs_attention` one
-/// may succeed.
-fn can_back_up(backup: &BackupSnapshot) -> bool {
-    backup.running.is_none()
-        && !backup.config.paths.is_empty()
-        && backup.state.gate.as_ref().is_none_or(|gate| {
-            gate.kind == GateKind::NeedsAttention && gate.fault != Some(Fault::RepoDamaged)
-        })
-}
-
 fn back_up_button(ui: &mut Ui, backup: &BackupSnapshot, actions: &mut Vec<Action>) {
     let clicked = ui
-        .add_enabled_ui(can_back_up(backup), |ui| {
+        .add_enabled_ui(backup.can_run(), |ui| {
             button_with_icon(ui, ButtonKind::Primary, Some(Icon::Refresh), "Back Up Now").clicked()
         })
         .inner;
@@ -207,10 +196,10 @@ fn more_menu(
     actions: &mut Vec<Action>,
 ) {
     let id = &backup.config.id;
-    let check_tone = if backup.running.is_some() {
-        Tone::Disabled
-    } else {
+    let check_tone = if backup.can_check() {
         Tone::Normal
+    } else {
+        Tone::Disabled
     };
     menu::popup(button, palette, |ui| {
         if menu::item(ui, palette, Icon::KeyRound, "Show Key…", Tone::Normal) {
@@ -356,7 +345,6 @@ fn last_backup_line(backup: &BackupSnapshot, now: Timestamp) -> String {
 }
 
 const AUTH_SENTENCE: &str = "Google Drive refused the account. Reconnect it to continue.";
-const KEY_MISSING_SENTENCE: &str = "The key for this backup is missing on this computer.";
 const WRONG_KEY_SENTENCE: &str = "The saved key does not open this backup.";
 
 fn plain(phrase: String) -> CardText {
@@ -403,7 +391,7 @@ fn needs_attention_card(backup: &BackupSnapshot, gate: &Gate) -> CardText {
         )),
         Some(fault @ (Fault::KeyMissing | Fault::WrongKey)) => CardText {
             phrase: if fault == Fault::KeyMissing {
-                KEY_MISSING_SENTENCE
+                KEY_ABSENT
             } else {
                 WRONG_KEY_SENTENCE
             }
@@ -504,6 +492,16 @@ fn key_problem(backup: &BackupSnapshot) -> bool {
     })
 }
 
+const DAMAGED_HELP_URL: &str = "https://github.com/raphael-soares/syncfast/blob/main/docs/guide/troubleshooting.md#backups-are-paused-after-a-check";
+
+fn damaged(backup: &BackupSnapshot) -> bool {
+    backup
+        .state
+        .gate
+        .as_ref()
+        .is_some_and(|gate| gate.fault == Some(Fault::RepoDamaged))
+}
+
 fn status_card(
     ui: &mut Ui,
     backup: &BackupSnapshot,
@@ -562,6 +560,17 @@ fn status_card(
                     .selectable(true),
                 );
             }
+            if damaged(backup)
+                && ui
+                    .link(
+                        RichText::new("Troubleshooting")
+                            .font(theme::callout())
+                            .color(palette.accent),
+                    )
+                    .clicked()
+            {
+                actions.push(Action::OpenUrl(DAMAGED_HELP_URL.to_owned()));
+            }
             if let Some((label, action)) = text.button
                 && super::widgets::primary_button(ui, label).clicked()
             {
@@ -607,7 +616,8 @@ fn progress_block(ui: &mut Ui, progress: Option<&BackupProgressFile>, palette: &
                     .color(palette.dim),
             )
             .truncate(),
-        );
+        )
+        .on_hover_text(current);
     }
 }
 
@@ -644,7 +654,7 @@ fn snapshots_tab(ui: &mut Ui, vm: &ViewModel, backup: &BackupSnapshot) -> Vec<Ac
             progress_bar(ui, "Loading snapshots", None);
         }
         SnapshotsView::Failed(_) if key_problem(backup) => {
-            inline_error(ui, KEY_MISSING_SENTENCE);
+            inline_error(ui, KEY_ABSENT);
         }
         SnapshotsView::Failed(text) => {
             inline_error(ui, text);
@@ -654,7 +664,7 @@ fn snapshots_tab(ui: &mut Ui, vm: &ViewModel, backup: &BackupSnapshot) -> Vec<Ac
             }
         }
         SnapshotsView::Loaded(list) if list.is_empty() => {
-            let button = can_back_up(backup).then_some("Back Up Now");
+            let button = backup.can_run().then_some("Back Up Now");
             if empty_state(ui, Icon::Archive, "No snapshots yet", None, button) {
                 actions.push(Action::BackUpNow(id));
             }

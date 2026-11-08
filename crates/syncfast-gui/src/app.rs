@@ -340,7 +340,7 @@ impl App {
             .iter()
             .map(|backup| BackupView {
                 status: backup.status,
-                runnable: backup.config.enabled && !backup.config.paths.is_empty(),
+                runnable: backup.can_run(),
             })
             .collect();
         let backups = BackupSummary::of(&backups);

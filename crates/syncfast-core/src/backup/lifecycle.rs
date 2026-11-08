@@ -704,4 +704,39 @@ mod tests {
         assert_eq!(backup_id("Docs & Photos", []), "docs-photos");
         assert_eq!(backup_id("Docs & Photos", ["docs-photos"]), "docs-photos-2");
     }
+
+    #[tokio::test]
+    async fn a_new_id_avoids_the_ids_in_the_config_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let paths = Paths::new(
+            root.join("home"),
+            root.join("config"),
+            root.join("state"),
+            root.join("data"),
+            root.join("run"),
+        );
+        let file = paths.config_file();
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(
+            file,
+            "version = 3\n\n[[backup]]\nid = \"docs\"\nname = \"Docs\"\npaths = [\"/work/docs\"]\ndest = \"/backups/docs\"\n",
+        )
+        .unwrap();
+
+        assert_eq!(new_backup_id(&paths, "Docs").await, "docs-2");
+        assert_eq!(new_backup_id(&paths, "Photos").await, "photos");
+    }
+
+    #[test]
+    fn a_draft_with_no_problem_is_empty_and_one_with_any_is_not() {
+        assert!(DraftProblems::default().is_empty());
+        let problems = DraftProblems {
+            filters: Some("bad".to_owned()),
+            ..DraftProblems::default()
+        };
+
+        assert!(!problems.is_empty());
+        assert_eq!(problems.first(), Some("bad"));
+    }
 }

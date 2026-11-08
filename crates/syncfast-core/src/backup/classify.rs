@@ -6,13 +6,11 @@ use serde::Deserialize;
 use crate::bisync::{Fault, fault_of};
 
 use super::state::BackupSummary;
+use crate::restic::{
+    EXIT_INTERRUPTED, EXIT_LOCKED, EXIT_NO_REPOSITORY, EXIT_UNREADABLE, EXIT_WRONG_PASSWORD,
+};
 
 const EXIT_OK: i32 = 0;
-const EXIT_UNREADABLE: i32 = 3;
-const EXIT_NO_REPOSITORY: i32 = 10;
-const EXIT_LOCKED: i32 = 11;
-const EXIT_WRONG_PASSWORD: i32 = 12;
-pub(crate) const EXIT_INTERRUPTED: i32 = 130;
 const SKIPPED_SUFFIX: &str = "does not exist, skipping";
 
 #[derive(Debug, Clone, PartialEq, Eq)]

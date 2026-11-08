@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Usage: scripts/pin-restic.sh <version>
-# Points the Flatpak manifest and RESTIC_VERSION at a restic release, with the
-# sha256 of both architectures taken from the release's SHA256SUMS.
+# Points the Flatpak manifest, the CI workflow and RESTIC_VERSION at a restic
+# release, with the sha256 of both architectures taken from the release's SHA256SUMS.
 set -euo pipefail
 
 version="${1:?usage: pin-restic.sh <version, for example 0.19.1>}"
@@ -10,6 +10,7 @@ version="${1:?usage: pin-restic.sh <version, for example 0.19.1>}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 manifest="$root/packaging/flatpak/io.github.raphael_soares.syncfast.yml"
 constant="$root/crates/syncfast-core/src/restic.rs"
+workflow="$root/.github/workflows/ci.yml"
 release="https://github.com/restic/restic/releases/download/v$version"
 
 sums="$(curl -fsSL "$release/SHA256SUMS")"
@@ -27,5 +28,9 @@ sed -i -E \
   -e "/restic_${version}_linux_amd64\.bz2/{n;s/sha256: .*/sha256: $amd64/}" \
   -e "/restic_${version}_linux_arm64\.bz2/{n;s/sha256: .*/sha256: $arm64/}" \
   "$manifest"
+sed -i -E \
+  -e "s/^( *RESTIC_VERSION: ).*/\\1$version/" \
+  -e "s/^( *RESTIC_SHA256: ).*/\\1$amd64/" \
+  "$workflow"
 sed -i -E "s/^(pub const RESTIC_VERSION: &str = )\"[0-9.]+\";/\1\"$version\";/" "$constant"
 echo "restic $version pinned: amd64 $amd64, arm64 $arm64"

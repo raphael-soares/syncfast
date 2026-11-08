@@ -23,14 +23,14 @@ use super::restore::{
     BACKUP_BUSY, DESTINATION_EXISTS, RestoreForm, RestoreLine, RestoreProgress, RestoreSummary,
     check_snapshot_ref, classify_restore, parse_restore_line, restore_args, restore_form,
 };
-use super::run::KEY_ABSENT;
+use super::run::{KEY_ABSENT, PROGRESS_EVERY};
 use super::snapshots::{SnapshotView, parse_snapshots};
 use crate::config::{Config, resolve};
 use crate::ops::start_detached;
 use crate::paths::Paths;
 use crate::restic::{Repository, Restic, ResticError};
-use crate::run::{Interrupts, forward_interrupt};
-use crate::state::{is_locked, is_running, try_lock, write_json};
+use crate::run::{Interrupts, forward_interrupt, wait_interrupt};
+use crate::state::{is_locked, is_running, try_lock, write_json, write_json_or_warn};
 use futures_core::future::BoxFuture;
 
 /// How long a job may go without its lock before it counts as one that
@@ -39,7 +39,6 @@ const START_GRACE_SECONDS: i64 = 10;
 const JOBS_KEPT: usize = 20;
 const LONGEST_ID: usize = 40;
 const UNIT_PREFIX: &str = "syncfast-restore-";
-const PROGRESS_EVERY: Duration = Duration::from_secs(1);
 const STDERR_KEPT: usize = 64 * 1024;
 const STOPPED: &str = "The restore stopped before it finished.";
 const NO_SNAPSHOTS: &str = "This backup has no snapshots yet.";
@@ -580,9 +579,9 @@ fn host_kill_command(app_unit: &str) -> (&'static str, Vec<String>) {
 }
 
 /// Sends SIGINT to a running restore: restic stops, the job ends as failed
-/// with `The restore was cancelled.` and what it had restored stays in the
-/// folder. Inside the Flatpak sandbox the job is a unit on the host, so
-/// the unit is signalled.
+/// with [`super::restore::CANCELLED`] and what it had restored stays in the
+/// folder. Inside the Flatpak sandbox the job is a unit on the host, so the
+/// unit is signalled.
 ///
 /// # Errors
 /// No such job, it is not running, or the signal cannot be sent.
@@ -706,17 +705,8 @@ async fn stream_restore(
     })
 }
 
-async fn wait_interrupt(interrupts: &mut Option<Interrupts>) {
-    match interrupts {
-        Some(interrupts) => interrupts.next().await,
-        None => std::future::pending().await,
-    }
-}
-
 async fn write_progress(paths: &Paths, id: &str, progress: &RestoreProgress) {
-    if let Err(err) = write_json(paths.restore_progress_file(id), progress).await {
-        log::warn!("cannot write the progress of restore {id}: {err}");
-    }
+    write_json_or_warn(paths.restore_progress_file(id), progress).await;
 }
 
 async fn execute(

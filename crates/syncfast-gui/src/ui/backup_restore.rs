@@ -335,7 +335,7 @@ fn listing_body(ui: &mut Ui, browse: &Browse, actions: &mut Vec<Action>) {
     let palette = theme::palette(ui.ctx());
     match browse.shown() {
         None | Some(DirState::Loading) => {
-            progress_bar(ui, READING, None);
+            progress_bar(ui, "Listing progress", None);
             ui.label(
                 RichText::new(READING)
                     .font(theme::callout())

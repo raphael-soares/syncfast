@@ -254,12 +254,8 @@ fn the_sheet_says_it_is_reading_until_the_folder_arrives() {
 
     rig.harness
         .get_by_label(&format!("Files in {} snapshot", date(common::now())));
-    assert!(
-        rig.harness
-            .query_all_by_label("Reading the snapshot\u{2026}")
-            .count()
-            > 0
-    );
+    rig.harness.get_by_label("Reading the snapshot\u{2026}");
+    rig.harness.get_by_label("Listing progress");
     assert!(rig.harness.query_by_label("readme.txt").is_none());
 
     rig.reply(&root_listing());

@@ -267,7 +267,7 @@ Arquivos: `config.rs` (tabela `[[backup]]`), `backup/config.rs` (tipos e valida�
   - Arquivo ausente equivale ao estado padrão: backup não tem revisão de primeira rodada.
   - O estado nunca guarda "running": é o lock do backup (`is_running`), como no sync.
 - `Fault` (em `bisync.rs`, usado por `Gate.fault`) ganha as variantes de backup, todas `snake_case` no JSON: `key_missing`, `wrong_key`, `repository_missing`, `source_missing`, `source_empty`, `destination_missing`, `repo_damaged`. As existentes (`auth`, `account`, `quota`, `permission`, `remote_missing`) valem para backup quando o texto do rclone aparece no stderr do restic; `local_empty` não é usada. O `match` de `attention_body` em `notify.rs` lista as variantes de backup, junto com `auth` e o caso sem fault, no braço do texto padrão do sync (nenhuma é `_`, então uma variante nova de `Fault` é erro de compilação); o texto próprio de cada falha de backup mora em `backup_attention_body`.
-- Constantes (`backup/mod.rs`): `CHECK_INTERVAL = 30 dias`, `CHECK_SAMPLE = "5%"`, `AFTER_FAILURE_CHECK = CheckKind::Quick` (estrutural, sem `--read-data`), `PRUNE_FAILURES_BEFORE_GATE = 3`, `STALE_MIN = 48 h`, `STALE_FACTOR = 2`, `RETRY_AFTER = 15 min`. Não há constante de host: `backup_host()` devolve o hostname da máquina (`gethostname`); se a leitura falhar ou vier vazia, a rodada falha como `Transient` com esse erro.
+- Constantes (`backup/mod.rs`): `CHECK_INTERVAL = 30 dias`, `CHECK_SAMPLE = "5%"`, `AFTER_FAILURE_CHECK = CheckKind::Quick` (estrutural, sem `--read-data`), `PRUNE_FAILURES_BEFORE_GATE = 3`, `STALE_MIN = 48 h`, `STALE_FACTOR = 2`. Não há constante de host: `backup_host()` devolve o hostname da máquina (`gethostname`); se a leitura falhar ou vier vazia, a rodada falha como `Transient` com esse erro.
 - **Guarda de edição** (`backup/config.rs`): `backup_lowers_safety(before: &BackupConfig, after: &BackupConfig, home: &Path) -> Vec<&'static str>` devolve as chaves que baixam a segurança de um backup: `keep.<k>` com valor menor (inclusive `yearly` de um valor a 0), `paths` que perde algum caminho depois de `~` e normalização léxica (trocar um caminho por outro conta como remover; `~/Docs` e `/home/ada/Docs/` são o mesmo caminho), `dest` diferente depois da mesma normalização (barra final e `~` não contam como mudança), `one_file_system` de `true` a `false`. A comparação nunca toca o disco. O `home` entra porque quem chama pode trazer um `~` que o carregamento do config ainda não expandiu. É a extensão a backup do `lowers_safety` da fase 2; as operações de agente a usam (passo 15) e a GUI não.
 - Testes unitários: cada erro da tabela com a mensagem exata, padrões, `~` expandido, sobreposições nos dois sentidos (incluindo raiz), migração `version`, `state.json` sem campo novo carrega com padrão (inclusive `key_unsaved`), `Fault` serializa com os nomes acima, `keep.yearly` (ausente é 0) e `keep` com chave desconhecida, `limit_*` (`off`, `500K`, `2M` e os inválidos), `one_file_system` com padrão `true`, `backup_lowers_safety` (cada chave que baixa e cada alteração que não baixa).
 
@@ -532,7 +532,7 @@ Arquivo: `backup/status.rs`, `notify.rs` (extensão).
 | 3 | `!enabled` | Paused | `dim` | `pause` | `Paused` |
 | 4 | `offline` | Offline | `dim` | `cloud-off` | `Offline` |
 | 5 | `destination_unavailable` | Unavailable | `dim` | `hard-drive` | `Destination not available` |
-| 6 | `last_outcome = error` e `consecutive_failures >= 3` | Failing | `danger` | `circle-alert` | `Backup failing` |
+| 6 | `last_outcome = error` e `consecutive_failures >= failing_after` (o `failures_after` efetivo se `> 0`, senão 3, como na fase 2) | Failing | `danger` | `circle-alert` | `Backup failing` |
 | 7 | `last_outcome = error` | Retrying | `secondary` | `clock` | `Will retry` |
 | 8 | senão | UpToDate | `secondary` | `check` | `Up to date` |
 
@@ -567,7 +567,7 @@ Arquivos: `ui/sidebar.rs`, `tray.rs`, `ui/settings/` (extensão); sem mock aprov
 
 - **Sidebar.** Abaixo dos syncs, uma segunda seção: cabeçalho `Backups` com dois `icon_button`: `plus` (tooltip `New Backup…`) e `ellipsis` (menu: `Add Existing Backup…`). Uma `sidebar_row` por backup: ícone `archive`, nome, `status_badge` compacto e `subheadline` `Backed up <tempo relativo>` ou `Never backed up`. Sem backups: a seção mostra `empty_state` pequeno `No backups yet` com `New Backup…`. A seleção pode ser um sync ou um backup; o título da janela é o nome do selecionado; `gui.json` guarda `selected_backup` ao lado de `selected_pair`.
 - **Bandeja** (itens constantes, desabilita em vez de esconder). A linha de status dos syncs não muda; entram:
-  1. logo abaixo dela, uma linha desabilitada `Backups up to date` / `Backing up…` / `<n> backups need attention` / `No backups yet`;
+  1. logo abaixo dela, uma linha desabilitada `Backing up…` / `<n> backups need attention` / `Offline` / `Destination not available` / `All backups paused` / `Backups up to date` / `No backups yet`, nessa ordem de precedência;
   2. `Back Up All Now` depois de `Sync All Now` (desabilitado sem backups).
   O ponto de atenção e de erro do ícone considera também os backups (`Error` e `Failing` de backup valem como os de sync; `NeedsReview` não existe em backup).
 - **Settings > Backups**: painel novo do modal de Settings da fase 2 (#63), num arquivo próprio em `crates/syncfast-gui/src/ui/settings/` (como `accounts.rs`), com uma variante `Backups` em `SettingsPane` (`gui_state.rs`) registrada ao lado de `Accounts`, `Defaults`, `General`, `Notifications` e `Appearance` (ícone na lista de `ui/settings/mod.rs` e o despacho do `show`):
@@ -579,7 +579,7 @@ Arquivos: `ui/sidebar.rs`, `tray.rs`, `ui/settings/` (extensão); sem mock aprov
 
 ### 12. GUI: criar backup e chave
 
-Arquivo: `ui/sheets/backup_wizard.rs` e backend (`Command::CreateBackup`, `Command::AddExistingBackup`).
+Arquivos: `ui/backup_wizard.rs`, `ui/backup_keys.rs` (chave, `Enter Key…` e remoção) e `backend/backup_sheets.rs` (`Command::CreateBackup`, `Command::AddExistingBackup`).
 
 **Sheet New Backup** (assistente; Back e Continue no rodapé, Cancel à esquerda; nunca Cancel, Back e Done juntos). Ao abrir, a sheet chama `KeyStore::probe` (passo 3): sem armazenamento de chave (nem portal nem Secret Service), o passo 1 mostra a mensagem da `KeyError::Unavailable` como `inline_error`, com `Continue` desabilitado; com o keyring do host (sem portal), mostra a nota `Using the host keyring. See docs/guide/backup.md.`
 
@@ -619,10 +619,10 @@ Testes de UI: Continue desabilitado com cada erro de validação e a mensagem vi
 
 Arquivo: `ui/backup_detail.rs`.
 
-- **Toolbar:** nome (`title2`), `<n> folders → <destino>` em `callout`/`secondary`; à direita `primary_button` `Back Up Now` (desabilitado durante `BackingUp`/`Checking` e com gate que segura, ou sem pastas), `secondary_button` `Pause`/`Resume` e o menu `…` com `Show Key…`, `Check Now` (submenu: `Quick Check`, `Check Sample`, `Full Check…`), `Open Destination Folder` (só destino local, `xdg-open`), separador, `Remove Backup…`. `Full Check…` abre um alert `Read all backup data?` com `This downloads everything from <dest> and can take hours.` e `Cancel` (default) e `Check`.
+- **Toolbar:** nome (`title2`), `<n> folders → <destino>` em `callout`/`secondary`; à direita `primary_button` `Back Up Now` (desabilitado durante `BackingUp`/`Checking` e com gate que segura, ou sem pastas), `secondary_button` `Pause`/`Resume` e o menu `…` com `Show Key…`, `Check Now` (um rótulo seguido de três itens, não um submenu: `Quick Check`, `Check Sample`, `Full Check…`), `Open Destination Folder` (só destino local, `xdg-open`), separador, `Remove Backup…`. `Full Check…` abre um alert `Read all backup data?` com `This downloads everything from <dest> and can take hours.` e `Cancel` (default) e `Check`.
 - **Cartão de status:** `status_badge` grande e uma frase por estado: `Backed up <data e hora>. <n> new or changed files, <tamanho> added.`; com warnings `Backed up <data>. <n> files could not be read.`; `Needs attention`: o `detail` da gate e o botão do conserto (`Reconnect Account…` para `auth_error`, `Enter Key…` para `key_missing` e `wrong_key`, `Check Again` (um `Full Check`) para `repo_damaged`); com `Unavailable`: `<dest> is not available. Backups resume when it is back.`. Durante `BackingUp`: `progress_bar` determinada (`percent_done`) e `<files_done> of <total_files> files · <bytes_done>/<total_bytes> · <seconds_remaining> left`, mais `Current: <arquivo>`; sem total, indeterminada.
   - Frases dos estados que o cartão também mostra, com "backup" como sujeito (mesmo molde do detalhe do sync): `Paused`: `This backup is paused. Resume it to back up again.`; `Offline`: `No network. Backups resume when it is back.`; `Failing`: `The last <n> backups failed in a row.` (`<n>` = `consecutive_failures`); `Retrying`: `The last backup failed. It will try again soon.`
-- **Cartão `Save the backup key`** (só com `key_unsaved`, acima do cartão de status): `An agent created this backup. Save its key now; without it you cannot restore on another computer.` e o botão `Show Key…`, que abre a sheet do passo 12 com `I Saved the Key`. Não segura o backup nem muda o status de erro.
+- **Cartão `Save the backup key`** (só com `key_unsaved`, acima do cartão de status): `An agent created this backup. Save its key now; without it you cannot restore on another computer.` e o botão `Show Key…`, que abre a sheet do passo 12 com `I Saved the Key`. Não segura o backup; o cartão de status continua abaixo dele.
 - **`segmented`:** `Snapshots`, `Activity`, `Settings`.
   - **Snapshots:** `list_row` por snapshot: data e hora, `<files> files · <tamanho>`, `+<added>` e o host quando não é o desta máquina (`backup_host()`). Clicar seleciona; botões na linha: `Browse Files…` (passo 14) e `Restore Snapshot…` (passo 14). Vazio: `empty_state` `No snapshots yet`, com `Back Up Now`. Erro ao listar (rede, chave): `inline_error` com `Try Again`.
   - **Activity:** uma linha por rodada (até 50): data, duração, resultado (`status_badge`), `+<n> new · <tamanho>` e, nas rodadas de check, o tipo (`Quick check`, `Sample check`, `Full check`) e `OK` ou `<n> errors`. Clicar expande as últimas 200 linhas do log em monospace. Vazio: `No activity yet`.
@@ -638,7 +638,7 @@ Arquivo: `ui/backup_detail.rs`.
 
 ### 14. GUI: restore
 
-Arquivo: `ui/sheets/browse_snapshot.rs`, `ui/sheets/restore.rs`.
+Arquivo: `ui/backup_restore.rs`, com o job em `backend/backup_sheets.rs`.
 
 - **Sheet Browse Files** (título `Files in <data> snapshot`): navegação por breadcrumb e lista da pasta atual (`list_files`, uma pasta por vez, `progress_bar` indeterminada `Reading the snapshot…`); cada linha tem checkbox, ícone (`folder`, `file`), nome, tamanho e data. Selecionar uma pasta seleciona tudo dentro dela (o restore leva a pasta). Rodapé: `<n> items selected`, `Cancel` e `Restore To…` (primário, desabilitado sem seleção).
 - **Restore Snapshot…** (na linha do snapshot): salta a seleção e restaura o snapshot inteiro.
@@ -801,7 +801,7 @@ Diretório `~/Code/Personal/syncfast`.
 Só ficam abertos os itens que se fecham com um teste (fixture, Drive real, Flatpak real); cada um nomeia o teste que o fecha.
 
 1. **`--drive-use-trash=false` no backend rclone.** Escolhido para que os packs apagados pelo `prune` liberem cota. É flag global do rclone (aceita em qualquer remote), mas o efeito no Drive só se confirma com Drive real. Fecha com o teste da Verification 5.4 (`rclone about` e a lixeira antes e depois da retenção). Se a lixeira acumular, plano alternativo: `rclone cleanup` periódico.
-2. **Alcance do sandbox para disco externo.** `--filesystem=/run/media` e `--filesystem=/mnt` precisam ser aceitos pelo `flatpak-builder`; senão destino e origem locais ficam restritos à `home`. Fecha com o primeiro `just flatpak` e um backup num disco montado em `/run/media`.
+2. **Alcance do sandbox para disco externo.** O `flatpak-builder` do CI aceitou `--filesystem=/run/media` e `--filesystem=/mnt` (P3.1). Falta confirmar o alcance: fecha com um backup num disco montado em `/run/media`, no Flatpak real.
 3. **Namespace de PID no Flatpak.** O restic julga um lock "velho" por PID vivo na mesma máquina ou por 30 min sem renovar. Se a detecção de PID falhar dentro do sandbox, um lock de rodada morta dura até 30 min e a rodada devolve `Transient` até lá. Fecha com o teste no Flatpak real: `kill -9` no `restic` de uma rodada e ver se a seguinte faz `unlock` na hora (cenário 8 do passo 16, rodado dentro do Flatpak).
 4. **`oo7`, `zbus` e `cargo deny`.** A 0.6.0 não cai para o Secret Service do host quando falta o portal (Fatos); a 0.7.0-beta cai. Na P3.1 a 0.7.0-beta passou em `cargo tree -d` (um só `zbus`, 5.19.0) e em `cargo deny check`. Falta confirmar que a ordem do passo 3 funciona no Flatpak real: portal, depois host, depois erro. Fecha com `cargo tree -d`, `cargo deny check` e `cargo test -p syncfast-core --test keystore_oo7 -- --ignored` rodado nos três cenários (com portal, sem portal e com o `talk-name`, sem nenhum dos dois). Se a 0.7.0-beta não passar, o passo 3 usa a 0.6.0 com os dois backends montados à mão.
 5. **Fixtures.** Fechado na P3.1: `just capture-restic-fixtures` gravou os arquivos de `tests/fixtures/restic-0.19.1/`, e o `backup_status` tem 16 linhas `status` com os 1,5 GiB.

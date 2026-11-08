@@ -7,14 +7,14 @@ use std::path::{Path, PathBuf};
 use jiff::Zoned;
 use serde::{Deserialize, Serialize};
 
-use crate::restic::{ResticError, classify_failure};
+use crate::restic::{EXIT_INTERRUPTED, ResticError, classify_failure};
 
 pub const NOTHING_MATCHES: &str = "Nothing in the snapshot matches that path.";
 pub const DESTINATION_EXISTS: &str = "Restore destination already exists.";
 pub const BACKUP_BUSY: &str = "The backup is busy. Try again in a few minutes.";
-pub const CANCELLED: &str = "The restore was cancelled.";
+pub const CANCELLED: &str =
+    "The restore was cancelled. What was already restored stays in the folder.";
 
-const EXIT_INTERRUPTED: i32 = 130;
 const LONGEST_SNAPSHOT_REF: usize = 64;
 const SHORTEST_SNAPSHOT_REF: usize = 4;
 const NAME_TRIES: u32 = 1000;
@@ -164,7 +164,7 @@ fn clean_name(name: &str) -> String {
 
 /// `Documents 2026-11-08 1430`.
 #[must_use]
-pub fn restore_folder_name(backup_name: &str, now: &Zoned) -> String {
+fn restore_folder_name(backup_name: &str, now: &Zoned) -> String {
     format!(
         "{} {}",
         clean_name(backup_name),
@@ -608,7 +608,10 @@ mod tests {
     fn an_interrupted_restore_says_it_was_cancelled() {
         assert_eq!(
             classify_restore(Some(130), None, b""),
-            Err(CANCELLED.to_owned())
+            Err(
+                "The restore was cancelled. What was already restored stays in the folder."
+                    .to_owned()
+            )
         );
     }
 

@@ -12,6 +12,7 @@ use syncfast_core::backup::status::{
     BackupProgressFile, BackupStatus, RunningStep, display_backup_status, running_step,
 };
 use syncfast_core::behavior::Behavior;
+use syncfast_core::bisync::Fault;
 use syncfast_core::bisync_log::{Progress, last_stats, parse_log};
 use syncfast_core::config::{Config, Pair};
 use syncfast_core::paths::Paths;
@@ -49,6 +50,35 @@ pub struct BackupSnapshot {
     pub missing_folders: Vec<PathBuf>,
 }
 
+impl BackupSnapshot {
+    /// A backup runs when it is on, has folders, is idle and nothing holds
+    /// it. A gate that is not `needs_attention` holds it, and so does a
+    /// damaged repository; the next attempt of any other `needs_attention`
+    /// one may succeed.
+    #[must_use]
+    pub fn can_run(&self) -> bool {
+        self.config.enabled
+            && !self.config.paths.is_empty()
+            && self.running.is_none()
+            && self.state.gate.as_ref().is_none_or(|gate| {
+                gate.kind == GateKind::NeedsAttention && gate.fault != Some(Fault::RepoDamaged)
+            })
+    }
+
+    /// A check is asked of a backup that is on, idle and can reach its
+    /// repository. A damaged repository is the one gate a check is for.
+    #[must_use]
+    pub fn can_check(&self) -> bool {
+        self.config.enabled
+            && self.running.is_none()
+            && !self.state.offline
+            && !self.state.destination_unavailable
+            && self.state.gate.as_ref().is_none_or(|gate| {
+                !matches!(gate.kind, GateKind::AuthError | GateKind::ConfigError)
+            })
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Snapshot {
     /// The config has a global problem: no sync can be listed.
@@ -64,6 +94,15 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    #[must_use]
+    pub fn runnable_backups(&self) -> Vec<String> {
+        self.backups
+            .iter()
+            .filter(|backup| backup.can_run())
+            .map(|backup| backup.config.id.clone())
+            .collect()
+    }
+
     #[must_use]
     pub fn any_running(&self) -> bool {
         self.pairs.iter().any(|pair| pair.running)
@@ -89,9 +128,10 @@ pub async fn load(paths: &Paths) -> Snapshot {
         let realtime_off = limited.contains(&pair.id);
         pairs.push(load_pair(paths, &config, pair, realtime_off).await);
     }
+    let failing_after = config.defaults().notifications.failing_after();
     let mut backups = Vec::with_capacity(config.backups().len());
     for backup in config.backups() {
-        backups.push(load_backup(paths, backup).await);
+        backups.push(load_backup(paths, backup, failing_after).await);
     }
     Snapshot {
         config_error: None,
@@ -138,7 +178,7 @@ async fn load_pair(
     }
 }
 
-async fn load_backup(paths: &Paths, backup: &BackupConfig) -> BackupSnapshot {
+async fn load_backup(paths: &Paths, backup: &BackupConfig, failing_after: u32) -> BackupSnapshot {
     let state = match BackupState::load(paths, &backup.id).await {
         Ok(state) => state,
         Err(err) => {
@@ -150,7 +190,7 @@ async fn load_backup(paths: &Paths, backup: &BackupConfig) -> BackupSnapshot {
     let progress = running.and_then(|_| BackupProgressFile::read(paths, &backup.id));
     let missing_folders = missing_folders(&backup.paths).await;
     BackupSnapshot {
-        status: display_backup_status(backup, &state, running),
+        status: display_backup_status(backup, &state, running, failing_after),
         config: backup.clone(),
         state,
         running,
@@ -469,5 +509,144 @@ mod tests {
         let snapshot = load(&paths).await;
 
         assert_eq!(snapshot.backups[0].missing_folders, [absent]);
+    }
+
+    fn backup_block(id: &str, enabled: bool) -> String {
+        format!(
+            "[[backup]]\nid = \"{id}\"\nname = \"{id}\"\nenabled = {enabled}\npaths = [\"/work/{id}\"]\ndest = \"/backups/{id}\"\n\n"
+        )
+    }
+
+    fn gated(kind: GateKind, fault: Option<Fault>) -> BackupState {
+        BackupState {
+            gate: Some(Gate {
+                kind,
+                since: Timestamp::UNIX_EPOCH,
+                detail: String::new(),
+                fault,
+                auto_checked: None,
+            }),
+            ..BackupState::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn only_a_backup_that_is_on_idle_and_not_held_can_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let blocks: String = [
+            ("ok", true),
+            ("paused", false),
+            ("auth", true),
+            ("damaged", true),
+            ("attention", true),
+        ]
+        .into_iter()
+        .map(|(id, enabled)| backup_block(id, enabled))
+        .collect();
+        write_config(&paths, &format!("version = 3\n\n{blocks}"));
+        let states = [
+            ("auth", gated(GateKind::AuthError, Some(Fault::Auth))),
+            (
+                "damaged",
+                gated(GateKind::NeedsAttention, Some(Fault::RepoDamaged)),
+            ),
+            (
+                "attention",
+                gated(GateKind::NeedsAttention, Some(Fault::Quota)),
+            ),
+        ];
+        for (id, state) in states {
+            state.save(&paths, id).await.unwrap();
+        }
+
+        let snapshot = load(&paths).await;
+
+        assert_eq!(snapshot.runnable_backups(), ["ok", "attention"]);
+    }
+
+    #[tokio::test]
+    async fn a_check_needs_a_backup_that_is_on_idle_and_reachable() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let ids = [
+            "ok", "paused", "auth", "config", "offline", "gone", "damaged",
+        ];
+        let blocks: String = ids
+            .into_iter()
+            .map(|id| backup_block(id, id != "paused"))
+            .collect();
+        write_config(&paths, &format!("version = 3\n\n{blocks}"));
+        let states = [
+            ("auth", gated(GateKind::AuthError, Some(Fault::Auth))),
+            ("config", gated(GateKind::ConfigError, None)),
+            (
+                "offline",
+                BackupState {
+                    offline: true,
+                    ..BackupState::default()
+                },
+            ),
+            (
+                "gone",
+                BackupState {
+                    destination_unavailable: true,
+                    ..BackupState::default()
+                },
+            ),
+            (
+                "damaged",
+                gated(GateKind::NeedsAttention, Some(Fault::RepoDamaged)),
+            ),
+        ];
+        for (id, state) in states {
+            state.save(&paths, id).await.unwrap();
+        }
+
+        let snapshot = load(&paths).await;
+
+        let can: Vec<_> = snapshot
+            .backups
+            .iter()
+            .map(|backup| (backup.config.id.as_str(), backup.can_check()))
+            .collect();
+        assert_eq!(
+            can,
+            [
+                ("ok", true),
+                ("paused", false),
+                ("auth", false),
+                ("config", false),
+                ("offline", false),
+                ("gone", false),
+                ("damaged", true)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_backup_fails_after_as_many_failures_as_the_notification_setting_says() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        write_config(
+            &paths,
+            &format!(
+                "version = 3\n\n[notifications]\nfailures_after = 5\n\n{}",
+                backup_block("docs", true)
+            ),
+        );
+        let failed = |times| BackupState {
+            last_outcome: Some(LastOutcome::Error),
+            consecutive_failures: times,
+            ..BackupState::default()
+        };
+
+        failed(3).save(&paths, "docs").await.unwrap();
+        let three = load(&paths).await.backups[0].status;
+        failed(5).save(&paths, "docs").await.unwrap();
+        let five = load(&paths).await.backups[0].status;
+
+        assert_eq!(three, BackupStatus::Retrying);
+        assert_eq!(five, BackupStatus::Failing);
     }
 }

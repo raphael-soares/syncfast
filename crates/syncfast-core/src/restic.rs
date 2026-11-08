@@ -22,7 +22,7 @@ use crate::bisync::{Fault, fault_of};
 use crate::flatpak;
 use crate::paths::Paths;
 use crate::rclone::{Rclone, is_executable_file};
-use crate::run::{Interrupts, forward_interrupt};
+use crate::run::{Interrupts, forward_interrupt, wait_interrupt};
 
 /// The restic the Flatpak ships (`scripts/pin-restic.sh` keeps it equal to
 /// the manifest).
@@ -33,17 +33,22 @@ pub const RESTIC_MIN_VERSION: &str = "0.17.1";
 
 const BINARY_NAME: &str = "restic";
 const BINARY_OVERRIDE_VAR: &str = "SYNCFAST_RESTIC";
-const EXIT_NO_REPOSITORY: i32 = 10;
+pub(crate) const EXIT_UNREADABLE: i32 = 3;
+pub(crate) const EXIT_NO_REPOSITORY: i32 = 10;
 pub(crate) const EXIT_LOCKED: i32 = 11;
-const EXIT_WRONG_PASSWORD: i32 = 12;
+pub(crate) const EXIT_WRONG_PASSWORD: i32 = 12;
+pub(crate) const EXIT_INTERRUPTED: i32 = 130;
 const RCLONE_ARGS: &str =
     "rclone.args=serve restic --stdio --b2-hard-delete --drive-use-trash=false";
-const SCRUBBED_VARS: [&str; 5] = [
+const SCRUBBED_VARS: [&str; 8] = [
     "RESTIC_PASSWORD",
     "RESTIC_PASSWORD_FILE",
     "RESTIC_PASSWORD_COMMAND",
+    "RESTIC_FROM_PASSWORD",
+    "RESTIC_FROM_PASSWORD_FILE",
     "RESTIC_REPOSITORY",
     "RESTIC_REPOSITORY_FILE",
+    "RCLONE_CONFIG_PASS",
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -408,12 +413,7 @@ async fn wait_forwarding(
     loop {
         tokio::select! {
             status = child.wait() => return status,
-            () = async {
-                match interrupts.as_mut() {
-                    Some(interrupts) => interrupts.next().await,
-                    None => std::future::pending().await,
-                }
-            } => forward_interrupt(child, "restic"),
+            () = wait_interrupt(&mut interrupts) => forward_interrupt(child, "restic"),
         }
     }
 }

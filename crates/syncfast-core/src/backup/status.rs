@@ -10,9 +10,6 @@ use super::classify::BackupProgress;
 use super::config::BackupConfig;
 use super::state::{BackupState, is_running};
 
-/// Failures in a row from which a backup is "failing" and not "retrying".
-pub const FAILING_AFTER: u32 = 3;
-
 /// What a running backup is doing, as `progress.json` says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -97,12 +94,15 @@ impl BackupStatus {
 }
 
 /// The one precedence used by the sidebar, the tray and `syncfast backups`:
-/// the first rule that matches wins. `running` is [`running_step`].
+/// the first rule that matches wins. `running` is [`running_step`];
+/// `failing_after` is the failures in a row from which a backup is "failing"
+/// and not "retrying" (the notification setting).
 #[must_use]
 pub fn display_backup_status(
     backup: &BackupConfig,
     state: &BackupState,
     running: Option<RunningStep>,
+    failing_after: u32,
 ) -> BackupStatus {
     let gate = state.gate.as_ref().map(|gate| gate.kind);
     let errored = state.last_outcome == Some(LastOutcome::Error);
@@ -120,7 +120,7 @@ pub fn display_backup_status(
         None if !backup.enabled => BackupStatus::Paused,
         None if state.offline => BackupStatus::Offline,
         None if state.destination_unavailable => BackupStatus::Unavailable,
-        None if errored && state.consecutive_failures >= FAILING_AFTER => BackupStatus::Failing,
+        None if errored && state.consecutive_failures >= failing_after => BackupStatus::Failing,
         None if errored => BackupStatus::Retrying,
         None => BackupStatus::UpToDate,
     }
@@ -241,7 +241,7 @@ mod tests {
     }
 
     fn status(enabled: bool, state: &BackupState) -> BackupStatus {
-        display_backup_status(&backup(enabled), state, None)
+        display_backup_status(&backup(enabled), state, None, 3)
     }
 
     fn paths_in(root: &std::path::Path) -> Paths {
@@ -264,7 +264,7 @@ mod tests {
         };
 
         assert_eq!(
-            display_backup_status(&backup(false), &state, Some(RunningStep::Backup)),
+            display_backup_status(&backup(false), &state, Some(RunningStep::Backup), 3),
             BackupStatus::BackingUp
         );
     }
@@ -277,7 +277,7 @@ mod tests {
         };
 
         assert_eq!(
-            display_backup_status(&backup(true), &state, Some(RunningStep::Check)),
+            display_backup_status(&backup(true), &state, Some(RunningStep::Check), 3),
             BackupStatus::Checking
         );
     }
@@ -368,6 +368,17 @@ mod tests {
     fn row_6_three_failures_in_a_row_is_failing() {
         assert_eq!(status(true, &failed(3)), BackupStatus::Failing);
         assert_eq!(status(true, &failed(10)), BackupStatus::Failing);
+    }
+
+    #[test]
+    fn row_6_follows_the_notification_setting() {
+        let show = |times, failing_after| {
+            display_backup_status(&backup(true), &failed(times), None, failing_after)
+        };
+
+        assert_eq!(show(3, 5), BackupStatus::Retrying);
+        assert_eq!(show(5, 5), BackupStatus::Failing);
+        assert_eq!(show(1, 1), BackupStatus::Failing);
     }
 
     #[test]

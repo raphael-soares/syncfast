@@ -324,8 +324,12 @@ fn backup_attention_body(backup: &BackupConfig, fault: Option<Fault>, detail: &s
             "{} is not available. Plug it in to resume backups.",
             backup.dest
         ),
-        Some(Fault::KeyMissing | Fault::WrongKey) => {
+        Some(Fault::KeyMissing) => {
             "The key for this backup is missing on this computer. Open syncfast to enter it."
+                .to_owned()
+        }
+        Some(Fault::WrongKey) => {
+            "The saved key does not open this backup. Open syncfast to enter the right one."
                 .to_owned()
         }
         Some(Fault::SourceMissing) => {
@@ -1096,13 +1100,15 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_or_wrong_key_asks_for_it_on_this_computer() {
-        for fault in [Fault::KeyMissing, Fault::WrongKey] {
-            assert_eq!(
-                attention(fault, "Fatal: wrong password").body,
-                "The key for this backup is missing on this computer. Open syncfast to enter it."
-            );
-        }
+    fn a_missing_key_asks_for_it_and_a_wrong_one_says_it_does_not_open_the_backup() {
+        assert_eq!(
+            attention(Fault::KeyMissing, "").body,
+            "The key for this backup is missing on this computer. Open syncfast to enter it."
+        );
+        assert_eq!(
+            attention(Fault::WrongKey, "Fatal: wrong password").body,
+            "The saved key does not open this backup. Open syncfast to enter the right one."
+        );
     }
 
     #[test]

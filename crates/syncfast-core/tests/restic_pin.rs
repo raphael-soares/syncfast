@@ -9,6 +9,19 @@ const MANIFEST: &str = concat!(
     "/../../packaging/flatpak/io.github.raphael_soares.syncfast.yml"
 );
 
+const WORKFLOW: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../.github/workflows/ci.yml"
+);
+
+fn workflow_value(key: &str) -> String {
+    let text = std::fs::read_to_string(WORKFLOW).unwrap();
+    let prefix = format!("{key}: ");
+    text.lines()
+        .find_map(|line| line.trim().strip_prefix(&prefix).map(str::to_owned))
+        .expect("ci.yml has the key")
+}
+
 fn restic_sources() -> Vec<(String, String)> {
     let text = std::fs::read_to_string(MANIFEST).unwrap();
     let module = text
@@ -73,4 +86,19 @@ fn the_manifest_reaches_the_secret_service_and_external_disks() {
     ] {
         assert!(text.contains(permission), "{permission}");
     }
+}
+
+#[test]
+fn ci_installs_the_version_the_constant_names() {
+    assert_eq!(workflow_value("RESTIC_VERSION"), RESTIC_VERSION);
+}
+
+#[test]
+fn ci_checks_the_amd64_hash_of_the_manifest() {
+    let amd64 = restic_sources()
+        .into_iter()
+        .find(|(url, _)| url.ends_with("_linux_amd64.bz2"))
+        .expect("the manifest has an amd64 source");
+
+    assert_eq!(workflow_value("RESTIC_SHA256"), amd64.1);
 }
