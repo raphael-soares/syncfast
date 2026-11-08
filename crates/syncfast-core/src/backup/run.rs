@@ -17,9 +17,9 @@ use crate::backup::classify::{
 use crate::backup::config::{BackupBehavior, BackupConfig};
 use crate::backup::destination::{Destination, DestinationError};
 use crate::backup::effects::{
-    BackupEvent, LOCKED_DETAIL, RunContext, SkipContext, apply_check, apply_gate,
-    apply_key_failure, apply_outcome, apply_retention_result, apply_skip, begin_attempt,
-    clear_gate, monthly_check, retention_message, take_post_failure_check,
+    BackupEvent, LOCKED_DETAIL, RunContext, SkipContext, apply_check, apply_config_error,
+    apply_gate, apply_key_failure, apply_outcome, apply_retention_result, apply_skip,
+    begin_attempt, clear_gate, monthly_check, retention_message, take_post_failure_check,
 };
 use crate::backup::excludes::{render_excludes_live, write_excludes};
 use crate::backup::keystore::KeyStore;
@@ -177,7 +177,8 @@ pub async fn run_backup(
         Ok(behavior) => behavior,
         Err(message) => {
             let now = env.now().timestamp();
-            let events = apply_gate(&mut state, now, GateKind::ConfigError, message, None);
+            log::warn!("the backup {backup_id} has an invalid configuration: {message}");
+            let events = apply_config_error(&mut state, now, message);
             conclude(env, &backup, &policy, &state, lock, &events, true).await?;
             return Ok(BackupRunReport::ConfigInvalid);
         }

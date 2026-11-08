@@ -208,13 +208,17 @@ pub fn apply_skip(
     }
 }
 
-/// Step 6, item 6: the key cannot be had. It counts as a failure.
+/// Step 6, item 6: the key cannot be had. It counts as a failure. A damaged
+/// repository keeps its gate, which only a full check clears.
 pub fn apply_key_failure(
     state: &mut BackupState,
     detail: String,
     now: Timestamp,
 ) -> Vec<BackupEvent> {
     record_failure(state, now);
+    if is_damaged_gate(state) {
+        return Vec::new();
+    }
     apply_gate(
         state,
         now,
@@ -222,6 +226,19 @@ pub fn apply_key_failure(
         detail,
         Some(Fault::KeyMissing),
     )
+}
+
+/// The configuration of the backup is invalid. A damaged repository keeps
+/// its gate, which only a full check clears; the caller logs the message.
+pub fn apply_config_error(
+    state: &mut BackupState,
+    now: Timestamp,
+    message: String,
+) -> Vec<BackupEvent> {
+    if is_damaged_gate(state) {
+        return Vec::new();
+    }
+    apply_gate(state, now, GateKind::ConfigError, message, None)
 }
 
 /// Step 6, item 9.
@@ -1107,6 +1124,49 @@ mod tests {
         );
         assert_eq!(second, []);
         assert_eq!(state.notified, ["gate:needs_attention:key_missing"]);
+    }
+
+    #[test]
+    fn a_missing_key_counts_but_does_not_replace_the_damaged_gate() {
+        let mut state = damaged_state();
+        let before = state.gate.clone();
+
+        let events = apply_key_failure(&mut state, "no key".to_owned(), now());
+
+        assert_eq!(events, []);
+        assert_eq!(state.gate, before);
+        assert_eq!(state.consecutive_failures, 1);
+        assert_eq!(state.last_outcome, Some(LastOutcome::Error));
+        assert_eq!(state.notified, ["gate:needs_attention:repo_damaged"]);
+    }
+
+    #[test]
+    fn a_config_error_sets_its_gate_when_nothing_holds_the_backup() {
+        let mut state = BackupState::default();
+
+        let events = apply_config_error(&mut state, now(), "bad dest".to_owned());
+
+        assert_eq!(state.gate.as_ref().unwrap().kind, GateKind::ConfigError);
+        assert_eq!(
+            events,
+            [BackupEvent::Gate {
+                kind: GateKind::ConfigError,
+                detail: "bad dest".to_owned(),
+                fault: None
+            }]
+        );
+    }
+
+    #[test]
+    fn a_config_error_does_not_replace_the_damaged_gate() {
+        let mut state = damaged_state();
+        let before = state.gate.clone();
+
+        let events = apply_config_error(&mut state, now(), "bad dest".to_owned());
+
+        assert_eq!(events, []);
+        assert_eq!(state.gate, before);
+        assert_eq!(state.notified, ["gate:needs_attention:repo_damaged"]);
     }
 
     #[test]
