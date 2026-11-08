@@ -462,7 +462,7 @@ h1.caption{font-size:15px;font-weight:600;color:var(--secondary);margin:0 0 -28p
 <div class="row"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Archive</div><div class="s">Backed up yesterday</div></div><svg class="ico" style="color:var(--dim);"><use href="#drive"/></svg></div>
 </div>
 <div class="main">
-<div class="toolbar"><div><div class="name">Projects</div><div class="path">2 folders → gdrive:Backups/projects</div></div><div class="spacer"></div><button class="btn primary" disabled><svg class="ico"><use href="#refresh"/></svg>Back Up Now</button><button class="btn secondary"><svg class="ico"><use href="#pause"/></svg>Pause</button><span style="position:relative"><button class="btn secondary" title="More"><svg class="ico"><use href="#more"/></svg></button></span></div>
+<div class="toolbar"><div><div class="name">Projects</div><div class="path">3 folders → gdrive:Backups/projects</div></div><div class="spacer"></div><button class="btn primary" disabled><svg class="ico"><use href="#refresh"/></svg>Back Up Now</button><button class="btn secondary"><svg class="ico"><use href="#pause"/></svg>Pause</button><span style="position:relative"><button class="btn secondary" title="More"><svg class="ico"><use href="#more"/></svg></button></span></div>
 <div class="card"><span class="badge accent"><svg class="ico"><use href="#refresh"/></svg>Backing up…</span><div class="bar"><i style="width:36%"></i></div><div class="callout">1,204 of 3,310 files · 812 MB/2.1 GB · 4 min left</div><div class="sub">Current: ~/Code/syncfast/docs/design/ui-mock.html</div></div>
 <div class="seg"><span class="on">Snapshots</span><span class="">Activity</span><span class="">Settings</span></div>
 <div class="list">
@@ -528,7 +528,7 @@ h1.caption{font-size:15px;font-weight:600;color:var(--secondary);margin:0 0 -28p
 </div>
 
 <h1 class="caption">13. Backup detail: the status card for each state, with the repair button of each fault</h1>
-<div class="win" style="height:900px">
+<div class="win" style="height:1500px">
  <div class="titlebar">Documents</div>
 <div class="main" style="padding-bottom:16px"><div class="statelab">Up to date</div><div class="card"><span class="badge ok"><svg class="ico"><use href="#check"/></svg>Up to date</span><div class="callout">Backed up Nov 8, 2026 at 03:00. 14 new or changed files, 38 MB added.</div></div>
 <div class="statelab">Up to date, with warnings</div><div class="card"><span class="badge ok"><svg class="ico"><use href="#check"/></svg>Up to date</span><div class="callout">Backed up Nov 8, 2026 at 03:00. 3 files could not be read.</div></div>
@@ -536,6 +536,10 @@ h1.caption{font-size:15px;font-weight:600;color:var(--secondary);margin:0 0 -28p
 <div class="statelab">Needs attention, key_missing or wrong_key</div><div class="card"><span class="badge danger"><svg class="ico"><use href="#alert"/></svg>Needs attention</span><div class="callout">The key for this backup is missing on this computer.</div><div><button class="btn primary">Enter Key…</button></div></div>
 <div class="statelab">Needs attention, repo_damaged</div><div class="card"><span class="badge danger"><svg class="ico"><use href="#alert"/></svg>Needs attention</span><div class="callout">The check found damaged data. Backups are paused until you review it.</div><div><button class="btn primary">Check Again</button></div></div>
 <div class="statelab">Destination not available</div><div class="card"><span class="badge dim"><svg class="ico"><use href="#drive"/></svg>Destination not available</span><div class="callout">/run/media/raphael/Backup is not available. Backups resume when it is back.</div></div>
+<div class="statelab">Paused</div><div class="card"><span class="badge dim"><svg class="ico"><use href="#pause"/></svg>Paused</span><div class="callout">This backup is paused. Resume it to back up again.</div></div>
+<div class="statelab">Offline</div><div class="card"><span class="badge dim"><svg class="ico"><use href="#clouddown"/></svg>Offline</span><div class="callout">No network. Backups resume when it is back.</div></div>
+<div class="statelab">Backup failing</div><div class="card"><span class="badge danger"><svg class="ico"><use href="#alert"/></svg>Backup failing</span><div class="callout">The last 3 backups failed in a row.</div></div>
+<div class="statelab">Will retry</div><div class="card"><span class="badge ok"><svg class="ico"><use href="#clock"/></svg>Will retry</span><div class="callout">The last backup failed. It will try again soon.</div></div>
 <div class="statelab">Checking…</div><div class="card"><span class="badge accent"><svg class="ico"><use href="#shield"/></svg>Checking…</span><div class="bar"><i style="width:100%;opacity:.35"></i></div></div>
 </div></div>
 
@@ -554,7 +558,7 @@ h1.caption{font-size:15px;font-weight:600;color:var(--secondary);margin:0 0 -28p
 <div class="row sel"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Projects</div><div class="s">Backed up 4 min ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
 </div>
 <div class="main">
-<div class="toolbar"><div><div class="name">Projects</div><div class="path">2 folders → gdrive:Backups/projects</div></div><div class="spacer"></div><button class="btn primary"><svg class="ico"><use href="#refresh"/></svg>Back Up Now</button><button class="btn secondary"><svg class="ico"><use href="#pause"/></svg>Pause</button><span style="position:relative"><button class="btn secondary" title="More"><svg class="ico"><use href="#more"/></svg></button></span></div>
+<div class="toolbar"><div><div class="name">Projects</div><div class="path">3 folders → gdrive:Backups/projects</div></div><div class="spacer"></div><button class="btn primary"><svg class="ico"><use href="#refresh"/></svg>Back Up Now</button><button class="btn secondary"><svg class="ico"><use href="#pause"/></svg>Pause</button><span style="position:relative"><button class="btn secondary" title="More"><svg class="ico"><use href="#more"/></svg></button></span></div>
 <div class="card"><span class="badge ok"><svg class="ico"><use href="#check"/></svg>Up to date</span><div class="callout">Backed up Nov 8, 2026 at 03:00. 14 new or changed files, 38 MB added.</div></div>
 <div class="seg"><span class="">Snapshots</span><span class="">Activity</span><span class="on">Settings</span></div>
 <div class="opts">
@@ -602,7 +606,7 @@ h1.caption{font-size:15px;font-weight:600;color:var(--secondary);margin:0 0 -28p
 <div class="row sel"><svg class="ico" style="color:var(--secondary);"><use href="#archive"/></svg><div class="grow"><div class="t">Projects</div><div class="s">Backed up 4 min ago</div></div><svg class="ico" style="color:var(--secondary);"><use href="#check"/></svg></div>
 </div>
 <div class="main">
-<div class="toolbar"><div><div class="name">Projects</div><div class="path">2 folders → gdrive:Backups/projects</div></div><div class="spacer"></div><button class="btn primary"><svg class="ico"><use href="#refresh"/></svg>Back Up Now</button><button class="btn secondary"><svg class="ico"><use href="#pause"/></svg>Pause</button><span style="position:relative"><button class="btn secondary" title="More"><svg class="ico"><use href="#more"/></svg></button></span></div>
+<div class="toolbar"><div><div class="name">Projects</div><div class="path">3 folders → gdrive:Backups/projects</div></div><div class="spacer"></div><button class="btn primary"><svg class="ico"><use href="#refresh"/></svg>Back Up Now</button><button class="btn secondary"><svg class="ico"><use href="#pause"/></svg>Pause</button><span style="position:relative"><button class="btn secondary" title="More"><svg class="ico"><use href="#more"/></svg></button></span></div>
 <div class="seg"><span class="">Snapshots</span><span class="">Activity</span><span class="on">Settings</span></div>
 <div class="opts"><div class="sec-title" style="margin-top:0">Keep</div>
 <div class="srow"><div class="lab">Daily</div><div class="ctl"><span class="fld">3</span></div></div>
@@ -969,7 +973,7 @@ h1.caption{font-size:15px;font-weight:600;color:var(--secondary);margin:0 0 -28p
 <div><button class="btn secondary">Test Key Storage</button> <span class="cap-note" style="margin-left:8px">Available</span></div>
 <div class="sec-title">restic</div>
 <div class="srow"><div class="lab">Version</div><div class="ctl">0.19.1</div></div>
-<div style="margin-top:12px"><span class="link">docs/guide/backup.md</span> <svg class="ico" style="color:var(--accent);width:12px;height:12px"><use href="#ext"/></svg></div>
+<div style="margin-top:12px"><span class="link">Backing up with syncfast</span> <svg class="ico" style="color:var(--accent);width:12px;height:12px"><use href="#ext"/></svg></div>
 </div></div></div></div>
 </div>
 
@@ -992,7 +996,7 @@ h1.caption{font-size:15px;font-weight:600;color:var(--secondary);margin:0 0 -28p
 <div><button class="btn secondary">Test Key Storage</button> <span class="cap-note" style="margin-left:8px">Available</span></div>
 <div class="sec-title">restic</div>
 <div class="srow"><div class="lab">Version</div><div class="ctl">0.19.1</div></div>
-<div style="margin-top:12px"><span class="link">docs/guide/backup.md</span> <svg class="ico" style="color:var(--accent);width:12px;height:12px"><use href="#ext"/></svg></div>
+<div style="margin-top:12px"><span class="link">Backing up with syncfast</span> <svg class="ico" style="color:var(--accent);width:12px;height:12px"><use href="#ext"/></svg></div>
 </div></div></div></div>
 </div>
 
@@ -1014,7 +1018,7 @@ h1.caption{font-size:15px;font-weight:600;color:var(--secondary);margin:0 0 -28p
 <div><button class="btn secondary">Test Key Storage</button></div>
 <div class="sec-title">restic</div>
 <div class="srow"><div class="lab">Version</div><div class="ctl">0.19.1</div></div>
-<div style="margin-top:12px"><span class="link">docs/guide/backup.md</span> <svg class="ico" style="color:var(--accent);width:12px;height:12px"><use href="#ext"/></svg></div>
+<div style="margin-top:12px"><span class="link">Backing up with syncfast</span> <svg class="ico" style="color:var(--accent);width:12px;height:12px"><use href="#ext"/></svg></div>
 </div></div></div></div>
 </div>
 
