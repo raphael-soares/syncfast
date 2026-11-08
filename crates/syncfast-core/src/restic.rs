@@ -452,7 +452,13 @@ impl Restic {
         &self.rclone
     }
 
-    async fn ensure_supported(&self) -> Result<(), ResticError> {
+    /// Refuses a restic older than [`RESTIC_MIN_VERSION`]; a different
+    /// version only logs a warning.
+    ///
+    /// # Errors
+    /// restic cannot be run or says its version in a way syncfast cannot
+    /// read, or it is too old.
+    pub async fn ensure_supported(&self) -> Result<(), ResticError> {
         #[derive(Deserialize)]
         struct Version {
             version: String,

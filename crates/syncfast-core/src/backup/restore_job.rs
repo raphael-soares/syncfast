@@ -68,17 +68,6 @@ impl RestoreError {
             Self::Failed(_) => 1,
         }
     }
-
-    /// A stable name for the error, for JSON output.
-    #[must_use]
-    pub fn code(&self) -> &'static str {
-        match self {
-            Self::Invalid(_) => "invalid",
-            Self::NotFound(_) => "not_found",
-            Self::Busy => "busy",
-            Self::Failed(_) => "failed",
-        }
-    }
 }
 
 fn failed(what: &str, err: impl std::fmt::Display) -> RestoreError {
@@ -833,10 +822,6 @@ mod tests {
         assert_eq!(RestoreError::NotFound(String::new()).exit_code(), 2);
         assert_eq!(RestoreError::Busy.exit_code(), 3);
         assert_eq!(RestoreError::Failed(String::new()).exit_code(), 1);
-        assert_eq!(RestoreError::Invalid(String::new()).code(), "invalid");
-        assert_eq!(RestoreError::NotFound(String::new()).code(), "not_found");
-        assert_eq!(RestoreError::Busy.code(), "busy");
-        assert_eq!(RestoreError::Failed(String::new()).code(), "failed");
     }
 
     #[test]
