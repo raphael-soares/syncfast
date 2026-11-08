@@ -248,11 +248,6 @@ impl Paths {
         self.backup_state_dir(backup_id).join("progress.json")
     }
 
-    #[must_use]
-    pub fn backup_request_file(&self, backup_id: &str) -> PathBuf {
-        self.backup_state_dir(backup_id).join("request.json")
-    }
-
     /// Held exclusively while a backup runs. The `_` cannot be in a sync id,
     /// so it never collides with [`Paths::lock_file`].
     #[must_use]
@@ -414,10 +409,6 @@ mod tests {
         assert_eq!(
             paths.backup_progress_file("docs"),
             Path::new("/s/syncfast/backups/docs/progress.json")
-        );
-        assert_eq!(
-            paths.backup_request_file("docs"),
-            Path::new("/s/syncfast/backups/docs/request.json")
         );
         assert_eq!(
             paths.backup_lock_file("docs"),

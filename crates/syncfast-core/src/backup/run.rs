@@ -14,7 +14,7 @@ use crate::backup::config::{BackupBehavior, BackupConfig};
 use crate::backup::destination::{Destination, DestinationError};
 use crate::backup::effects::{
     BackupEvent, RunContext, SkipContext, apply_gate, apply_key_failure, apply_outcome,
-    apply_retention_result, apply_skip, begin_attempt, clear_gate,
+    apply_retention_result, apply_skip, begin_attempt, clear_gate, retention_message,
 };
 use crate::backup::excludes::{render_excludes_live, write_excludes};
 use crate::backup::keystore::KeyStore;
@@ -38,7 +38,7 @@ const EXIT_TEMPFAIL: u8 = 75;
 /// The first line of every run log: which step wrote it.
 const LOG_HEADER: &str = r#"{"syncfast_step":"backup"}"#;
 const PROGRESS_EVERY: Duration = Duration::from_secs(1);
-const KEY_ABSENT: &str = "The key for this backup is not saved on this computer.";
+pub const KEY_ABSENT: &str = "The key for this backup is not saved on this computer.";
 
 pub struct BackupRunEnv<'a> {
     pub paths: &'a Paths,
@@ -139,8 +139,6 @@ struct Round<'a> {
     failures_after: u8,
 }
 
-/// Runs one round of `backup_id`.
-///
 /// # Errors
 /// The id is unknown, the global config is invalid, or syncfast itself fails
 /// (state files, restic not startable).
@@ -209,11 +207,10 @@ pub async fn run_backup(
         dest_available,
         gate: state.gate.as_ref(),
         source_check: source_check(&backup.paths),
-        request: None,
     });
     let (events, report, save) = match decision {
         BackupDecision::Skip(reason) => {
-            let effect = apply_skip(
+            let events = apply_skip(
                 &mut state,
                 reason,
                 &SkipContext {
@@ -228,7 +225,7 @@ pub async fn run_backup(
                     reason,
                     SkipReason::Offline | SkipReason::DestinationUnavailable
                 );
-            (effect.events, BackupRunReport::Skipped(reason), save)
+            (events, BackupRunReport::Skipped(reason), save)
         }
         BackupDecision::SetGate {
             kind,
@@ -238,7 +235,7 @@ pub async fn run_backup(
             let events = apply_gate(&mut state, now.timestamp(), kind, detail, Some(fault));
             (events, BackupRunReport::GateSet(fault), true)
         }
-        BackupDecision::Run(_) => {
+        BackupDecision::Run => {
             let (events, report) = backup_round(env, &round, &now, &mut state).await?;
             (events, report, true)
         }
@@ -409,7 +406,11 @@ async fn forget(
             }
             Ok(())
         }
-        Err(err) => Err(err.to_string()),
+        Err(err) => {
+            let message = err.to_string();
+            log.line(&retention_message(&message)).await;
+            Err(message)
+        }
     }
 }
 
@@ -501,7 +502,6 @@ async fn wait_interrupt(interrupts: &mut Option<Interrupts>) {
     }
 }
 
-/// Lets a status line through at most once per `every`.
 struct Throttle {
     every: Duration,
     last: Option<Instant>,

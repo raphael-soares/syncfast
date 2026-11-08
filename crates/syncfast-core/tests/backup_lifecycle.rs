@@ -475,6 +475,38 @@ async fn adding_an_existing_backup_needs_a_repository_and_its_key() {
     assert!(bed.started().is_empty());
 }
 
+async fn an_existing_backup_whose_config_cannot_be_saved_does_not_keep_the_key() {
+    let Some(bed) = bed().await else { return };
+    let dest = bed.account_dest("old");
+    let key = Key::generate().unwrap();
+    create_repository(&bed.restic, &bed.repository("old", &dest), &key)
+        .await
+        .unwrap();
+    let draft = ExistingBackup {
+        name: "Old".to_owned(),
+        id: "old".to_owned(),
+        dest,
+    };
+    let config_dir = bed.paths.config_dir();
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::set_permissions(&config_dir, fs::Permissions::from_mode(0o555)).unwrap();
+    if fs::write(config_dir.join("probe"), "").is_ok() {
+        fs::set_permissions(&config_dir, fs::Permissions::from_mode(0o755)).unwrap();
+        return;
+    }
+
+    let err = add_existing_backup(&bed.env(&bed.keys), &draft, key)
+        .await
+        .unwrap_err();
+    fs::set_permissions(&config_dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert!(matches!(err, AddExistingError::NotSaved(_)), "{err:?}");
+    assert!(err.to_string().starts_with("Cannot save the backup: "));
+    assert!(bed.keys.get("old").await.unwrap().is_none());
+    assert!(bed.config().await.backups().is_empty());
+    assert!(bed.started().is_empty());
+}
+
 async fn entering_the_key_clears_the_key_gate_and_starts_a_run() {
     let Some(bed) = bed().await else { return };
     let key = bed.create("docs").await;

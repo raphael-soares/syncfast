@@ -62,7 +62,7 @@ After each backup that succeeded and read at least one file, syncfast deletes th
 
 ## Bandwidth limits
 
-**Upload limit** and **Download limit** (**Advanced** in the wizard, **Options** in the **Settings** tab) default to **Unlimited**. Set a speed as a whole number followed by `K`, `M` or `G`, in KiB, MiB or GiB per second, for example `500K` or `2M`. The limits are per backup, are not inherited from the sync limits, and apply to backing up, cleaning up, checking and restoring.
+**Upload limit** and **Download limit** (**Advanced** in the wizard, **Options** in the **Settings** tab) default to **Unlimited**. Set a speed as a whole number followed by `K`, `M` or `G`, in KiB, MiB or GiB per second, for example `500K` or `2M`. The limits are per backup, are not inherited from the sync limits, and apply to backing up, cleaning up and restoring.
 
 ## Stay on one file system
 
@@ -80,16 +80,6 @@ The **Filters** step is the one from a sync's **Filters** tab, with two differen
 Custom rules are one per line and start with `- ` (for example `- *.iso`). Lines starting with `+ `, and patterns with `{...}` or `[!...]`, are refused in a backup. **Test Filters** counts how many files and bytes your rules leave out, without uploading anything.
 
 Changing filters does not ask for a review. They only affect future snapshots: files you left out stay in older snapshots until those expire.
-
-## Checks
-
-syncfast checks that the backup is readable:
-
-- **Sample check**: once a month, after a successful backup, it reads 5% of the stored data and verifies it.
-- **Quick check**: after a backup that failed for no known reason, once per series of failures. It verifies the structure of the backup (indexes, folders and snapshots) without reading the data, so it is cheap on Drive.
-- **Full check**: only when you ask. It reads and verifies all the data, which for a Drive backup means downloading all of it and can take hours.
-
-Run any of them from the **…** menu of a backup, **Check Now**: **Quick Check**, **Check Sample** or **Full Check…**. The result is in the **Activity** tab. A check that finds damaged data pauses the backup and its cleanup; see [A backup is paused after a check](troubleshooting.md#backups-are-paused-after-a-check).
 
 ## Restore files
 
@@ -124,7 +114,7 @@ syncfast asks for a place to keep keys when you create a backup, and refuses to 
 1. **Secret portal** (`org.freedesktop.portal.Secret`): the preferred one. The key lives in an encrypted file only syncfast can open.
 2. **Host keyring** (Secret Service, `org.freedesktop.secrets`: GNOME Keyring, KWallet), when there is no portal. This works, but the Flatpak can then read every secret in your keyring.
 
-**Settings… › Backups** says which one is in use under **Key storage**, and **Test Key Storage** writes, reads and deletes a test item to prove it works. When neither is available the sheet shows **Cannot reach the key storage** and **Continue** stays disabled.
+**Settings > Backups** says which one is in use under **Key storage**, and **Test Key Storage** writes, reads and deletes a test item to prove it works. When neither is available the sheet shows **Cannot reach the key storage** and **Continue** stays disabled.
 
 ### Enable the Secret portal on Hyprland
 
@@ -148,7 +138,7 @@ Status of a backup in the sidebar and detail:
 
 | Status | Meaning |
 |---|---|
-| **Backing up…**, **Checking…** | A run is in progress. |
+| **Backing up…** | A run is in progress. |
 | **Up to date** | The last backup worked. |
 | **Needs attention** | Something needs you; the card says what and has the button that fixes it. |
 | **Save the key** | An agent created this backup and you have not saved its key yet. |
@@ -158,4 +148,4 @@ Status of a backup in the sidebar and detail:
 | **Backup failing** | The last 3 backups or more failed in a row. |
 | **Will retry** | The last backup failed; it tries again. |
 
-[Troubleshooting](troubleshooting.md) has the fix for **Needs attention**, key storage errors and a backup paused after a check. Bug reports go to <https://github.com/raphael-soares/syncfast/issues/new/choose>.
+[Troubleshooting](troubleshooting.md) has the fix for **Needs attention** and key storage errors. Bug reports go to <https://github.com/raphael-soares/syncfast/issues/new/choose>.

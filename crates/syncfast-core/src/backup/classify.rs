@@ -29,7 +29,9 @@ pub enum BackupOutcome {
         fault: Fault,
         detail: String,
     },
-    Locked,
+    Locked {
+        detail: String,
+    },
     Transient {
         detail: String,
     },
@@ -69,12 +71,11 @@ pub fn classify_backup(
         ) => return needs_attention(fault, exit_code, stderr_lines),
         _ => {}
     }
+    let detail = last_message(stderr_lines).unwrap_or_else(|| fallback_detail(exit_code));
     if exit_code == Some(EXIT_LOCKED) {
-        return BackupOutcome::Locked;
+        return BackupOutcome::Locked { detail };
     }
-    BackupOutcome::Transient {
-        detail: last_message(stderr_lines).unwrap_or_else(|| fallback_detail(exit_code)),
-    }
+    BackupOutcome::Transient { detail }
 }
 
 fn needs_attention(fault: Fault, exit_code: Option<i32>, stderr_lines: &[String]) -> BackupOutcome {
@@ -451,7 +452,12 @@ mod tests {
 
     #[test]
     fn row_8_exit_11_is_locked() {
-        assert_eq!(classify_fixture("locked"), BackupOutcome::Locked);
+        assert_eq!(
+            classify_fixture("locked"),
+            BackupOutcome::Locked {
+                detail: "unable to create lock in backend: repository is already locked by PID 1943426 on fixture-host by user (UID 1000, GID 1000)".to_owned(),
+            }
+        );
     }
 
     #[test]

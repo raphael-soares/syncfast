@@ -17,6 +17,7 @@ use syncfast_core::backup::config::{BackupConfig, KeepSetting};
 use syncfast_core::backup::destination::{
     Destination, RepositoryError, create_repository, open_repository,
 };
+use syncfast_core::backup::excludes::render_excludes_live;
 use syncfast_core::backup::key::Key;
 use syncfast_core::backup::keystore::{KeyStore, MemoryKeyStore};
 use syncfast_core::backup::run::{BackupRunEnv, BackupRunError, BackupRunReport, run_backup};
@@ -24,6 +25,7 @@ use syncfast_core::backup::run_decision::SkipReason;
 use syncfast_core::backup::snapshots::SnapshotView;
 use syncfast_core::backup::state::{BackupState, is_running};
 use syncfast_core::backup::status::BackupProgressFile;
+use syncfast_core::backup::test_filters::{FilterTest, run_filter_test};
 use syncfast_core::bisync::Fault;
 use syncfast_core::config::Config;
 use syncfast_core::network::{BoxFuture, Network};
@@ -484,7 +486,73 @@ fn scan_processes(needles: &[Vec<u8>], restic_seen: &mut u32) -> bool {
     leaked
 }
 
-/// The pid of a restic that is running `backup` against `repo`.
+#[allow(clippy::print_stderr)]
+fn skipping(why: &str) {
+    eprintln!("skipping: {why}");
+}
+
+/// The first file under `folder` that holds one of `needles`. A file that
+/// goes away while the scan runs is skipped.
+fn file_with_key(folder: &Path, needles: &[Vec<u8>]) -> Option<PathBuf> {
+    for path in fs::read_dir(folder)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+    {
+        if path.is_dir() {
+            if let Some(found) = file_with_key(&path, needles) {
+                return Some(found);
+            }
+        } else if let Ok(bytes) = fs::read(&path)
+            && needles.iter().any(|needle| contains(&bytes, needle))
+        {
+            return Some(path);
+        }
+    }
+    None
+}
+
+impl Rig {
+    fn use_restic(&mut self, bin: PathBuf) {
+        let rclone = self.bed.restic.rclone().clone();
+        self.bed.restic = Restic::new(bin, rclone, &self.bed.paths);
+    }
+
+    async fn filter_test(&self, backup: &BackupConfig) -> FilterTest {
+        let excludes = render_excludes_live(backup).await;
+        let scratch = self.dir("scratch");
+        let test = run_filter_test(&self.bed.restic, backup, &excludes, &scratch)
+            .await
+            .unwrap();
+        assert!(
+            files_under(&scratch).is_empty(),
+            "the throwaway repository was left behind"
+        );
+        test
+    }
+
+    /// Adds `backup`, runs a real round and checks it stored what `test`
+    /// said it would.
+    async fn assert_round_matches(&self, backup: &BackupConfig, test: FilterTest) -> Key {
+        let key = self.add(backup).await;
+        assert_eq!(
+            self.run(&backup.id).await,
+            BackupRunReport::Ran(BackupOutcome::Ok)
+        );
+        let summary = self.state(&backup.id).await.last_run.unwrap().summary;
+        assert_eq!(
+            summary.total_files_processed,
+            test.total_files - test.excluded_files
+        );
+        assert_eq!(
+            summary.total_bytes_processed,
+            test.total_bytes - test.excluded_bytes
+        );
+        key
+    }
+}
+
+/// Whether a restic is running `backup` against `repo` right now.
 fn backup_running_against(repo: &str) -> bool {
     fs::read_dir("/proc").unwrap().flatten().any(|entry| {
         let cmdline = fs::read(entry.path().join("cmdline")).unwrap_or_default();
@@ -564,14 +632,17 @@ async fn a_changed_file_makes_a_second_snapshot_that_counts_it() {
     assert_eq!(summary.files_unmodified, 1);
 }
 
-async fn the_daily_policy_keeps_the_newest_days_and_drops_the_rest() {
+async fn the_default_policy_keeps_seven_daily_four_weekly_and_six_monthly_snapshots() {
     let Some(rig) = Rig::new().await else { return };
     let source = rig.folder("docs", &[("a.txt", "hello")]);
     let mut b = backup("docs", &[&source], rig.dest("repo"));
-    b.keep = KeepSetting::new(3, 0, 0, 0);
+    b.keep = KeepSetting::new(7, 4, 6, 0);
     let key = rig.add(&b).await;
-    for day in 1..=6 {
-        rig.old_snapshot(&b, &key, &format!("2025-03-0{day} 10:00:00"), &source).await;
+    let days = (1..=10).map(|day| format!("2025-03-{day:02}"));
+    let months = ["2024-12-15", "2024-11-15", "2024-10-15", "2024-09-15", "2024-08-15", "2024-07-15"]
+        .map(str::to_owned);
+    for date in days.chain(months) {
+        rig.old_snapshot(&b, &key, &format!("{date} 12:00:00"), &source).await;
     }
 
     let report = rig.run("docs").await;
@@ -583,9 +654,15 @@ async fn the_daily_policy_keeps_the_newest_days_and_drops_the_rest() {
         .iter()
         .map(|snapshot| snapshot.time.to_string())
         .collect();
-    assert_eq!(times.len(), 3, "{times:?}");
-    assert!(times[1].starts_with("2025-03-06"), "{times:?}");
-    assert!(times[2].starts_with("2025-03-05"), "{times:?}");
+    let kept: Vec<&str> = times.iter().skip(1).map(|time| &time[..10]).collect();
+    assert_eq!(
+        kept,
+        [
+            "2025-03-10", "2025-03-09", "2025-03-08", "2025-03-07", "2025-03-06", "2025-03-05",
+            "2025-03-02", "2024-12-15", "2024-11-15", "2024-10-15", "2024-09-15",
+        ],
+        "{times:?}"
+    );
 }
 
 async fn the_yearly_policy_keeps_the_latest_snapshot_of_the_two_newest_years_and_prunes_the_data() {
@@ -785,15 +862,17 @@ async fn the_key_is_never_written_or_shown_anywhere_a_round_can_reach() {
         .map(String::into_bytes)
         .collect();
     let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let state_dir = rig.bed.paths.backup_state_dir("docs");
     let watcher = {
         let (stop, needles) = (stop.clone(), needles.clone());
         tokio::task::spawn_blocking(move || {
-            let (mut leaked, mut seen) = (false, 0);
+            let (mut leaked, mut seen, mut file) = (false, 0, None);
             while !stop.load(Ordering::SeqCst) {
                 leaked |= scan_processes(&needles, &mut seen);
+                file = file.or_else(|| file_with_key(&state_dir, &needles));
                 std::thread::sleep(Duration::from_millis(4));
             }
-            (leaked, seen)
+            (leaked, seen, file)
         })
     };
 
@@ -802,12 +881,13 @@ async fn the_key_is_never_written_or_shown_anywhere_a_round_can_reach() {
     fs::write(source.join("a.txt"), "changed").unwrap();
     let second = rig.run("docs").await;
     stop.store(true, Ordering::SeqCst);
-    let (leaked, seen) = watcher.await.unwrap();
+    let (leaked, seen, file) = watcher.await.unwrap();
 
     assert_eq!(first, BackupRunReport::Ran(BackupOutcome::Ok));
     assert!(matches!(second, BackupRunReport::Ran(BackupOutcome::NeedsAttention { .. })));
     assert!(seen >= 1, "the scan never saw a restic backup, so it proves nothing");
     assert!(!leaked, "a key was in a command line or an environment");
+    assert_eq!(file, None, "a key was written to the state folder during a round");
     for file in files_under(rig.root()) {
         let bytes = fs::read(&file).unwrap();
         for needle in &needles {
@@ -820,14 +900,20 @@ async fn the_key_is_never_written_or_shown_anywhere_a_round_can_reach() {
 
 async fn only_this_machines_snapshots_are_pruned_and_another_machine_opens_the_same_repository() {
     let Some(rig) = Rig::new().await else { return };
+    let Some(restic_bin) = syncfast_core::restic::locate_binary() else {
+        skipping("restic is not installed");
+        return;
+    };
     let source = rig.folder("docs", &[("a.txt", "hello")]);
+    let old_list = rig.folder("old-list", &[("z.txt", "old")]);
     let mut b = backup("docs", &[&source], rig.dest("repo"));
     b.keep = KeepSetting::new(1, 0, 0, 0);
     let key = rig.add(&b).await;
+    rig.old_snapshot(&b, &key, "2024-12-01 10:00:00", &old_list).await;
     rig.old_snapshot(&b, &key, "2025-01-01 10:00:00", &source).await;
     for time in ["2025-01-02 10:00:00", "2025-01-03 10:00:00"] {
         let cache = rig.dir("other-cache");
-        let status = tokio::process::Command::new("restic")
+        let status = tokio::process::Command::new(&restic_bin)
             .args(["-r", &rig.dest("repo"), "backup", "--host", "outro", "--time", time])
             .arg(&source)
             .env("RESTIC_PASSWORD", text_of(&key))
@@ -865,6 +951,170 @@ async fn only_this_machines_snapshots_are_pruned_and_another_machine_opens_the_s
     let hosts: Vec<&str> = snapshots.iter().map(|snapshot| snapshot.host.as_str()).collect();
     assert_eq!(hosts.iter().filter(|host| **host == "outro").count(), 2, "{hosts:?}");
     assert_eq!(hosts.iter().filter(|host| **host == own).count(), 1, "{hosts:?}");
+    let old_list = old_list.to_string_lossy().into_owned();
+    assert!(
+        snapshots.iter().all(|snapshot| !snapshot.paths.contains(&old_list)),
+        "the snapshot of the old folder list survived the policy"
+    );
+}
+
+async fn a_cleanup_that_keeps_failing_is_recorded_announced_once_and_forgotten_when_it_works() {
+    let Some(mut rig) = Rig::new().await else { return };
+    let Some(real) = syncfast_core::restic::locate_binary() else {
+        skipping("restic is not installed");
+        return;
+    };
+    let failing = rig.dir("restic-without-forget");
+    let script = format!(
+        "#!/bin/sh\nfor arg in \"$@\"; do\n  if [ \"$arg\" = forget ]; then\n    \
+         echo 'Fatal: simulated forget failure' >&2\n    exit 1\n  fi\ndone\nexec '{}' \"$@\"\n",
+        real.display()
+    );
+    fs::write(&failing, script).unwrap();
+    fs::set_permissions(&failing, fs::Permissions::from_mode(0o755)).unwrap();
+    let source = rig.folder("docs", &[("a.txt", "hello")]);
+    let mut b = backup("docs", &[&source], rig.dest("repo"));
+    b.keep = KeepSetting::new(1, 0, 0, 0);
+    let key = rig.add(&b).await;
+    rig.use_restic(failing);
+    let message = "restic failed: Fatal: simulated forget failure";
+
+    let first = rig.run("docs").await;
+
+    assert_eq!(first, BackupRunReport::Ran(BackupOutcome::Ok));
+    let state = rig.state("docs").await;
+    assert_eq!(state.prune_failures, 1);
+    assert_eq!(state.prune_error.as_deref(), Some(message));
+    assert!(state.gate.is_none());
+    let log = fs::read_to_string(&state.last_run.unwrap().log_file).unwrap();
+    assert!(
+        log.contains(&format!("Old snapshots could not be cleaned up: {message}")),
+        "{log}"
+    );
+
+    rig.run("docs").await;
+    assert!(rig.state("docs").await.gate.is_none());
+    assert!(rig.notices().is_empty());
+    rig.run("docs").await;
+    let gated = rig.state("docs").await;
+    assert_eq!(gated.prune_failures, 3);
+    let gate = gated.gate.unwrap();
+    assert_eq!(gate.kind, GateKind::NeedsAttention);
+    assert!(
+        gate.detail.starts_with("Old snapshots could not be cleaned up: "),
+        "{}",
+        gate.detail
+    );
+    assert_eq!(rig.notices().len(), 1);
+
+    for _ in 0..2 {
+        assert_eq!(rig.run("docs").await, BackupRunReport::Ran(BackupOutcome::Ok));
+    }
+    let later = rig.state("docs").await;
+    assert_eq!(later.prune_failures, 5);
+    assert!(later.gate.is_some(), "a good backup must not lift the gate of a failing cleanup");
+    assert_eq!(rig.notices().len(), 1, "good rounds announced the same gate again");
+
+    rig.use_restic(real);
+    assert_eq!(rig.run("docs").await, BackupRunReport::Ran(BackupOutcome::Ok));
+    let fixed = rig.state("docs").await;
+    assert_eq!(fixed.prune_failures, 0);
+    assert_eq!(fixed.prune_error, None);
+    assert!(fixed.gate.is_none());
+    assert_eq!(rig.snapshots(&b, &key).await.len(), 1);
+    assert_eq!(rig.notices().len(), 1);
+}
+
+async fn the_filter_test_counts_what_the_presets_leave_out_and_the_real_round_agrees() {
+    let Some(rig) = Rig::new().await else { return };
+    let source = rig.folder("docs", &[
+        ("a.txt", "hello"),
+        ("sub/b.txt", "world"),
+        ("~$doc.docx", "lock-file"),
+        ("$RECYCLE.BIN/old.txt", "trash"),
+        ("notes [1] final.txt", "brackets"),
+    ]);
+    let b = backup("docs", &[&source], rig.dest("repo"));
+
+    let test = rig.filter_test(&b).await;
+
+    let expected = FilterTest { excluded_files: 2, total_files: 5, excluded_bytes: 14, total_bytes: 32 };
+    assert_eq!(test, expected);
+    rig.assert_round_matches(&b, test).await;
+}
+
+async fn build_artifacts_leaves_out_each_of_its_entries_but_not_git_or_build() {
+    let Some(rig) = Rig::new().await else { return };
+    let entries = [
+        "node_modules", "target", ".venv", "venv", "__pycache__", ".gradle", ".cache",
+        ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", ".parcel-cache",
+    ];
+    let mut files: Vec<(String, &str)> = entries
+        .iter()
+        .map(|entry| (format!("{entry}/x.bin"), "x"))
+        .collect();
+    files.extend([
+        ("web/node_modules/y.bin".to_owned(), "y"),
+        (".git/config".to_owned(), "g"),
+        ("build/out.bin".to_owned(), "o"),
+        ("src/main.rs".to_owned(), "m"),
+    ]);
+    let files: Vec<(&str, &str)> = files.iter().map(|(path, text)| (path.as_str(), *text)).collect();
+    let source = rig.folder("docs", &files);
+    let mut b = backup("docs", &[&source], rig.dest("repo"));
+    b.presets = vec!["build_artifacts".to_owned()];
+
+    let test = rig.filter_test(&b).await;
+
+    let expected = FilterTest { excluded_files: 13, total_files: 16, excluded_bytes: 13, total_bytes: 16 };
+    assert_eq!(test, expected);
+    let key = rig.assert_round_matches(&b, test).await;
+    let listing = rig.restic(&b, &key, &["ls", "latest"]).await;
+    for entry in entries {
+        assert!(
+            !listing.lines().any(|line| line.split('/').any(|part| part == entry)),
+            "{entry} was stored: {listing}"
+        );
+    }
+    assert!(listing.contains("/.git/config"), "{listing}");
+    assert!(listing.contains("/build/out.bin"), "{listing}");
+}
+
+async fn a_folder_named_with_brackets_and_a_space_is_filtered_by_anchored_rules() {
+    let Some(rig) = Rig::new().await else { return };
+    let source = rig.folder("my docs [1]", &[("a.txt", "hello"), ("tmp-out/x.bin", "12345")]);
+    let mut b = backup("docs", &[&source], rig.dest("repo"));
+    b.presets = Vec::new();
+    b.filters = vec!["- /tmp-out/".to_owned()];
+
+    let test = rig.filter_test(&b).await;
+
+    let expected = FilterTest { excluded_files: 1, total_files: 2, excluded_bytes: 5, total_bytes: 10 };
+    assert_eq!(test, expected);
+    rig.assert_round_matches(&b, test).await;
+}
+
+async fn git_repos_leaves_out_each_repository_it_finds() {
+    let Some(rig) = Rig::new().await else { return };
+    let source = rig.folder("repos", &[
+        ("alpha/.git/HEAD", "ref"),
+        ("alpha/lib.rs", "aaaa"),
+        ("beta [1]/.git/HEAD", "ref"),
+        ("beta [1]/main.rs", "bb"),
+        ("plain/c.txt", "c"),
+    ]);
+    let mut b = backup("docs", &[&source], rig.dest("repo"));
+    b.presets = vec!["git_repos".to_owned()];
+
+    let test = rig.filter_test(&b).await;
+
+    let expected = FilterTest { excluded_files: 4, total_files: 5, excluded_bytes: 12, total_bytes: 13 };
+    assert_eq!(test, expected);
+    let key = rig.assert_round_matches(&b, test).await;
+    let listing = rig.restic(&b, &key, &["ls", "latest"]).await;
+    assert!(listing.contains("/plain/c.txt"), "{listing}");
+    assert!(!listing.contains("/alpha"), "{listing}");
+    assert!(!listing.contains("/beta [1]"), "{listing}");
 }
 
 async fn the_upload_limit_slows_the_backup_down() {

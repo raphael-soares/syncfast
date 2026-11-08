@@ -79,8 +79,7 @@ pub trait Trigger: Send + Sync {
     /// `Err` says why the round could not be started.
     fn start<'a>(&'a self, pair_id: &'a str) -> BoxFuture<'a, Result<(), String>>;
 
-    /// `Err` says why the backup could not be started. A check request is
-    /// written to `request.json` before this call.
+    /// `Err` says why the backup could not be started.
     fn start_backup<'a>(&'a self, backup_id: &'a str) -> BoxFuture<'a, Result<(), String>>;
 }
 
@@ -940,5 +939,60 @@ mod tests {
     fn running_out_of_inotify_watches_is_recognized_as_enospc() {
         assert!(is_watch_limit(&io::Error::from_raw_os_error(28)));
         assert!(!is_watch_limit(&io::Error::from_raw_os_error(2)));
+    }
+
+    #[derive(Default)]
+    struct RecordingSystemctl(std::sync::Mutex<Vec<Vec<String>>>);
+
+    impl Systemctl for RecordingSystemctl {
+        fn run<'a>(&'a self, args: &'a [&'a str]) -> BoxFuture<'a, Result<(), String>> {
+            let call = args.iter().map(|arg| (*arg).to_owned()).collect();
+            self.0.lock().unwrap().push(call);
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn the_systemd_trigger_starts_the_backup_service_without_waiting() {
+        let systemctl = Arc::new(RecordingSystemctl::default());
+        let trigger = SystemdTrigger::new(Arc::clone(&systemctl) as Arc<dyn Systemctl>);
+
+        trigger.start_backup("docs").await.unwrap();
+
+        assert_eq!(
+            *systemctl.0.lock().unwrap(),
+            [["start", "--no-block", "syncfast-backup_docs.service"]]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_child_trigger_runs_backup_run_with_the_id() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("syncfast");
+        let argv = dir.path().join("argv");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\nprintf '%s ' \"$@\" > '{}'\n", argv.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        ChildTrigger::new(script)
+            .start_backup("docs")
+            .await
+            .unwrap();
+
+        for _ in 0..100 {
+            if let Ok(text) = std::fs::read_to_string(&argv)
+                && !text.is_empty()
+            {
+                assert_eq!(text.trim(), "backup-run docs");
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("the child never wrote its arguments");
     }
 }

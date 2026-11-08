@@ -85,7 +85,6 @@ pub struct NewBackup {
 }
 
 impl NewBackup {
-    /// A draft with the defaults of a new backup.
     #[must_use]
     pub fn with_defaults(name: String, id: String, paths: Vec<PathBuf>, dest: String) -> Self {
         let behavior = BackupBehavior::default();
@@ -278,7 +277,6 @@ pub fn backup_id<'a>(name: &str, taken: impl IntoIterator<Item = &'a str>) -> St
     unique_id(base, taken.into_iter().chain([TEST_ITEM_ID]))
 }
 
-/// [`backup_id`] among the backups in the config on disk.
 pub async fn new_backup_id(paths: &Paths, name: &str) -> String {
     let config = Config::load(paths).await.ok();
     let backups = config.as_ref().map_or(&[][..], Config::backups);
@@ -419,9 +417,12 @@ pub async fn add_existing_backup(
         .put(&backup.id, &backup.name, &key)
         .await
         .map_err(AddExistingError::Key)?;
-    add_to_config(env.paths(), &backup)
-        .await
-        .map_err(AddExistingError::NotSaved)?;
+    if let Err(reason) = add_to_config(env.paths(), &backup).await {
+        if let Err(delete) = env.keys.delete(&backup.id).await {
+            log::warn!("cannot delete the key of backup {}: {delete}", backup.id);
+        }
+        return Err(AddExistingError::NotSaved(reason));
+    }
     Ok(Applied {
         warnings: apply_warnings(&apply(&env.apply, &[]).await),
     })

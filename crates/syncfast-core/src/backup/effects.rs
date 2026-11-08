@@ -17,12 +17,10 @@ use super::run_decision::SkipReason;
 use super::state::{BackupState, BackupSummary, LastRun, LastSnapshot};
 use super::{CHECK_INTERVAL, PRUNE_FAILURES_BEFORE_GATE, STALE_FACTOR, STALE_MIN};
 
-/// `EX_TEMPFAIL`: the exit code that makes the unit try again in 15 minutes.
-pub const EXIT_TEMPFAIL: i32 = 75;
 /// Key in [`BackupState::notified`] for the "save the key" notification.
 pub const NOTIFIED_KEY_UNSAVED: &str = "key_unsaved";
 
-const LOCKED_DETAIL: &str = "The backup is in use by another process. It will try again.";
+const RETENTION_PREFIX: &str = "Old snapshots could not be cleaned up: ";
 const GATE_PREFIX: &str = "gate:";
 
 /// Something a person is told about, one per transition.
@@ -67,13 +65,6 @@ pub struct SkipContext<'a> {
     pub every: Every,
     /// The destination as the person wrote it, for messages.
     pub dest: &'a str,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkipEffect {
-    pub events: Vec<BackupEvent>,
-    /// 0, or [`EXIT_TEMPFAIL`] when the unit should try again.
-    pub exit_code: i32,
 }
 
 /// How long a backup may go without a snapshot, or a destination without
@@ -182,23 +173,17 @@ pub fn apply_skip(
     state: &mut BackupState,
     reason: SkipReason,
     ctx: &SkipContext<'_>,
-) -> SkipEffect {
+) -> Vec<BackupEvent> {
     match reason {
-        SkipReason::Paused | SkipReason::Gated => SkipEffect {
-            events: Vec::new(),
-            exit_code: 0,
-        },
+        SkipReason::Paused | SkipReason::Gated => Vec::new(),
         SkipReason::Offline => {
             state.offline = true;
-            SkipEffect {
-                events: Vec::new(),
-                exit_code: EXIT_TEMPFAIL,
-            }
+            Vec::new()
         }
         SkipReason::DestinationUnavailable => {
             state.destination_unavailable = true;
             let since = *state.unavailable_since.get_or_insert(ctx.now);
-            let events = if older_than(since, ctx.now, stale_limit(ctx.every)) {
+            if older_than(since, ctx.now, stale_limit(ctx.every)) {
                 apply_gate(
                     state,
                     ctx.now,
@@ -212,10 +197,6 @@ pub fn apply_skip(
                 )
             } else {
                 Vec::new()
-            };
-            SkipEffect {
-                events,
-                exit_code: EXIT_TEMPFAIL,
             }
         }
     }
@@ -264,8 +245,9 @@ pub fn apply_outcome(
                 Some(*fault),
             )
         }
-        BackupOutcome::Transient { detail } => apply_transient(state, detail, ctx),
-        BackupOutcome::Locked => apply_transient(state, LOCKED_DETAIL, ctx),
+        BackupOutcome::Transient { detail } | BackupOutcome::Locked { detail } => {
+            apply_transient(state, detail, ctx)
+        }
     }
 }
 
@@ -273,7 +255,9 @@ fn apply_success(state: &mut BackupState, warnings: u64, ctx: &RunContext) -> Ve
     let now = ctx.finished;
     let mut summary = ctx.summary.clone().unwrap_or_default();
     summary.warnings = warnings;
-    clear_gate(state);
+    if !is_retention_gate(state) {
+        clear_gate(state);
+    }
     state.notified.retain(|key| key != NOTIFIED_FAILURES);
     state.last_outcome = Some(LastOutcome::Ok);
     state.consecutive_failures = 0;
@@ -353,18 +337,18 @@ pub fn apply_retention_result(
     match result {
         Ok(()) => {
             state.prune_failures = 0;
+            state.prune_error = None;
+            if is_retention_gate(state) {
+                clear_gate(state);
+            }
             Vec::new()
         }
         Err(message) => {
             state.prune_failures = state.prune_failures.saturating_add(1);
+            let detail = retention_message(&message);
+            state.prune_error = Some(message);
             if state.prune_failures >= PRUNE_FAILURES_BEFORE_GATE {
-                apply_gate(
-                    state,
-                    now,
-                    GateKind::NeedsAttention,
-                    retention_message(&message),
-                    None,
-                )
+                apply_gate(state, now, GateKind::NeedsAttention, detail, None)
             } else {
                 Vec::new()
             }
@@ -374,7 +358,17 @@ pub fn apply_retention_result(
 
 #[must_use]
 pub fn retention_message(message: &str) -> String {
-    format!("Old snapshots could not be cleaned up: {message}")
+    format!("{RETENTION_PREFIX}{message}")
+}
+
+/// Only `forget` lifts this gate: a good backup in between leaves it, and its
+/// notification, alone.
+fn is_retention_gate(state: &BackupState) -> bool {
+    state.gate.as_ref().is_some_and(|gate| {
+        gate.kind == GateKind::NeedsAttention
+            && gate.fault.is_none()
+            && gate.detail.starts_with(RETENTION_PREFIX)
+    })
 }
 
 /// An agent created the backup: the person has yet to save the key. Said
@@ -749,21 +743,25 @@ mod tests {
     }
 
     #[test]
-    fn locked_is_transient_with_the_in_use_message() {
+    fn locked_counts_as_a_failure_and_says_the_message_restic_gave() {
         let mut state = BackupState::default();
         let context = RunContext {
             failures_after: 1,
             ..ctx()
         };
+        let locked = BackupOutcome::Locked {
+            detail: "unable to create lock in backend: repository is already locked".to_owned(),
+        };
 
-        let events = apply_outcome(&mut state, &BackupOutcome::Locked, &context);
+        let events = apply_outcome(&mut state, &locked, &context);
 
         assert_eq!(state.consecutive_failures, 1);
         assert_eq!(
             events,
             [BackupEvent::Failing {
                 failures: 1,
-                message: "The backup is in use by another process. It will try again.".to_owned()
+                message: "unable to create lock in backend: repository is already locked"
+                    .to_owned()
             }]
         );
     }
@@ -883,33 +881,26 @@ mod tests {
     }
 
     #[test]
-    fn paused_and_gated_skips_write_nothing_and_exit_zero() {
+    fn paused_and_gated_skips_write_nothing() {
         for reason in [SkipReason::Paused, SkipReason::Gated] {
             let mut state = BackupState::default();
 
-            let effect = apply_skip(&mut state, reason, &skip_ctx("/media/disk"));
+            let events = apply_skip(&mut state, reason, &skip_ctx("/media/disk"));
 
             assert_eq!(state, BackupState::default(), "{reason:?}");
-            assert_eq!(
-                effect,
-                SkipEffect {
-                    events: Vec::new(),
-                    exit_code: 0
-                }
-            );
+            assert_eq!(events, [], "{reason:?}");
         }
     }
 
     #[test]
-    fn an_offline_skip_marks_offline_and_asks_the_unit_to_retry() {
+    fn an_offline_skip_marks_offline_without_a_gate_or_a_notification() {
         let mut state = BackupState::default();
 
-        let effect = apply_skip(&mut state, SkipReason::Offline, &skip_ctx("gdrive:Backups"));
+        let events = apply_skip(&mut state, SkipReason::Offline, &skip_ctx("gdrive:Backups"));
 
         assert!(state.offline);
         assert_eq!(state.gate, None);
-        assert_eq!(effect.exit_code, 75);
-        assert_eq!(effect.events, []);
+        assert_eq!(events, []);
     }
 
     #[test]
@@ -941,8 +932,7 @@ mod tests {
 
         assert!(state.destination_unavailable);
         assert_eq!(state.unavailable_since, Some(now()));
-        assert_eq!(first.exit_code, 75);
-        assert_eq!(first.events, []);
+        assert_eq!(first, []);
         assert_eq!(state.gate, None);
     }
 
@@ -964,16 +954,15 @@ mod tests {
             &skip_ctx("/media/disk"),
         );
 
-        assert_eq!(first.exit_code, 75);
         assert_eq!(
-            first.events,
+            first,
             [BackupEvent::Gate {
                 kind: GateKind::NeedsAttention,
                 detail: "/media/disk has not been available since 2026-01-08".to_owned(),
                 fault: Some(Fault::DestinationMissing)
             }]
         );
-        assert_eq!(second.events, []);
+        assert_eq!(second, []);
         assert_eq!(state.gate.unwrap().fault, Some(Fault::DestinationMissing));
         assert_eq!(state.notified, ["gate:needs_attention:destination_missing"]);
     }
@@ -1033,15 +1022,17 @@ mod tests {
     }
 
     #[test]
-    fn a_successful_cleanup_resets_the_counter() {
+    fn a_successful_cleanup_resets_the_counter_and_forgets_the_message() {
         let mut state = BackupState {
             prune_failures: 2,
+            prune_error: Some("repository is locked".to_owned()),
             ..BackupState::default()
         };
 
         let events = apply_retention_result(&mut state, Ok(()), now());
 
         assert_eq!(state.prune_failures, 0);
+        assert_eq!(state.prune_error, None);
         assert_eq!(events, []);
     }
 
@@ -1085,6 +1076,85 @@ mod tests {
         assert_eq!(state.last_outcome, before_cleanup.last_outcome);
         assert_eq!(state.last_success, before_cleanup.last_success);
         assert_eq!(state.consecutive_failures, 0);
+    }
+
+    #[test]
+    fn every_failed_cleanup_keeps_its_message_even_before_the_gate() {
+        let mut state = BackupState::default();
+
+        apply_retention_result(&mut state, Err("first".to_owned()), now());
+        assert_eq!(state.prune_error.as_deref(), Some("first"));
+        assert_eq!(state.gate, None);
+
+        apply_retention_result(&mut state, Err("second".to_owned()), now());
+        assert_eq!(state.prune_error.as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn a_good_round_between_failed_cleanups_does_not_announce_the_gate_again() {
+        let mut state = BackupState {
+            prune_failures: 2,
+            ..BackupState::default()
+        };
+        let mut announced = Vec::new();
+
+        for _ in 0..3 {
+            announced.extend(apply_outcome(&mut state, &BackupOutcome::Ok, &ctx()));
+            announced.extend(apply_retention_result(
+                &mut state,
+                Err("repository is locked".to_owned()),
+                now(),
+            ));
+        }
+
+        let gates: Vec<_> = announced
+            .iter()
+            .filter(|event| matches!(event, BackupEvent::Gate { .. }))
+            .collect();
+        assert_eq!(gates.len(), 1);
+        assert_eq!(state.prune_failures, 5);
+        assert_eq!(state.notified, ["gate:needs_attention"]);
+        let gate = state.gate.unwrap();
+        assert_eq!(
+            gate.detail,
+            "Old snapshots could not be cleaned up: repository is locked"
+        );
+    }
+
+    #[test]
+    fn a_cleanup_that_works_again_lifts_its_gate_and_the_next_failure_is_announced() {
+        let mut state = BackupState {
+            prune_failures: 2,
+            ..BackupState::default()
+        };
+        apply_outcome(&mut state, &BackupOutcome::Ok, &ctx());
+        apply_retention_result(&mut state, Err("locked".to_owned()), now());
+        assert!(state.gate.is_some());
+
+        apply_outcome(&mut state, &BackupOutcome::Ok, &ctx());
+        apply_retention_result(&mut state, Ok(()), now());
+
+        assert_eq!(state.gate, None);
+        assert_eq!(state.prune_error, None);
+        assert!(state.notified.is_empty());
+        state.prune_failures = 2;
+        let again = apply_retention_result(&mut state, Err("locked".to_owned()), now());
+        assert_eq!(again.len(), 1);
+    }
+
+    #[test]
+    fn a_good_backup_still_clears_a_gate_that_forget_did_not_set() {
+        let mut state = BackupState {
+            gate: Some(attention_gate(before(HOUR), None)),
+            prune_failures: 3,
+            notified: vec!["gate:needs_attention".to_owned()],
+            ..BackupState::default()
+        };
+
+        apply_outcome(&mut state, &BackupOutcome::Ok, &ctx());
+
+        assert_eq!(state.gate, None);
+        assert!(state.notified.is_empty());
     }
 
     #[test]

@@ -1461,6 +1461,68 @@ mod tests {
         assert!(timer.contains("Description=syncfast backup timer: 100%% Documents\n"));
     }
 
+    fn on_path(program: &str) -> bool {
+        std::env::var_os("PATH")
+            .is_some_and(|dirs| std::env::split_paths(&dirs).any(|dir| dir.join(program).is_file()))
+    }
+
+    async fn verified_without_warnings(launcher: &Launcher, every: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = backup("docs", "Documents", every);
+        let service = dir.path().join(backup_service_name("docs"));
+        let timer = dir.path().join(backup_timer_name("docs"));
+        std::fs::write(&service, backup_service(&config, launcher)).unwrap();
+        std::fs::write(&timer, backup_timer(&config)).unwrap();
+
+        let mut command = Command::new("systemd-analyze");
+        command
+            .args(["verify", "--user"])
+            .arg(&timer)
+            .arg(&service)
+            .kill_on_drop(true);
+        let output = tokio::time::timeout(Duration::from_secs(30), command.output())
+            .await
+            .expect("systemd-analyze verify did not finish in 30 s")
+            .unwrap();
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // systemd-analyze also reports the user's own environment.d files.
+        let complaints = stderr
+            .lines()
+            .filter(|line| !line.contains("/environment.d/"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            output.status.success() && complaints.is_empty(),
+            "{every}: systemd-analyze verify said: {complaints}"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::print_stderr)]
+    async fn the_native_backup_units_pass_systemd_analyze_verify_for_every_schedule() {
+        if !on_path("systemd-analyze") {
+            eprintln!("skipped: systemd-analyze is not installed");
+            return;
+        }
+        let launcher = native_with_restic("/bin/sh", "/bin/sh", "/bin/sh");
+
+        for every in ["hourly", "daily", "weekly"] {
+            verified_without_warnings(&launcher, every).await;
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::print_stderr)]
+    async fn the_flatpak_backup_units_pass_systemd_analyze_verify() {
+        if !on_path("systemd-analyze") || !on_path("flatpak") {
+            eprintln!("skipped: systemd-analyze or flatpak is not installed");
+            return;
+        }
+
+        verified_without_warnings(&flatpak_launcher(), "daily").await;
+    }
+
     #[tokio::test]
     async fn installed_backup_ids_ignore_sync_units_and_installed_ids_ignore_backup_units() {
         let dir = tempfile::tempdir().unwrap();
