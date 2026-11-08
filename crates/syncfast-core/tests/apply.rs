@@ -14,8 +14,9 @@ use common::Bed;
 use syncfast_core::backup::key::Key;
 use syncfast_core::backup::keystore::{KeyStore, MemoryKeyStore};
 use syncfast_core::backup::state::BackupState;
+use syncfast_core::bisync::Fault;
 use syncfast_core::network::BoxFuture;
-use syncfast_core::state::{GateKind, State, try_lock_pair};
+use syncfast_core::state::{Gate, GateKind, State, try_lock_pair};
 use syncfast_core::units::{ApplyEnv, ApplyReport, Systemctl, SystemdMode, apply};
 
 const BIN: &str = "/opt/syncfast bin/syncfast";
@@ -1026,6 +1027,43 @@ async fn a_config_error_gate_ends_when_the_backup_is_valid_again() {
             "syncfast-watch.service"
         ]
     );
+}
+
+#[tokio::test]
+async fn an_invalid_backup_does_not_replace_the_damaged_gate_and_fixing_it_keeps_it() {
+    let bed = Bed::new();
+    write_backups(&bed, &[backup_text(&bed, "docs", "")]);
+    let systemctl = FakeSystemctl::default();
+    apply_backups(&bed, SystemdMode::Off, &systemctl).await;
+    let damaged = Gate {
+        kind: GateKind::NeedsAttention,
+        since: jiff::Timestamp::now(),
+        detail: "The check found 2 damaged files in the backup. Backups and cleanup are paused."
+            .to_owned(),
+        fault: Some(Fault::RepoDamaged),
+        auto_checked: None,
+    };
+    BackupState {
+        gate: Some(damaged.clone()),
+        ..BackupState::default()
+    }
+    .save(&bed.paths, "docs")
+    .await
+    .unwrap();
+    write_backups(&bed, &[backup_text(&bed, "docs", "every = \"monthly\"\n")]);
+
+    let report = apply_backups(&bed, SystemdMode::Off, &systemctl).await;
+
+    assert_eq!(report.invalid_backups.len(), 1);
+    let state = BackupState::load(&bed.paths, "docs").await.unwrap();
+    assert_eq!(state.gate, Some(damaged.clone()));
+    write_backups(&bed, &[backup_text(&bed, "docs", "")]);
+
+    let report = apply_backups(&bed, SystemdMode::Off, &systemctl).await;
+
+    assert!(report.is_empty(), "{report}");
+    let state = BackupState::load(&bed.paths, "docs").await.unwrap();
+    assert_eq!(state.gate, Some(damaged));
 }
 
 #[tokio::test]

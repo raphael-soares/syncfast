@@ -11,6 +11,7 @@ use syncfast_core::backup::destination::Destination;
 use syncfast_core::backup::effects::retention_message;
 use syncfast_core::backup::run::KEY_ABSENT;
 use syncfast_core::backup::snapshots::SnapshotView;
+use syncfast_core::backup::state::CheckKind;
 use syncfast_core::backup::status::{BackupProgressFile, BackupStatus};
 use syncfast_core::bisync::Fault;
 use syncfast_core::restic::backup_host;
@@ -21,11 +22,12 @@ use super::detail::padded;
 use super::format::{bytes, duration, eta, started};
 use super::menu::{self, Tone};
 use super::widgets::{
-    AnyStatus, BadgeSize, ButtonKind, button_with_icon, empty_state, icon_button, inline_error,
-    list_row, progress_bar, secondary_button, segmented, status_badge, toolbar,
+    AlertButton, AnyStatus, BadgeSize, ButtonKind, alert, button_with_icon, empty_state,
+    icon_button, inline_error, list_row, progress_bar, secondary_button, segmented, status_badge,
+    toolbar,
 };
 use super::{Action, ViewModel, filters};
-use crate::backup_runs::{BackupRunEntry, RunResult};
+use crate::backup_runs::{BackupRunEntry, RunKind, RunResult};
 use crate::icons::Icon;
 use crate::snapshot::BackupSnapshot;
 use crate::theme::{self, Palette, radius, size, space};
@@ -120,6 +122,7 @@ pub fn detail(ui: &mut Ui, vm: &ViewModel, backup: &BackupSnapshot) -> Vec<Actio
                 BackupTab::Settings => actions.extend(backup_settings::show(ui, vm, backup)),
             });
     });
+    full_check_alert(ui.ctx(), backup, &mut actions);
     actions
 }
 
@@ -143,16 +146,15 @@ fn account_of(backup: &BackupSnapshot) -> Option<String> {
     }
 }
 
-/// A gate that is not `needs_attention` holds the backup; the next
-/// attempt of a `needs_attention` one may succeed.
+/// A gate that is not `needs_attention` holds the backup, and so does a
+/// damaged repository; the next attempt of any other `needs_attention` one
+/// may succeed.
 fn can_back_up(backup: &BackupSnapshot) -> bool {
     backup.running.is_none()
         && !backup.config.paths.is_empty()
-        && backup
-            .state
-            .gate
-            .as_ref()
-            .is_none_or(|gate| gate.kind == GateKind::NeedsAttention)
+        && backup.state.gate.as_ref().is_none_or(|gate| {
+            gate.kind == GateKind::NeedsAttention && gate.fault != Some(Fault::RepoDamaged)
+        })
 }
 
 fn back_up_button(ui: &mut Ui, backup: &BackupSnapshot, actions: &mut Vec<Action>) {
@@ -184,6 +186,10 @@ fn pause_button(ui: &mut Ui, backup: &BackupSnapshot, actions: &mut Vec<Action>)
     }
 }
 
+fn full_check_key(id: &str) -> Id {
+    Id::new(("backup-full-check", id))
+}
+
 fn more_menu(
     button: &egui::Response,
     backup: &BackupSnapshot,
@@ -191,9 +197,35 @@ fn more_menu(
     actions: &mut Vec<Action>,
 ) {
     let id = &backup.config.id;
+    let check_tone = if backup.running.is_some() {
+        Tone::Disabled
+    } else {
+        Tone::Normal
+    };
     menu::popup(button, palette, |ui| {
         if menu::item(ui, palette, Icon::KeyRound, "Show Key…", Tone::Normal) {
             actions.push(Action::ShowBackupKey(id.clone()));
+        }
+        ui.separator();
+        ui.label(
+            RichText::new("Check Now")
+                .font(theme::subheadline())
+                .color(palette.dim),
+        );
+        if menu::item(ui, palette, Icon::ShieldCheck, "Quick Check", check_tone) {
+            actions.push(Action::CheckBackup {
+                id: id.clone(),
+                kind: CheckKind::Quick,
+            });
+        }
+        if menu::item(ui, palette, Icon::ShieldCheck, "Check Sample", check_tone) {
+            actions.push(Action::CheckBackup {
+                id: id.clone(),
+                kind: CheckKind::Sample,
+            });
+        }
+        if menu::item(ui, palette, Icon::ShieldCheck, "Full Check…", check_tone) {
+            ui.data_mut(|data| data.insert_temp(full_check_key(id), true));
         }
         if local_destination(backup) {
             ui.separator();
@@ -212,6 +244,34 @@ fn more_menu(
             actions.push(Action::RemoveBackup(id.clone()));
         }
     });
+}
+
+fn full_check_alert(ctx: &egui::Context, backup: &BackupSnapshot, actions: &mut Vec<Action>) {
+    let key = full_check_key(&backup.config.id);
+    if !ctx.data(|data| data.get_temp::<bool>(key)).unwrap_or(false) {
+        return;
+    }
+    let text = format!(
+        "This downloads everything from {} and can take hours.",
+        backup.config.dest
+    );
+    let chosen = alert(
+        ctx,
+        "backup-full-check",
+        "Read all backup data?",
+        &text,
+        &[AlertButton::cancel("Cancel"), AlertButton::normal("Check")],
+        |_| {},
+    );
+    if let Some(index) = chosen {
+        ctx.data_mut(|data| data.remove::<bool>(key));
+        if index == 1 {
+            actions.push(Action::CheckBackup {
+                id: backup.config.id.clone(),
+                kind: CheckKind::Full,
+            });
+        }
+    }
 }
 
 fn key_card(ui: &mut Ui, id: &str, palette: &Palette, actions: &mut Vec<Action>) {
@@ -352,7 +412,13 @@ fn needs_attention_card(backup: &BackupSnapshot, gate: &Gate) -> CardText {
         )),
         Some(Fault::RepoDamaged) => with_detail(
             "The check found damaged data. Backups are paused until you review it.".to_owned(),
-            None,
+            Some((
+                "Check Again",
+                Action::CheckBackup {
+                    id,
+                    kind: CheckKind::Full,
+                },
+            )),
         ),
         Some(Fault::LocalEmpty | Fault::RemoteEmpty) | None => {
             let cleanup = backup.state.prune_error.as_deref().map(retention_message);
@@ -406,7 +472,7 @@ fn base_card_text(backup: &BackupSnapshot, now: Timestamp) -> CardText {
         ),
         BackupStatus::Retrying => "The last backup failed. It will try again soon.".into(),
         BackupStatus::UpToDate | BackupStatus::SaveKey => last_backup_line(backup, now),
-        BackupStatus::BackingUp | BackupStatus::Error => String::new(),
+        BackupStatus::BackingUp | BackupStatus::Checking | BackupStatus::Error => String::new(),
     })
 }
 
@@ -445,6 +511,10 @@ fn status_card(
             status_badge(ui, backup.status, BadgeSize::Large);
             if backup.status == BackupStatus::BackingUp {
                 progress_block(ui, backup.progress.as_ref(), palette);
+                return;
+            }
+            if backup.status == BackupStatus::Checking {
+                progress_bar(ui, "Check progress", None);
                 return;
             }
             let text = card_text(backup, now);
@@ -640,23 +710,48 @@ fn activity_tab(
     Vec::new()
 }
 
+fn check_label(kind: Option<CheckKind>) -> &'static str {
+    match kind {
+        Some(CheckKind::Quick) => "Quick check",
+        Some(CheckKind::Sample) => "Sample check",
+        Some(CheckKind::Full) => "Full check",
+        None => "Check",
+    }
+}
+
 fn run_status(run: &BackupRunEntry) -> AnyStatus {
-    let status = match run.result {
-        RunResult::Running => BackupStatus::BackingUp,
-        RunResult::Failed => BackupStatus::Failing,
+    let status = match (run.kind, run.result) {
+        (RunKind::Backup, RunResult::Running) => BackupStatus::BackingUp,
+        (RunKind::Check(_), RunResult::Running) => BackupStatus::Checking,
+        (_, RunResult::Failed) => BackupStatus::Failing,
+        (RunKind::Check(_), _) if run.check_errors.unwrap_or(0) > 0 => BackupStatus::Failing,
         _ => BackupStatus::UpToDate,
     };
     status.into()
 }
 
 fn run_counters(run: &BackupRunEntry) -> String {
-    if let RunResult::DoneWithWarnings(files) = run.result {
-        return format!("{} could not be read", plural_files(files));
-    }
-    match (run.files_changed_total(), run.data_added) {
-        (Some(files), Some(added)) => format!("+{files} new \u{b7} {}", bytes(added)),
-        (Some(files), None) => format!("+{files} new"),
-        _ => String::new(),
+    match run.kind {
+        RunKind::Backup => {
+            if let RunResult::DoneWithWarnings(files) = run.result {
+                return format!("{} could not be read", plural_files(files));
+            }
+            match (run.files_changed_total(), run.data_added) {
+                (Some(files), Some(added)) => format!("+{files} new \u{b7} {}", bytes(added)),
+                (Some(files), None) => format!("+{files} new"),
+                _ => String::new(),
+            }
+        }
+        RunKind::Check(kind) => {
+            let found = match run.check_errors {
+                Some(0) => "OK".to_owned(),
+                Some(1) => "1 error".to_owned(),
+                Some(errors) => format!("{errors} errors"),
+                None if run.result == RunResult::Failed => "Failed".to_owned(),
+                None => String::new(),
+            };
+            format!("{} \u{b7} {found}", check_label(kind))
+        }
     }
 }
 

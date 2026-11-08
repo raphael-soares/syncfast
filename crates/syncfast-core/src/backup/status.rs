@@ -18,11 +18,13 @@ pub const FAILING_AFTER: u32 = 3;
 #[serde(rename_all = "snake_case")]
 pub enum RunningStep {
     Backup,
+    Check,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackupStatus {
     BackingUp,
+    Checking,
     Error,
     SaveKey,
     Paused,
@@ -37,7 +39,7 @@ impl BackupStatus {
     #[must_use]
     pub fn tone(self) -> Tone {
         match self {
-            Self::BackingUp | Self::SaveKey => Tone::Accent,
+            Self::BackingUp | Self::Checking | Self::SaveKey => Tone::Accent,
             Self::Error | Self::Failing => Tone::Danger,
             Self::Paused | Self::Offline | Self::Unavailable => Tone::Dim,
             Self::Retrying | Self::UpToDate => Tone::Secondary,
@@ -49,6 +51,7 @@ impl BackupStatus {
     pub fn icon(self) -> &'static str {
         match self {
             Self::BackingUp => "refresh-cw",
+            Self::Checking => "shield-check",
             Self::Error | Self::Failing => "circle-alert",
             Self::SaveKey => "key-round",
             Self::Paused => "pause",
@@ -63,6 +66,7 @@ impl BackupStatus {
     pub fn label(self) -> &'static str {
         match self {
             Self::BackingUp => "Backing up…",
+            Self::Checking => "Checking…",
             Self::Error => "Needs attention",
             Self::SaveKey => "Save the key",
             Self::Paused => "Paused",
@@ -79,6 +83,7 @@ impl BackupStatus {
     pub fn name(self) -> &'static str {
         match self {
             Self::BackingUp => "backing_up",
+            Self::Checking => "checking",
             Self::Error => "error",
             Self::SaveKey => "save_key",
             Self::Paused => "paused",
@@ -103,6 +108,7 @@ pub fn display_backup_status(
     let errored = state.last_outcome == Some(LastOutcome::Error);
     match running {
         Some(RunningStep::Backup) => BackupStatus::BackingUp,
+        Some(RunningStep::Check) => BackupStatus::Checking,
         None if matches!(
             gate,
             Some(GateKind::ConfigError | GateKind::AuthError | GateKind::NeedsAttention)
@@ -144,6 +150,7 @@ pub struct BackupProgressFile {
 }
 
 impl BackupProgressFile {
+    /// A step that reports no numbers, such as a check.
     #[must_use]
     pub fn of_step(step: RunningStep) -> Self {
         Self {
@@ -259,6 +266,19 @@ mod tests {
         assert_eq!(
             display_backup_status(&backup(false), &state, Some(RunningStep::Backup)),
             BackupStatus::BackingUp
+        );
+    }
+
+    #[test]
+    fn row_1b_a_running_check_is_checking() {
+        let state = BackupState {
+            gate: Some(gate(GateKind::NeedsAttention, Some(Fault::RepoDamaged))),
+            ..BackupState::default()
+        };
+
+        assert_eq!(
+            display_backup_status(&backup(true), &state, Some(RunningStep::Check)),
+            BackupStatus::Checking
         );
     }
 
@@ -380,6 +400,12 @@ mod tests {
                 "refresh-cw",
             ),
             (
+                BackupStatus::Checking,
+                "Checking…",
+                Tone::Accent,
+                "shield-check",
+            ),
+            (
                 BackupStatus::Error,
                 "Needs attention",
                 Tone::Danger,
@@ -430,6 +456,7 @@ mod tests {
     fn names_are_distinct_snake_case() {
         let all = [
             BackupStatus::BackingUp,
+            BackupStatus::Checking,
             BackupStatus::Error,
             BackupStatus::SaveKey,
             BackupStatus::Paused,
@@ -452,12 +479,11 @@ mod tests {
 
     #[test]
     fn the_progress_file_spells_the_step_in_snake_case() {
-        let json =
-            serde_json::to_string(&BackupProgressFile::of_step(RunningStep::Backup)).unwrap();
+        let json = serde_json::to_string(&BackupProgressFile::of_step(RunningStep::Check)).unwrap();
 
-        assert!(json.contains(r#""step":"backup""#), "{json}");
+        assert!(json.contains(r#""step":"check""#), "{json}");
         let back: BackupProgressFile = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, BackupProgressFile::of_step(RunningStep::Backup));
+        assert_eq!(back, BackupProgressFile::of_step(RunningStep::Check));
     }
 
     #[test]
@@ -502,7 +528,7 @@ mod tests {
         let paths = paths_in(dir.path());
         let file = paths.backup_progress_file("docs");
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(&file, r#"{"step":"backup"}"#).unwrap();
+        std::fs::write(&file, r#"{"step":"check"}"#).unwrap();
 
         assert_eq!(running_step(&paths, "docs"), None);
     }
@@ -516,9 +542,9 @@ mod tests {
             .unwrap();
         let file = paths.backup_progress_file("docs");
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(&file, r#"{"step":"backup","percent_done":0.5}"#).unwrap();
+        std::fs::write(&file, r#"{"step":"check"}"#).unwrap();
 
-        assert_eq!(running_step(&paths, "docs"), Some(RunningStep::Backup));
+        assert_eq!(running_step(&paths, "docs"), Some(RunningStep::Check));
         assert_eq!(running_step(&paths, "photos"), None);
     }
 

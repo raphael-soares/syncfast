@@ -34,7 +34,22 @@ A backup stops by itself, and does not delete anything, when it cannot run safel
 | `<folder>` is empty. | If the folder is on a disk, mount it. An empty folder is never backed up, so an unmounted disk cannot replace good snapshots. |
 | Backups have failed since `<date>`: … | Open the **Activity** tab and read the last lines of a failed run. |
 | Old snapshots could not be cleaned up: … | The backups work, but retention could not delete old data. Read the reason. The cleanup is tried again after every backup; the card shows after the third failure in a row and goes away when one works. |
+| The check found damaged data. Backups are paused until you review it. | See [Backups are paused after a check](#backups-are-paused-after-a-check). |
 | A message from the configuration | The backup is invalid, for example a destination that now overlaps a sync. Fix it in the **Settings** tab. |
+
+## Backups are paused after a check
+
+Each month a backup reads a sample of the data it stored, and after a series of failed backups it checks the structure of the repository. A check can also be run by hand from the **...** menu, **Check Now**: **Quick Check** reads no data, **Check Sample** reads about 5%, and **Full Check…** reads everything and can take hours on Google Drive.
+
+When a check finds damaged data, the backup shows **Needs attention** with the number of damaged files. syncfast then stops backing up and cleaning old snapshots, because a new snapshot on top of a damaged pack would spread the damage. Nothing is deleted.
+
+1. Read the [restic troubleshooting guide](https://restic.readthedocs.io/en/stable/077_troubleshooting.html). syncfast never runs `restic repair`; guided repair is planned for a later phase.
+2. Find the cause. A full disk, a drive that was unplugged during a backup and a bad sector are common. For a Google Drive backup, a damaged pack is usually a network problem during an upload.
+3. After the repair, press **Check Again**. It runs a full check, and the pause ends only when that check finds nothing. A quick check or a sample that finds nothing does not end it.
+
+The **Activity** tab lists every check with its kind and result (`Full check · 2 errors`) and keeps the log.
+
+A backup that says it is in use by another process found a lock from another run of restic, for example a backup from another computer. It waits and tries again by itself. A lock left by a run that died is removed automatically.
 
 ## Key storage is not available
 

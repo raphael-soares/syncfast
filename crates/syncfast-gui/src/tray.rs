@@ -147,7 +147,9 @@ impl BackupSummary {
         Self {
             count: backups.len(),
             runnable: backups.iter().filter(|backup| backup.runnable).count(),
-            running: count_of(|status| status == BackupStatus::BackingUp),
+            running: count_of(|status| {
+                matches!(status, BackupStatus::BackingUp | BackupStatus::Checking)
+            }),
             attention: count_of(|status| {
                 matches!(status, BackupStatus::Error | BackupStatus::Failing)
             }),

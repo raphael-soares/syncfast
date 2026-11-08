@@ -11,15 +11,21 @@ use jiff::{SignedDuration, Timestamp};
 use crate::bisync::Fault;
 use crate::state::{Gate, GateKind, LastOutcome, NOTIFIED_FAILURES};
 
+use super::check::CheckOutcome;
 use super::classify::BackupOutcome;
 use super::config::Every;
 use super::run_decision::SkipReason;
-use super::state::{BackupState, BackupSummary, LastRun, LastSnapshot};
-use super::{CHECK_INTERVAL, PRUNE_FAILURES_BEFORE_GATE, STALE_FACTOR, STALE_MIN};
+use super::state::{BackupState, BackupSummary, CheckKind, LastCheck, LastRun, LastSnapshot};
+use super::{
+    AFTER_FAILURE_CHECK, CHECK_INTERVAL, PRUNE_FAILURES_BEFORE_GATE, STALE_FACTOR, STALE_MIN,
+};
 
 /// Key in [`BackupState::notified`] for the "save the key" notification.
 pub const NOTIFIED_KEY_UNSAVED: &str = "key_unsaved";
 
+/// What a backup says when restic still reports a lock after `unlock`: the
+/// lock is alive, so it belongs to a process that is still working.
+pub const LOCKED_DETAIL: &str = "The backup is in use by another process. It will try again.";
 const RETENTION_PREFIX: &str = "Old snapshots could not be cleaned up: ";
 const GATE_PREFIX: &str = "gate:";
 
@@ -202,13 +208,17 @@ pub fn apply_skip(
     }
 }
 
-/// Step 6, item 6: the key cannot be had. It counts as a failure.
+/// Step 6, item 6: the key cannot be had. It counts as a failure. A damaged
+/// repository keeps its gate, which only a full check clears.
 pub fn apply_key_failure(
     state: &mut BackupState,
     detail: String,
     now: Timestamp,
 ) -> Vec<BackupEvent> {
     record_failure(state, now);
+    if is_damaged_gate(state) {
+        return Vec::new();
+    }
     apply_gate(
         state,
         now,
@@ -216,6 +226,19 @@ pub fn apply_key_failure(
         detail,
         Some(Fault::KeyMissing),
     )
+}
+
+/// The configuration of the backup is invalid. A damaged repository keeps
+/// its gate, which only a full check clears; the caller logs the message.
+pub fn apply_config_error(
+    state: &mut BackupState,
+    now: Timestamp,
+    message: String,
+) -> Vec<BackupEvent> {
+    if is_damaged_gate(state) {
+        return Vec::new();
+    }
+    apply_gate(state, now, GateKind::ConfigError, message, None)
 }
 
 /// Step 6, item 9.
@@ -245,9 +268,8 @@ pub fn apply_outcome(
                 Some(*fault),
             )
         }
-        BackupOutcome::Transient { detail } | BackupOutcome::Locked { detail } => {
-            apply_transient(state, detail, ctx)
-        }
+        BackupOutcome::Transient { detail } => apply_transient(state, detail, ctx),
+        BackupOutcome::Locked => apply_transient(state, LOCKED_DETAIL, ctx),
     }
 }
 
@@ -326,6 +348,90 @@ fn apply_transient(state: &mut BackupState, detail: &str, ctx: &RunContext) -> V
         ));
     }
     events
+}
+
+/// The check a successful backup earns when the monthly one is due.
+#[must_use]
+pub fn monthly_check(state: &BackupState, now: Timestamp) -> Option<CheckKind> {
+    state
+        .next_check
+        .is_some_and(|due| due <= now)
+        .then_some(CheckKind::Sample)
+}
+
+/// The check that follows a backup that failed for no known cause, once per
+/// series of failures. Marks it done.
+pub fn take_post_failure_check(
+    state: &mut BackupState,
+    outcome: &BackupOutcome,
+) -> Option<CheckKind> {
+    if !matches!(outcome, BackupOutcome::Transient { .. }) || state.check_after_failure_done {
+        return None;
+    }
+    state.check_after_failure_done = true;
+    Some(AFTER_FAILURE_CHECK)
+}
+
+/// What the check found, as the gate says it.
+#[must_use]
+pub fn damaged_message(files: u64) -> String {
+    let noun = if files == 1 { "file" } else { "files" };
+    format!("The check found {files} damaged {noun} in the backup. Backups and cleanup are paused.")
+}
+
+pub(crate) fn is_damaged_gate(state: &BackupState) -> bool {
+    state.gate.as_ref().is_some_and(|gate| {
+        gate.kind == GateKind::NeedsAttention && gate.fault == Some(Fault::RepoDamaged)
+    })
+}
+
+/// Step 8: the result of one `restic check`. A check that did not finish
+/// (`Failed`, `Locked`) counts as a failed round only when `counts_failure`
+/// is set; the caller clears it when a backup's own result already counted
+/// or has just succeeded.
+pub fn apply_check(
+    state: &mut BackupState,
+    kind: CheckKind,
+    outcome: &CheckOutcome,
+    ctx: &RunContext,
+    counts_failure: bool,
+) -> Vec<BackupEvent> {
+    let now = ctx.finished;
+    match outcome {
+        CheckOutcome::Ok => {
+            state.last_check = Some(LastCheck {
+                at: now,
+                kind,
+                ok: true,
+                detail: String::new(),
+            });
+            if kind != CheckKind::Quick {
+                state.next_check = now.checked_add(CHECK_INTERVAL).ok();
+            }
+            if kind == CheckKind::Full && is_damaged_gate(state) {
+                clear_gate(state);
+            }
+            Vec::new()
+        }
+        CheckOutcome::Damaged { detail, .. } => {
+            state.last_check = Some(LastCheck {
+                at: now,
+                kind,
+                ok: false,
+                detail: detail.clone(),
+            });
+            apply_gate(
+                state,
+                now,
+                GateKind::NeedsAttention,
+                damaged_message(outcome.damaged_files()),
+                Some(Fault::RepoDamaged),
+            )
+        }
+        CheckOutcome::Locked if counts_failure => apply_transient(state, LOCKED_DETAIL, ctx),
+        CheckOutcome::Failed(detail) if counts_failure => apply_transient(state, detail, ctx),
+        CheckOutcome::Locked | CheckOutcome::Failed(_) => Vec::new(),
+    }
 }
 
 /// Step 6, item 10: the result of `forget --prune` after a backup.
@@ -746,25 +852,21 @@ mod tests {
     }
 
     #[test]
-    fn locked_counts_as_a_failure_and_says_the_message_restic_gave() {
+    fn locked_counts_as_a_failure_and_says_the_repository_is_in_use() {
         let mut state = BackupState::default();
         let context = RunContext {
             failures_after: 1,
             ..ctx()
         };
-        let locked = BackupOutcome::Locked {
-            detail: "unable to create lock in backend: repository is already locked".to_owned(),
-        };
 
-        let events = apply_outcome(&mut state, &locked, &context);
+        let events = apply_outcome(&mut state, &BackupOutcome::Locked, &context);
 
         assert_eq!(state.consecutive_failures, 1);
         assert_eq!(
             events,
             [BackupEvent::Failing {
                 failures: 1,
-                message: "unable to create lock in backend: repository is already locked"
-                    .to_owned()
+                message: "The backup is in use by another process. It will try again.".to_owned()
             }]
         );
     }
@@ -1022,6 +1124,49 @@ mod tests {
         );
         assert_eq!(second, []);
         assert_eq!(state.notified, ["gate:needs_attention:key_missing"]);
+    }
+
+    #[test]
+    fn a_missing_key_counts_but_does_not_replace_the_damaged_gate() {
+        let mut state = damaged_state();
+        let before = state.gate.clone();
+
+        let events = apply_key_failure(&mut state, "no key".to_owned(), now());
+
+        assert_eq!(events, []);
+        assert_eq!(state.gate, before);
+        assert_eq!(state.consecutive_failures, 1);
+        assert_eq!(state.last_outcome, Some(LastOutcome::Error));
+        assert_eq!(state.notified, ["gate:needs_attention:repo_damaged"]);
+    }
+
+    #[test]
+    fn a_config_error_sets_its_gate_when_nothing_holds_the_backup() {
+        let mut state = BackupState::default();
+
+        let events = apply_config_error(&mut state, now(), "bad dest".to_owned());
+
+        assert_eq!(state.gate.as_ref().unwrap().kind, GateKind::ConfigError);
+        assert_eq!(
+            events,
+            [BackupEvent::Gate {
+                kind: GateKind::ConfigError,
+                detail: "bad dest".to_owned(),
+                fault: None
+            }]
+        );
+    }
+
+    #[test]
+    fn a_config_error_does_not_replace_the_damaged_gate() {
+        let mut state = damaged_state();
+        let before = state.gate.clone();
+
+        let events = apply_config_error(&mut state, now(), "bad dest".to_owned());
+
+        assert_eq!(events, []);
+        assert_eq!(state.gate, before);
+        assert_eq!(state.notified, ["gate:needs_attention:repo_damaged"]);
     }
 
     #[test]
@@ -1283,5 +1428,351 @@ mod tests {
         );
         assert_eq!(gate_key(GateKind::AuthError, None), "gate:auth_error");
         assert_eq!(gate_key(GateKind::ConfigError, None), "gate:config_error");
+    }
+
+    fn damaged(packs: &[&str]) -> CheckOutcome {
+        CheckOutcome::Damaged {
+            errors: 1,
+            broken_packs: packs.iter().map(|pack| (*pack).to_owned()).collect(),
+            detail: "pack aa contains 1 error".to_owned(),
+        }
+    }
+
+    fn damaged_state() -> BackupState {
+        let mut state = BackupState::default();
+        apply_check(&mut state, CheckKind::Full, &damaged(&["aa"]), &ctx(), true);
+        state
+    }
+
+    #[test]
+    fn a_sample_check_that_is_due_is_asked_for_and_a_good_one_moves_the_next_to_thirty_days() {
+        let mut state = BackupState {
+            next_check: Some(before(1)),
+            ..BackupState::default()
+        };
+
+        assert_eq!(monthly_check(&state, now()), Some(CheckKind::Sample));
+        apply_check(
+            &mut state,
+            CheckKind::Sample,
+            &CheckOutcome::Ok,
+            &ctx(),
+            false,
+        );
+
+        assert_eq!(
+            state.next_check,
+            Some(now().checked_add(CHECK_INTERVAL).unwrap())
+        );
+        assert_eq!(monthly_check(&state, now()), None);
+        assert_eq!(
+            monthly_check(&state, before(-30 * 24 * HOUR)),
+            Some(CheckKind::Sample)
+        );
+    }
+
+    #[test]
+    fn a_sample_check_is_due_exactly_when_the_time_comes_and_never_without_a_date() {
+        let due = BackupState {
+            next_check: Some(now()),
+            ..BackupState::default()
+        };
+        let later = BackupState {
+            next_check: Some(before(-1)),
+            ..BackupState::default()
+        };
+
+        assert_eq!(monthly_check(&due, now()), Some(CheckKind::Sample));
+        assert_eq!(monthly_check(&later, now()), None);
+        assert_eq!(monthly_check(&BackupState::default(), now()), None);
+    }
+
+    #[test]
+    fn a_quick_check_does_not_move_the_next_sample_but_the_full_one_does() {
+        let soon = before(-HOUR);
+        let mut state = BackupState {
+            next_check: Some(soon),
+            ..BackupState::default()
+        };
+
+        apply_check(
+            &mut state,
+            CheckKind::Quick,
+            &CheckOutcome::Ok,
+            &ctx(),
+            true,
+        );
+        assert_eq!(state.next_check, Some(soon));
+        apply_check(&mut state, CheckKind::Full, &CheckOutcome::Ok, &ctx(), true);
+
+        assert_eq!(
+            state.next_check,
+            Some(now().checked_add(CHECK_INTERVAL).unwrap())
+        );
+    }
+
+    #[test]
+    fn a_good_check_is_recorded_with_its_kind_and_time() {
+        let mut state = BackupState::default();
+
+        let events = apply_check(
+            &mut state,
+            CheckKind::Quick,
+            &CheckOutcome::Ok,
+            &ctx(),
+            true,
+        );
+
+        assert_eq!(events, []);
+        assert_eq!(
+            state.last_check,
+            Some(LastCheck {
+                at: now(),
+                kind: CheckKind::Quick,
+                ok: true,
+                detail: String::new()
+            })
+        );
+    }
+
+    #[test]
+    fn three_failed_backups_in_a_row_run_exactly_one_post_failure_check() {
+        let mut state = BackupState::default();
+        let mut asked = Vec::new();
+
+        for _ in 0..3 {
+            let outcome = transient("connection reset");
+            apply_outcome(&mut state, &outcome, &ctx());
+            asked.extend(take_post_failure_check(&mut state, &outcome));
+        }
+
+        assert_eq!(asked, [CheckKind::Quick]);
+        assert!(state.check_after_failure_done);
+    }
+
+    #[test]
+    fn the_post_failure_check_reads_no_data_and_a_good_backup_earns_another() {
+        let mut state = BackupState::default();
+        let failed = transient("connection reset");
+        apply_outcome(&mut state, &failed, &ctx());
+        assert_eq!(
+            take_post_failure_check(&mut state, &failed),
+            Some(AFTER_FAILURE_CHECK)
+        );
+        assert_eq!(AFTER_FAILURE_CHECK, CheckKind::Quick);
+
+        apply_outcome(&mut state, &BackupOutcome::Ok, &ctx());
+        assert!(!state.check_after_failure_done);
+        apply_outcome(&mut state, &failed, &ctx());
+
+        assert_eq!(
+            take_post_failure_check(&mut state, &failed),
+            Some(AFTER_FAILURE_CHECK)
+        );
+    }
+
+    #[test]
+    fn only_a_failure_without_a_known_cause_asks_for_the_post_failure_check() {
+        for outcome in [
+            BackupOutcome::Ok,
+            BackupOutcome::OkWithWarnings { warnings: 1 },
+            BackupOutcome::Cancelled,
+            BackupOutcome::AuthError,
+            BackupOutcome::Locked,
+            needs(Fault::Quota),
+        ] {
+            let mut state = BackupState::default();
+
+            assert_eq!(
+                take_post_failure_check(&mut state, &outcome),
+                None,
+                "{outcome:?}"
+            );
+            assert!(!state.check_after_failure_done, "{outcome:?}");
+        }
+    }
+
+    #[test]
+    fn damage_gates_the_backup_notifies_once_and_records_a_bad_check() {
+        let mut state = BackupState::default();
+
+        let first = apply_check(
+            &mut state,
+            CheckKind::Sample,
+            &damaged(&["aa", "bb"]),
+            &ctx(),
+            false,
+        );
+        let second = apply_check(
+            &mut state,
+            CheckKind::Full,
+            &damaged(&["aa", "bb"]),
+            &ctx(),
+            true,
+        );
+
+        let gate = state.gate.as_ref().unwrap();
+        assert_eq!(gate.kind, GateKind::NeedsAttention);
+        assert_eq!(gate.fault, Some(Fault::RepoDamaged));
+        assert_eq!(
+            gate.detail,
+            "The check found 2 damaged files in the backup. Backups and cleanup are paused."
+        );
+        assert_eq!(
+            first,
+            [BackupEvent::Gate {
+                kind: GateKind::NeedsAttention,
+                detail: gate.detail.clone(),
+                fault: Some(Fault::RepoDamaged)
+            }]
+        );
+        assert_eq!(second, []);
+        let check = state.last_check.as_ref().unwrap();
+        assert!(!check.ok);
+        assert_eq!(check.kind, CheckKind::Full);
+        assert_eq!(check.detail, "pack aa contains 1 error");
+    }
+
+    #[test]
+    fn one_damaged_file_is_said_in_the_singular() {
+        assert_eq!(
+            damaged_message(1),
+            "The check found 1 damaged file in the backup. Backups and cleanup are paused."
+        );
+        assert!(damaged_message(0).contains("0 damaged files"));
+    }
+
+    #[test]
+    fn damage_is_not_a_failed_round() {
+        let mut state = BackupState::default();
+
+        apply_check(&mut state, CheckKind::Full, &damaged(&["aa"]), &ctx(), true);
+
+        assert_eq!(state.consecutive_failures, 0);
+        assert_eq!(state.last_outcome, None);
+    }
+
+    #[test]
+    fn a_sample_without_errors_does_not_release_the_damaged_gate_but_a_full_check_does() {
+        let mut state = damaged_state();
+
+        apply_check(
+            &mut state,
+            CheckKind::Sample,
+            &CheckOutcome::Ok,
+            &ctx(),
+            true,
+        );
+        apply_check(
+            &mut state,
+            CheckKind::Quick,
+            &CheckOutcome::Ok,
+            &ctx(),
+            true,
+        );
+        assert_eq!(state.gate.as_ref().unwrap().fault, Some(Fault::RepoDamaged));
+
+        apply_check(&mut state, CheckKind::Full, &CheckOutcome::Ok, &ctx(), true);
+
+        assert_eq!(state.gate, None);
+        assert!(state.notified.is_empty());
+        assert!(state.last_check.unwrap().ok);
+    }
+
+    #[test]
+    fn a_full_check_leaves_a_gate_that_is_not_damage_alone() {
+        let mut state = BackupState {
+            gate: Some(attention_gate(before(HOUR), Some(Fault::Quota))),
+            ..BackupState::default()
+        };
+
+        apply_check(&mut state, CheckKind::Full, &CheckOutcome::Ok, &ctx(), true);
+
+        assert_eq!(state.gate.as_ref().unwrap().fault, Some(Fault::Quota));
+    }
+
+    #[test]
+    fn damage_found_again_after_it_was_released_is_announced_again() {
+        let mut state = damaged_state();
+        apply_check(&mut state, CheckKind::Full, &CheckOutcome::Ok, &ctx(), true);
+
+        let again = apply_check(&mut state, CheckKind::Full, &damaged(&["aa"]), &ctx(), true);
+
+        assert_eq!(again.len(), 1);
+    }
+
+    #[test]
+    fn a_check_that_did_not_finish_counts_as_a_failed_round_and_leaves_the_last_check_alone() {
+        let before_check = LastCheck {
+            at: before(HOUR),
+            kind: CheckKind::Sample,
+            ok: true,
+            detail: String::new(),
+        };
+        let mut state = BackupState {
+            last_check: Some(before_check.clone()),
+            ..BackupState::default()
+        };
+        let context = RunContext {
+            failures_after: 1,
+            ..ctx()
+        };
+
+        let events = apply_check(
+            &mut state,
+            CheckKind::Full,
+            &CheckOutcome::Failed("connection reset".to_owned()),
+            &context,
+            true,
+        );
+
+        assert_eq!(state.consecutive_failures, 1);
+        assert_eq!(state.last_outcome, Some(LastOutcome::Error));
+        assert_eq!(state.last_check, Some(before_check));
+        assert_eq!(
+            events,
+            [BackupEvent::Failing {
+                failures: 1,
+                message: "connection reset".to_owned()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_check_stopped_by_a_lock_counts_with_the_in_use_message() {
+        let mut state = BackupState::default();
+        let context = RunContext {
+            failures_after: 1,
+            ..ctx()
+        };
+
+        let events = apply_check(
+            &mut state,
+            CheckKind::Quick,
+            &CheckOutcome::Locked,
+            &context,
+            true,
+        );
+
+        assert_eq!(state.consecutive_failures, 1);
+        assert_eq!(
+            events,
+            [BackupEvent::Failing {
+                failures: 1,
+                message: LOCKED_DETAIL.to_owned()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_check_that_did_not_finish_after_a_backup_is_not_counted_twice() {
+        for outcome in [CheckOutcome::Locked, CheckOutcome::Failed("x".to_owned())] {
+            let mut state = BackupState::default();
+
+            let events = apply_check(&mut state, CheckKind::Quick, &outcome, &ctx(), false);
+
+            assert_eq!(state, BackupState::default(), "{outcome:?}");
+            assert_eq!(events, []);
+        }
     }
 }

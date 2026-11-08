@@ -15,6 +15,7 @@ use syncfast_core::backup::config::BackupConfig;
 use syncfast_core::backup::keystore::KeyBackend;
 use syncfast_core::backup::lifecycle;
 use syncfast_core::backup::snapshots::SnapshotView;
+use syncfast_core::backup::state::CheckKind;
 use syncfast_core::backup::test_filters::FilterTest as BackupFilterCount;
 use syncfast_core::behavior::{ReviewLevel, SyncMode};
 use syncfast_core::bisync::ReviewKind;
@@ -168,6 +169,11 @@ pub enum Command {
     BackUpAll,
     /// Pause (`false`) or resume (`true`) one backup, then `apply`.
     SetBackupEnabled(String, bool),
+    /// Ask a backup's next round for a check of the repository.
+    CheckBackup {
+        id: String,
+        kind: CheckKind,
+    },
     LoadBackupSnapshots(String),
     /// Read the rounds of a backup from its logs, for Activity.
     LoadBackupRuns {
@@ -548,6 +554,7 @@ async fn run(
                     Command::SetBackupEnabled(id, enabled) => {
                         spawn_set_backup_enabled(&context, id, enabled);
                     }
+                    Command::CheckBackup { id, kind } => spawn_check_backup(&context, id, kind),
                     Command::LoadBackupSnapshots(id) => spawn_load_backup_snapshots(&context, id),
                     Command::LoadBackupRuns { id, running } => {
                         spawn_load_backup_runs(&context, id, running);
@@ -998,6 +1005,16 @@ fn spawn_set_backup_enabled(context: &Arc<Context>, id: String, enabled: bool) {
             context.refresh.notify_one();
         },
     );
+}
+
+fn spawn_check_backup(context: &Arc<Context>, id: String, kind: CheckKind) {
+    let context = Arc::clone(context);
+    guarded(context.emitter.clone(), "starting a check", async move {
+        match backup_tools::request_check(&context.paths, &id, kind).await {
+            Ok(()) => spawn_backup(&context, vec![id]),
+            Err(text) => fail(&context, text),
+        }
+    });
 }
 
 fn spawn_load_backup_snapshots(context: &Arc<Context>, id: String) {

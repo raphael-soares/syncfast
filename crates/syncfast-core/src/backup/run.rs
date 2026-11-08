@@ -1,27 +1,32 @@
 //! One round of one backup: `syncfast backup-run <id>` (spec step 6). The
 //! round decides whether it may run, runs `restic backup` and then `restic
-//! forget --prune`, and turns how they ended into the backup's state and,
-//! when the user must act, a notification.
+//! forget --prune` (or, when a person asked, only `restic check`), and turns
+//! how they ended into the backup's state and, when the user must act, a
+//! notification.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use jiff::{SignedDuration, Zoned};
+use jiff::{SignedDuration, Timestamp, Zoned};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 
-use crate::backup::classify::{BackupLine, BackupOutcome, classify_backup, parse_backup_line};
+use crate::backup::check::{CheckOutcome, parse_check};
+use crate::backup::classify::{
+    BackupLine, BackupOutcome, EXIT_INTERRUPTED, classify_backup, parse_backup_line,
+};
 use crate::backup::config::{BackupBehavior, BackupConfig};
 use crate::backup::destination::{Destination, DestinationError};
 use crate::backup::effects::{
-    BackupEvent, RunContext, SkipContext, apply_gate, apply_key_failure, apply_outcome,
-    apply_retention_result, apply_skip, begin_attempt, clear_gate, retention_message,
+    BackupEvent, LOCKED_DETAIL, RunContext, SkipContext, apply_check, apply_config_error,
+    apply_gate, apply_key_failure, apply_outcome, apply_retention_result, apply_skip,
+    begin_attempt, clear_gate, monthly_check, retention_message, take_post_failure_check,
 };
 use crate::backup::excludes::{render_excludes_live, write_excludes};
 use crate::backup::keystore::KeyStore;
 use crate::backup::run_decision::{
-    BackupDecision, DecisionInput, SkipReason, decide_backup, source_check,
+    BackupDecision, DecisionInput, RunKind, SkipReason, decide_backup, source_check, take_request,
 };
-use crate::backup::state::{BackupState, BackupSummary};
+use crate::backup::state::{BackupState, BackupSummary, CheckKind};
 use crate::backup::status::{BackupProgressFile, RunningStep};
 use crate::bisync::{Fault, stamp};
 use crate::config::{Config, GlobalConfigError};
@@ -29,14 +34,14 @@ use crate::network::Network;
 use crate::notify::{Notifier, Policy, notify_backup};
 use crate::paths::Paths;
 use crate::rclone::RcloneError;
-use crate::restic::{Repository, Restic, ResticError, backup_args, forget_args};
+use crate::restic::{
+    EXIT_LOCKED, Repository, Restic, ResticError, backup_args, check_args, forget_args,
+};
 use crate::run::{Interrupts, forward_interrupt};
 use crate::state::{GateKind, RUNS_KEPT, StateError, try_lock, write_json};
 
 /// The exit code that tells the unit to try again soon.
 const EXIT_TEMPFAIL: u8 = 75;
-/// The first line of every run log: which step wrote it.
-const LOG_HEADER: &str = r#"{"syncfast_step":"backup"}"#;
 const PROGRESS_EVERY: Duration = Duration::from_secs(1);
 pub const KEY_ABSENT: &str = "The key for this backup is not saved on this computer.";
 
@@ -116,6 +121,8 @@ pub enum BackupRunReport {
     /// The key is not in the key storage, or the storage cannot be read.
     KeyUnavailable,
     Ran(BackupOutcome),
+    /// A person asked for a check and it ran. `None`: it was interrupted.
+    Checked(Option<CheckOutcome>),
 }
 
 impl BackupRunReport {
@@ -157,6 +164,7 @@ pub async fn run_backup(
         return Ok(BackupRunReport::Busy);
     };
     let mut state = load_state(env, backup_id).await?;
+    let request = take_request(env.paths, backup_id);
     let policy = config.defaults().notifications;
     let accounts = env.restic.rclone().listremotes().await?;
     let problem = config
@@ -169,7 +177,8 @@ pub async fn run_backup(
         Ok(behavior) => behavior,
         Err(message) => {
             let now = env.now().timestamp();
-            let events = apply_gate(&mut state, now, GateKind::ConfigError, message, None);
+            log::warn!("the backup {backup_id} has an invalid configuration: {message}");
+            let events = apply_config_error(&mut state, now, message);
             conclude(env, &backup, &policy, &state, lock, &events, true).await?;
             return Ok(BackupRunReport::ConfigInvalid);
         }
@@ -192,14 +201,7 @@ pub async fn run_backup(
         zone: now.time_zone().clone(),
         failures_after: policy.failures_after,
     };
-    let dest_is_remote = matches!(dest, Destination::Account { .. });
-    let online = !dest_is_remote || env.network.is_online().await;
-    let dest_available = match &dest {
-        Destination::Local(path) => tokio::fs::try_exists(path.join("config"))
-            .await
-            .unwrap_or(false),
-        Destination::Account { .. } => true,
-    };
+    let (dest_is_remote, online, dest_available) = reachability(env, &dest).await;
     let decision = decide_backup(&DecisionInput {
         enabled: backup.enabled,
         online,
@@ -207,6 +209,7 @@ pub async fn run_backup(
         dest_available,
         gate: state.gate.as_ref(),
         source_check: source_check(&backup.paths),
+        request,
     });
     let (events, report, save) = match decision {
         BackupDecision::Skip(reason) => {
@@ -235,13 +238,30 @@ pub async fn run_backup(
             let events = apply_gate(&mut state, now.timestamp(), kind, detail, Some(fault));
             (events, BackupRunReport::GateSet(fault), true)
         }
-        BackupDecision::Run => {
-            let (events, report) = backup_round(env, &round, &now, &mut state).await?;
+        BackupDecision::Run(kind) => {
+            let (events, report) = match kind {
+                RunKind::Backup => backup_round(env, &round, &now, &mut state).await?,
+                RunKind::Check(kind) => check_round(env, &round, &now, &mut state, kind).await?,
+            };
             (events, report, true)
         }
     };
     conclude(env, &backup, &policy, &state, lock, &events, save).await?;
     Ok(report)
+}
+
+/// Whether the destination is remote, the network is up, and a local
+/// repository is there.
+async fn reachability(env: &BackupRunEnv<'_>, dest: &Destination) -> (bool, bool, bool) {
+    let remote = matches!(dest, Destination::Account { .. });
+    let online = !remote || env.network.is_online().await;
+    let available = match dest {
+        Destination::Local(path) => tokio::fs::try_exists(path.join("config"))
+            .await
+            .unwrap_or(false),
+        Destination::Account { .. } => true,
+    };
+    (remote, online, available)
 }
 
 /// Saves the state, frees the lock so a status read sees the backup idle,
@@ -285,6 +305,25 @@ async fn load_state(
     }
 }
 
+async fn saved_key(
+    env: &BackupRunEnv<'_>,
+    backup_id: &str,
+) -> Result<crate::backup::key::Key, String> {
+    match env.keys.get(backup_id).await {
+        Ok(Some(key)) => Ok(key),
+        Ok(None) => Err(KEY_ABSENT.to_owned()),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn repository_of(env: &BackupRunEnv<'_>, round: &Round<'_>) -> Repository {
+    Repository::new(
+        round.dest.clone(),
+        env.paths.backup_state_dir(&round.backup.id),
+    )
+    .with_limits(round.behavior.limit_upload, round.behavior.limit_download)
+}
+
 async fn backup_round(
     env: &BackupRunEnv<'_>,
     round: &Round<'_>,
@@ -292,10 +331,9 @@ async fn backup_round(
     state: &mut BackupState,
 ) -> Result<(Vec<BackupEvent>, BackupRunReport), BackupRunError> {
     let backup = round.backup;
-    let key = match env.keys.get(&backup.id).await {
-        Ok(Some(key)) => key,
-        Ok(None) => return Ok(key_unavailable(state, KEY_ABSENT.to_owned(), started)),
-        Err(err) => return Ok(key_unavailable(state, err.to_string(), started)),
+    let key = match saved_key(env, &backup.id).await {
+        Ok(key) => key,
+        Err(detail) => return Ok(key_unavailable(state, detail, started)),
     };
     begin_attempt(state, started.timestamp());
     let state_dir = env.paths.backup_state_dir(&backup.id);
@@ -305,8 +343,7 @@ async fn backup_round(
     let excludes_file = env.paths.backup_excludes_file(&backup.id);
     write_excludes(&excludes_file, &render_excludes_live(backup).await)
         .map_err(BackupRunError::io("writing the excludes file"))?;
-    let repository = Repository::new(round.dest.clone(), state_dir)
-        .with_limits(round.behavior.limit_upload, round.behavior.limit_download);
+    let repository = repository_of(env, round);
     let args = backup_args(
         &backup.paths,
         round.behavior.one_file_system,
@@ -318,7 +355,7 @@ async fn backup_round(
     tokio::fs::create_dir_all(&runs_dir)
         .await
         .map_err(BackupRunError::io("creating the runs folder"))?;
-    let (mut log, log_file) = RunLog::create(&runs_dir, started)
+    let (mut log, log_file) = RunLog::create(&runs_dir, started, RunKind::Backup)
         .await
         .map_err(BackupRunError::io("creating the run log"))?;
     write_progress(
@@ -328,7 +365,8 @@ async fn backup_round(
     )
     .await;
 
-    let streamed = stream_backup(env, &backup.id, &repository, &key, &args, &mut log).await;
+    let streamed =
+        stream_backup_unlocking(env, &backup.id, &repository, &key, &args, &mut log).await;
     let streamed = match streamed {
         Ok(streamed) => streamed,
         Err(err) => {
@@ -353,24 +391,156 @@ async fn backup_round(
         log_file,
     };
     let mut events = apply_outcome(state, &outcome, &ctx);
+    let succeeded = matches!(
+        outcome,
+        BackupOutcome::Ok | BackupOutcome::OkWithWarnings { .. }
+    );
     let stored = streamed
         .summary
         .as_ref()
         .is_some_and(|summary| summary.total_files_processed > 0);
-    if stored
-        && matches!(
-            outcome,
-            BackupOutcome::Ok | BackupOutcome::OkWithWarnings { .. }
-        )
-    {
+    if succeeded && stored {
         let result = forget(env, round, &repository, &key, &mut log).await;
         events.extend(apply_retention_result(state, result, env.now().timestamp()));
     }
+    let asked = if succeeded {
+        monthly_check(state, env.now().timestamp())
+    } else {
+        take_post_failure_check(state, &outcome)
+    };
+    if let Some(kind) = asked {
+        match run_check(env, round, &repository, &key, kind).await {
+            Ok(Some(found)) => {
+                let check_ctx =
+                    check_context(round, started, env.now().timestamp(), found.log_file);
+                events.extend(apply_check(state, kind, &found.outcome, &check_ctx, false));
+            }
+            Ok(None) => {}
+            Err(err) => log::warn!("cannot run the {} check: {err}", kind.as_str()),
+        }
+    }
     remove_progress(env.paths, &backup.id).await;
+    prune_logs_of(env, &backup.id).await;
+    Ok((events, BackupRunReport::Ran(outcome)))
+}
+
+async fn prune_logs_of(env: &BackupRunEnv<'_>, backup_id: &str) {
+    let runs_dir = env.paths.backup_runs_dir(backup_id);
     if let Err(err) = prune_run_logs(&runs_dir).await {
         log::warn!("cannot prune {}: {err}", runs_dir.display());
     }
-    Ok((events, BackupRunReport::Ran(outcome)))
+}
+
+/// A round a person asked for: only `restic check`, no backup and no
+/// cleanup.
+async fn check_round(
+    env: &BackupRunEnv<'_>,
+    round: &Round<'_>,
+    started: &Zoned,
+    state: &mut BackupState,
+    kind: CheckKind,
+) -> Result<(Vec<BackupEvent>, BackupRunReport), BackupRunError> {
+    let backup = round.backup;
+    let key = match saved_key(env, &backup.id).await {
+        Ok(key) => key,
+        Err(detail) => return Ok(key_unavailable(state, detail, started)),
+    };
+    let repository = repository_of(env, round);
+    let found = run_check(env, round, &repository, &key, kind).await;
+    remove_progress(env.paths, &backup.id).await;
+    let Some(found) = found? else {
+        return Ok((Vec::new(), BackupRunReport::Checked(None)));
+    };
+    let ctx = check_context(round, started, env.now().timestamp(), found.log_file);
+    let events = apply_check(state, kind, &found.outcome, &ctx, true);
+    prune_logs_of(env, &backup.id).await;
+    Ok((events, BackupRunReport::Checked(Some(found.outcome))))
+}
+
+struct CheckRun {
+    outcome: CheckOutcome,
+    log_file: PathBuf,
+}
+
+fn check_context(
+    round: &Round<'_>,
+    started: &Zoned,
+    finished: Timestamp,
+    log_file: PathBuf,
+) -> RunContext {
+    RunContext {
+        started: started.timestamp(),
+        finished,
+        zone: round.zone.clone(),
+        every: round.behavior.every,
+        failures_after: round.failures_after,
+        exit_code: None,
+        summary: None,
+        log_file,
+    }
+}
+
+/// One `restic check` with its own run log. A lock it meets is cleared and
+/// the check tried once more. `None`: an interrupt stopped it.
+async fn run_check(
+    env: &BackupRunEnv<'_>,
+    round: &Round<'_>,
+    repository: &Repository,
+    key: &crate::backup::key::Key,
+    kind: CheckKind,
+) -> Result<Option<CheckRun>, BackupRunError> {
+    let backup_id = &round.backup.id;
+    let runs_dir = env.paths.backup_runs_dir(backup_id);
+    tokio::fs::create_dir_all(&runs_dir)
+        .await
+        .map_err(BackupRunError::io("creating the runs folder"))?;
+    let (mut log, log_file) = RunLog::create(&runs_dir, &env.now(), RunKind::Check(kind))
+        .await
+        .map_err(BackupRunError::io("creating the run log"))?;
+    write_progress(
+        env.paths,
+        backup_id,
+        &BackupProgressFile::of_step(RunningStep::Check),
+    )
+    .await;
+    let args = check_args(kind);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut raw = env
+        .restic
+        .run_raw(repository, key, &args, env.forward_signals)
+        .await?;
+    if raw.code == Some(EXIT_LOCKED) {
+        unlock(env, repository, key, &mut log).await;
+        raw = env
+            .restic
+            .run_raw(repository, key, &args, env.forward_signals)
+            .await?;
+    }
+    let stdout = String::from_utf8_lossy(&raw.stdout);
+    let stderr = String::from_utf8_lossy(&raw.stderr);
+    for line in stdout.lines().chain(stderr.lines()) {
+        log.line(line).await;
+    }
+    if raw.code == Some(EXIT_INTERRUPTED) {
+        return Ok(None);
+    }
+    Ok(Some(CheckRun {
+        outcome: parse_check(raw.code, &stdout, &stderr),
+        log_file,
+    }))
+}
+
+/// `restic unlock`, which removes only locks of runs that are gone. When it
+/// fails the command is tried again anyway: the lock may be gone already.
+async fn unlock(
+    env: &BackupRunEnv<'_>,
+    repository: &Repository,
+    key: &crate::backup::key::Key,
+    log: &mut RunLog,
+) {
+    if let Err(err) = env.restic.unlock(repository, key).await {
+        log.line(&format!("restic unlock failed: {err}")).await;
+    }
 }
 
 fn key_unavailable(
@@ -395,11 +565,18 @@ async fn forget(
 ) -> Result<(), String> {
     let args = forget_args(round.behavior.keep);
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    match env
+    let mut result = env
         .restic
         .run(repository, key, &args, env.forward_signals)
-        .await
-    {
+        .await;
+    if matches!(result, Err(ResticError::Locked { .. })) {
+        unlock(env, repository, key, log).await;
+        result = env
+            .restic
+            .run(repository, key, &args, env.forward_signals)
+            .await;
+    }
+    match result {
         Ok(output) => {
             for line in String::from_utf8_lossy(&output.stdout).lines() {
                 log.line(line).await;
@@ -407,7 +584,10 @@ async fn forget(
             Ok(())
         }
         Err(err) => {
-            let message = err.to_string();
+            let message = match err {
+                ResticError::Locked { .. } => LOCKED_DETAIL.to_owned(),
+                other => other.to_string(),
+            };
             log.line(&retention_message(&message)).await;
             Err(message)
         }
@@ -418,6 +598,24 @@ struct Streamed {
     exit_code: Option<i32>,
     summary: Option<BackupSummary>,
     stderr: Vec<String>,
+}
+
+/// [`stream_backup`], and once more after `restic unlock` when the first
+/// try met a lock.
+async fn stream_backup_unlocking(
+    env: &BackupRunEnv<'_>,
+    backup_id: &str,
+    repository: &Repository,
+    key: &crate::backup::key::Key,
+    args: &[&str],
+    log: &mut RunLog,
+) -> Result<Streamed, BackupRunError> {
+    let first = stream_backup(env, backup_id, repository, key, args, log).await?;
+    if first.exit_code != Some(EXIT_LOCKED) {
+        return Ok(first);
+    }
+    unlock(env, repository, key, log).await;
+    stream_backup(env, backup_id, repository, key, args, log).await
 }
 
 /// Starts `restic backup` and follows it to its end: progress to
@@ -538,6 +736,16 @@ async fn remove_progress(paths: &Paths, backup_id: &str) {
     }
 }
 
+/// The first line of every run log: which step wrote it.
+fn log_header(kind: RunKind) -> String {
+    match kind {
+        RunKind::Backup => r#"{"syncfast_step":"backup"}"#.to_owned(),
+        RunKind::Check(kind) => {
+            format!(r#"{{"syncfast_step":"check","kind":"{}"}}"#, kind.as_str())
+        }
+    }
+}
+
 /// The run's log: `runs/<stamp>.jsonl`. A line that cannot be written is a
 /// warning, not a stop: the backup matters more than its log.
 struct RunLog {
@@ -547,7 +755,7 @@ struct RunLog {
 impl RunLog {
     /// Creates the log named for `now`, or for the first second after it
     /// that is free.
-    async fn create(dir: &Path, now: &Zoned) -> std::io::Result<(Self, PathBuf)> {
+    async fn create(dir: &Path, now: &Zoned, kind: RunKind) -> std::io::Result<(Self, PathBuf)> {
         let mut at = now.clone();
         loop {
             let path = dir.join(format!("{}.jsonl", stamp(&at)));
@@ -559,7 +767,7 @@ impl RunLog {
             {
                 Ok(file) => {
                     let mut log = Self { file };
-                    log.line(LOG_HEADER).await;
+                    log.line(&log_header(kind)).await;
                     return Ok((log, path));
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -691,19 +899,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let now: Zoned = "2026-05-01T10:00:00[UTC]".parse().unwrap();
 
-        let (mut first, first_path) = RunLog::create(dir.path(), &now).await.unwrap();
+        let (mut first, first_path) = RunLog::create(dir.path(), &now, RunKind::Backup)
+            .await
+            .unwrap();
         first.line("one").await;
-        let (_second, second_path) = RunLog::create(dir.path(), &now).await.unwrap();
+        let (_second, second_path) = RunLog::create(dir.path(), &now, RunKind::Backup)
+            .await
+            .unwrap();
 
         assert_eq!(first_path.file_name().unwrap(), "20260501-100000.jsonl");
         assert_eq!(second_path.file_name().unwrap(), "20260501-100001.jsonl");
         assert_eq!(
             std::fs::read_to_string(&first_path).unwrap(),
-            format!("{LOG_HEADER}\none\n")
+            format!("{}\none\n", log_header(RunKind::Backup))
         );
         assert_eq!(
             std::fs::read_to_string(&second_path).unwrap(),
-            format!("{LOG_HEADER}\n")
+            format!("{}\n", log_header(RunKind::Backup))
         );
     }
 }

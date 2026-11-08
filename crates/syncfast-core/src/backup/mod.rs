@@ -1,5 +1,6 @@
 //! Backups of local folders into a restic repository (ADR 0009).
 
+pub mod check;
 pub mod classify;
 pub mod config;
 pub mod destination;
