@@ -355,9 +355,18 @@ pub async fn lock_pair(
     pair_id: &str,
     timeout: Duration,
 ) -> Result<Option<File>, StateError> {
+    lock_within(paths, paths.lock_file(pair_id), timeout).await
+}
+
+/// [`lock_pair`] for any lock file in the runtime folder.
+pub(crate) async fn lock_within(
+    paths: &Paths,
+    path: PathBuf,
+    timeout: Duration,
+) -> Result<Option<File>, StateError> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        if let Some(lock) = try_lock_pair(paths, pair_id)? {
+        if let Some(lock) = try_lock(paths, path.clone())? {
             return Ok(Some(lock));
         }
         if tokio::time::Instant::now() >= deadline {

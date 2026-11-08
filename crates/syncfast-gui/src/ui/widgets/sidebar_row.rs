@@ -1,7 +1,7 @@
+use super::status_badge::AnyStatus;
 use egui::{Sense, Ui, Vec2};
-use syncfast_core::state::DisplayStatus;
 
-use crate::icons::{Icon, status_icon};
+use crate::icons::Icon;
 use crate::theme::{self, radius, size, space};
 
 use super::{focus_ring, paint_icon, palette_of};
@@ -15,7 +15,7 @@ pub struct SidebarRow<'a> {
     pub subtitle: Option<&'a str>,
     pub selected: bool,
     /// Shown as a compact badge at the trailing edge; its text is the tooltip.
-    pub status: Option<DisplayStatus>,
+    pub status: Option<AnyStatus>,
 }
 
 /// A selectable sidebar entry. The title is its accessible name.
@@ -103,7 +103,7 @@ pub fn sidebar_row(ui: &mut Ui, row: &SidebarRow<'_>) -> egui::Response {
             let color = theme::tone(&palette, status.tone());
             paint_icon(
                 ui,
-                status_icon(status),
+                status.icon(),
                 egui::pos2(inner.right() - size::ICON / 2.0, rect.center().y),
                 size::ICON,
                 color,
@@ -120,7 +120,7 @@ pub fn sidebar_row(ui: &mut Ui, row: &SidebarRow<'_>) -> egui::Response {
 /// `<title>, <status>, <subtitle>`: the text painted around the title would
 /// otherwise be invisible to screen readers.
 fn accessible_label(row: &SidebarRow<'_>) -> String {
-    let status = row.status.map(DisplayStatus::text);
+    let status = row.status.map(AnyStatus::text);
     [
         Some(row.title.to_owned()),
         status,

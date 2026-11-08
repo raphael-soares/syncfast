@@ -4603,6 +4603,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "zbus",
+ "zeroize",
 ]
 
 [[package]]

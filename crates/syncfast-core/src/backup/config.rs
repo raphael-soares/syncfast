@@ -257,7 +257,9 @@ fn limit(key: &str, text: &str) -> Result<Bandwidth, String> {
     })
 }
 
-fn filter_problem(number: usize, line: &str) -> Option<String> {
+/// What is wrong with line `number` (1-based) of a backup's filters.
+#[must_use]
+pub fn filter_line_problem(number: usize, line: &str) -> Option<String> {
     if line.starts_with("+ ") {
         return Some(format!(
             "backup filters only exclude: remove line {number} (\"+ \")"
@@ -309,6 +311,11 @@ impl BackupConfig {
         if let Err(message) = self.behavior() {
             return Some(message);
         }
+        self.filters_problem()
+    }
+
+    /// What is wrong with the presets or the filter lines.
+    pub(crate) fn filters_problem(&self) -> Option<String> {
         if let Some(name) = self
             .presets
             .iter()
@@ -319,12 +326,38 @@ impl BackupConfig {
         self.filters
             .iter()
             .enumerate()
-            .find_map(|(index, line)| filter_problem(index + 1, line))
+            .find_map(|(index, line)| filter_line_problem(index + 1, line))
+    }
+
+    pub(crate) fn name_problem(&self) -> Option<String> {
+        (self.name.trim().is_empty() || self.name.chars().any(char::is_control))
+            .then(|| "backup name must be one line of text".to_owned())
     }
 
     fn destination(&self) -> Result<Destination, DestinationError> {
         Destination::parse(&self.dest)
     }
+}
+
+/// The `keep.<k>` keys whose value went down, `yearly` to 0 included.
+#[must_use]
+pub fn keep_reduced(before: &BackupConfig, after: &BackupConfig) -> Vec<&'static str> {
+    [
+        ("keep.daily", before.keep.daily, after.keep.daily),
+        ("keep.weekly", before.keep.weekly, after.keep.weekly),
+        ("keep.monthly", before.keep.monthly, after.keep.monthly),
+        ("keep.yearly", before.keep.yearly, after.keep.yearly),
+    ]
+    .into_iter()
+    .filter(|(_, before, after)| after < before)
+    .map(|(name, _, _)| name)
+    .collect()
+}
+
+/// `one_file_system` went from on to off.
+#[must_use]
+pub fn one_file_system_turned_off(before: &BackupConfig, after: &BackupConfig) -> bool {
+    before.one_file_system && !after.one_file_system
 }
 
 /// The settings a backup change lowers safety on, which only the user may
@@ -339,19 +372,7 @@ pub fn backup_lowers_safety(
     after: &BackupConfig,
     home: &Path,
 ) -> Vec<&'static str> {
-    let mut lowered = Vec::new();
-    let keeps = [
-        ("keep.daily", before.keep.daily, after.keep.daily),
-        ("keep.weekly", before.keep.weekly, after.keep.weekly),
-        ("keep.monthly", before.keep.monthly, after.keep.monthly),
-        ("keep.yearly", before.keep.yearly, after.keep.yearly),
-    ];
-    lowered.extend(
-        keeps
-            .into_iter()
-            .filter(|(_, before, after)| after < before)
-            .map(|(name, _, _)| name),
-    );
+    let mut lowered = keep_reduced(before, after);
     let place = |path: &PathBuf| lexical_clean(&expand_tilde(path, home));
     let after_places: Vec<PathBuf> = after.paths.iter().map(place).collect();
     if before
@@ -364,7 +385,7 @@ pub fn backup_lowers_safety(
     if comparable_dest(&before.dest, home) != comparable_dest(&after.dest, home) {
         lowered.push("dest");
     }
-    if before.one_file_system && !after.one_file_system {
+    if one_file_system_turned_off(before, after) {
         lowered.push("one_file_system");
     }
     lowered
@@ -380,7 +401,7 @@ fn comparable_dest(dest: &str, home: &Path) -> String {
     }
 }
 
-fn folder_problem(backup: &BackupConfig) -> Option<String> {
+pub(crate) fn folder_problem(backup: &BackupConfig) -> Option<String> {
     if backup.enabled && backup.paths.is_empty() {
         return Some("a backup needs at least one folder".to_owned());
     }
@@ -409,22 +430,24 @@ fn folder_problem(backup: &BackupConfig) -> Option<String> {
     None
 }
 
+pub(crate) fn id_problem(id: &str) -> Option<String> {
+    (!valid_id(id))
+        .then(|| format!("backup id \"{id}\" must use a-z, 0-9 and \"-\", up to 32 characters"))
+}
+
 fn problem_before_overlap(
     backup: &BackupConfig,
     duplicate_id: bool,
     accounts: &HashSet<&str>,
 ) -> Option<String> {
-    if !valid_id(&backup.id) {
-        return Some(format!(
-            "backup id \"{}\" must use a-z, 0-9 and \"-\", up to 32 characters",
-            backup.id
-        ));
+    if let Some(problem) = id_problem(&backup.id) {
+        return Some(problem);
     }
     if duplicate_id {
         return Some(format!("duplicate backup id \"{}\"", backup.id));
     }
-    if backup.name.trim().is_empty() || backup.name.chars().any(char::is_control) {
-        return Some("backup name must be one line of text".to_owned());
+    if let Some(problem) = backup.name_problem() {
+        return Some(problem);
     }
     if let Some(problem) = folder_problem(backup) {
         return Some(problem);

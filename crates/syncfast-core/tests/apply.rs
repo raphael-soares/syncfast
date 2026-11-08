@@ -11,6 +11,9 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use common::Bed;
+use syncfast_core::backup::key::Key;
+use syncfast_core::backup::keystore::{KeyStore, MemoryKeyStore};
+use syncfast_core::backup::state::BackupState;
 use syncfast_core::network::BoxFuture;
 use syncfast_core::state::{GateKind, State, try_lock_pair};
 use syncfast_core::units::{ApplyEnv, ApplyReport, Systemctl, SystemdMode, apply};
@@ -735,4 +738,316 @@ async fn apply_migrates_a_v1_config_and_keeps_a_copy_of_the_old_file() {
     let backup = bed.paths.config_file().with_file_name("config.toml.v1");
     assert_eq!(fs::read_to_string(backup).unwrap(), old);
     assert_eq!(timer_interval(&bed, "docs"), "300s");
+}
+
+fn backup_text(bed: &Bed, id: &str, extra: &str) -> String {
+    format!(
+        "[[backup]]\nid = \"{id}\"\nname = \"Documents\"\npaths = [\"{data}\"]\ndest = \"{repo}\"\n{extra}",
+        data = bed.root.join(format!("data-{id}")).display(),
+        repo = bed.root.join(format!("repo-{id}")).display(),
+    )
+}
+
+fn write_backups(bed: &Bed, backups: &[String]) {
+    bed.write_config_text(&format!("version = 3\n{}", backups.join("\n")));
+}
+
+fn fake_restic(bed: &Bed) -> PathBuf {
+    let restic = bed.root.join("restic");
+    fs::write(&restic, "").unwrap();
+    restic
+}
+
+async fn apply_backups(bed: &Bed, mode: SystemdMode, systemctl: &FakeSystemctl) -> ApplyReport {
+    let bin = PathBuf::from(BIN);
+    let env = ApplyEnv::new(&bed.paths, &bed.rclone, &bin, mode, systemctl)
+        .with_restic(Some(fake_restic(bed)));
+    apply(&env, &[]).await
+}
+
+fn preview_unit(bed: &Bed, name: &str) -> String {
+    fs::read_to_string(bed.paths.units_preview_dir().join(name)).unwrap()
+}
+
+fn position(calls: &[String], call: &str) -> usize {
+    assert!(
+        calls.iter().any(|c| c == call),
+        "{call} is not in {calls:?}"
+    );
+    calls.iter().position(|c| c == call).unwrap()
+}
+
+#[tokio::test]
+async fn off_mode_creates_the_units_of_a_backup_in_the_preview_folder() {
+    let bed = Bed::new();
+    write_backups(&bed, &[backup_text(&bed, "docs", "")]);
+    let systemctl = FakeSystemctl::default();
+
+    let report = apply_backups(&bed, SystemdMode::Off, &systemctl).await;
+
+    assert!(report.is_empty(), "{report}");
+    assert_eq!(
+        names(&bed.paths.units_preview_dir()),
+        [
+            "syncfast-backup_docs.service",
+            "syncfast-backup_docs.timer",
+            "syncfast-watch.service"
+        ]
+    );
+    let service = preview_unit(&bed, "syncfast-backup_docs.service");
+    let rclone = bed.rclone.bin().canonicalize().unwrap();
+    assert!(service.contains(&format!("ExecStart=\"{BIN}\" backup-run docs\n")));
+    assert!(service.contains(&format!(
+        "Environment=\"SYNCFAST_RCLONE={}\"\nEnvironment=\"SYNCFAST_RESTIC={}\"\n",
+        rclone.display(),
+        bed.root.join("restic").display()
+    )));
+    let timer = preview_unit(&bed, "syncfast-backup_docs.timer");
+    assert!(timer.contains("OnCalendar=*-*-* 03:00:00\n"));
+    assert!(timer.contains("Unit=syncfast-backup_docs.service\n"));
+    assert!(systemctl.take().is_empty());
+}
+
+#[tokio::test]
+async fn an_unfound_restic_leaves_its_environment_line_out() {
+    let bed = Bed::new();
+    write_backups(&bed, &[backup_text(&bed, "docs", "")]);
+    let bin = PathBuf::from(BIN);
+    let systemctl = FakeSystemctl::default();
+    let env = ApplyEnv::new(&bed.paths, &bed.rclone, &bin, SystemdMode::Off, &systemctl)
+        .with_restic(None);
+
+    let report = apply(&env, &[]).await;
+
+    assert!(report.is_empty(), "{report}");
+    let service = preview_unit(&bed, "syncfast-backup_docs.service");
+    assert!(service.contains("SYNCFAST_RCLONE="));
+    assert!(!service.contains("SYNCFAST_RESTIC"));
+}
+
+#[tokio::test]
+async fn changing_the_schedule_of_a_backup_rewrites_only_its_timer() {
+    let bed = Bed::new();
+    write_backups(&bed, &[backup_text(&bed, "docs", "")]);
+    let systemctl = FakeSystemctl::default();
+    apply_backups(&bed, SystemdMode::Off, &systemctl).await;
+    let service = preview_unit(&bed, "syncfast-backup_docs.service");
+    write_backups(&bed, &[backup_text(&bed, "docs", "every = \"weekly\"\n")]);
+
+    let report = apply_backups(&bed, SystemdMode::Off, &systemctl).await;
+
+    assert!(report.is_empty(), "{report}");
+    let timer = preview_unit(&bed, "syncfast-backup_docs.timer");
+    assert!(timer.contains("OnCalendar=Mon *-*-* 03:00:00\n"), "{timer}");
+    assert_eq!(preview_unit(&bed, "syncfast-backup_docs.service"), service);
+}
+
+#[tokio::test]
+async fn user_mode_reloads_then_enables_the_timer_of_an_enabled_backup() {
+    let bed = Bed::new();
+    write_backups(&bed, &[backup_text(&bed, "docs", "")]);
+    let systemctl = FakeSystemctl::default();
+
+    let report = apply_backups(&bed, SystemdMode::User, &systemctl).await;
+
+    assert!(report.is_empty(), "{report}");
+    let calls = systemctl.take();
+    assert!(
+        position(&calls, "daemon-reload")
+            < position(&calls, "enable --now syncfast-backup_docs.timer")
+    );
+    assert!(
+        position(&calls, "enable --now syncfast-backup_docs.timer")
+            < position(&calls, "restart syncfast-watch.service")
+    );
+    assert!(
+        bed.paths
+            .systemd_user_dir()
+            .join("syncfast-backup_docs.timer")
+            .exists()
+    );
+}
+
+#[tokio::test]
+async fn user_mode_disables_the_timer_of_a_paused_backup() {
+    let bed = Bed::new();
+    write_backups(&bed, &[backup_text(&bed, "docs", "enabled = false\n")]);
+    let systemctl = FakeSystemctl::default();
+
+    let report = apply_backups(&bed, SystemdMode::User, &systemctl).await;
+
+    assert!(report.is_empty(), "{report}");
+    let calls = systemctl.take();
+    assert!(calls.contains(&"disable --now syncfast-backup_docs.timer".to_owned()));
+    assert!(
+        !calls
+            .iter()
+            .any(|call| call.starts_with("enable --now syncfast-backup_"))
+    );
+    assert!(
+        bed.paths
+            .systemd_user_dir()
+            .join("syncfast-backup_docs.service")
+            .exists()
+    );
+}
+
+#[tokio::test]
+async fn a_backup_that_left_the_config_loses_units_and_state_but_not_the_repository_or_the_key() {
+    let bed = Bed::new();
+    write_backups(
+        &bed,
+        &[
+            backup_text(&bed, "docs", ""),
+            backup_text(&bed, "photos", ""),
+        ],
+    );
+    let systemctl = FakeSystemctl::default();
+    apply_backups(&bed, SystemdMode::Off, &systemctl).await;
+    let repo = bed.root.join("repo-docs");
+    fs::create_dir_all(&repo).unwrap();
+    fs::write(repo.join("config"), "repository").unwrap();
+    let keys = MemoryKeyStore::default();
+    let key = Key::generate().unwrap();
+    keys.put("docs", "Documents", &key).await.unwrap();
+    BackupState::default()
+        .save(&bed.paths, "docs")
+        .await
+        .unwrap();
+    BackupState::default()
+        .save(&bed.paths, "photos")
+        .await
+        .unwrap();
+    write_backups(&bed, &[backup_text(&bed, "photos", "")]);
+
+    let report = apply_backups(&bed, SystemdMode::Off, &systemctl).await;
+
+    assert!(report.is_empty(), "{report}");
+    assert_eq!(
+        names(&bed.paths.units_preview_dir()),
+        [
+            "syncfast-backup_photos.service",
+            "syncfast-backup_photos.timer",
+            "syncfast-watch.service"
+        ]
+    );
+    assert!(!bed.paths.backup_state_dir("docs").exists());
+    assert!(bed.paths.backup_state_dir("photos").exists());
+    assert_eq!(
+        fs::read_to_string(repo.join("config")).unwrap(),
+        "repository"
+    );
+    assert_eq!(keys.get("docs").await.unwrap(), Some(key));
+}
+
+#[tokio::test]
+async fn user_mode_stops_the_timer_and_service_of_a_removed_backup_before_deleting_it() {
+    let bed = Bed::new();
+    write_backups(&bed, &[backup_text(&bed, "docs", "")]);
+    let systemctl = FakeSystemctl::default();
+    apply_backups(&bed, SystemdMode::User, &systemctl).await;
+    systemctl.take();
+    write_backups(&bed, &[]);
+
+    let report = apply_backups(&bed, SystemdMode::User, &systemctl).await;
+
+    assert!(report.is_empty(), "{report}");
+    let calls = systemctl.take();
+    assert!(
+        position(&calls, "disable --now syncfast-backup_docs.timer")
+            < position(&calls, "stop syncfast-backup_docs.service")
+    );
+    assert!(
+        position(&calls, "stop syncfast-backup_docs.service") < position(&calls, "daemon-reload")
+    );
+    assert_eq!(
+        names(&bed.paths.systemd_user_dir()),
+        ["syncfast-watch.service"]
+    );
+}
+
+#[tokio::test]
+async fn an_invalid_backup_gets_no_units_keeps_its_state_and_gets_a_config_error_gate() {
+    let bed = Bed::new();
+    write_backups(&bed, &[backup_text(&bed, "docs", "")]);
+    let systemctl = FakeSystemctl::default();
+    apply_backups(&bed, SystemdMode::Off, &systemctl).await;
+    BackupState::default()
+        .save(&bed.paths, "docs")
+        .await
+        .unwrap();
+    write_backups(&bed, &[backup_text(&bed, "docs", "every = \"monthly\"\n")]);
+
+    let report = apply_backups(&bed, SystemdMode::Off, &systemctl).await;
+
+    assert_eq!(report.invalid_backups.len(), 1);
+    assert_eq!(report.invalid_backups[0].backup_id, "docs");
+    assert_eq!(report.exit_code(), 0);
+    assert_eq!(
+        names(&bed.paths.units_preview_dir()),
+        ["syncfast-watch.service"]
+    );
+    let state = BackupState::load(&bed.paths, "docs").await.unwrap();
+    let gate = state.gate.unwrap();
+    assert_eq!(gate.kind, GateKind::ConfigError);
+    assert_eq!(gate.detail, report.invalid_backups[0].message);
+}
+
+#[tokio::test]
+async fn an_invalid_backup_that_never_had_units_still_gets_the_gate() {
+    let bed = Bed::new();
+    write_backups(&bed, &[backup_text(&bed, "docs", "every = \"monthly\"\n")]);
+
+    let report = apply_backups(&bed, SystemdMode::Off, &FakeSystemctl::default()).await;
+
+    assert_eq!(report.invalid_backups.len(), 1);
+    let state = BackupState::load(&bed.paths, "docs").await.unwrap();
+    assert_eq!(state.gate.unwrap().kind, GateKind::ConfigError);
+}
+
+#[tokio::test]
+async fn a_config_error_gate_ends_when_the_backup_is_valid_again() {
+    let bed = Bed::new();
+    write_backups(&bed, &[backup_text(&bed, "docs", "every = \"monthly\"\n")]);
+    let systemctl = FakeSystemctl::default();
+    apply_backups(&bed, SystemdMode::Off, &systemctl).await;
+    write_backups(&bed, &[backup_text(&bed, "docs", "")]);
+
+    let report = apply_backups(&bed, SystemdMode::Off, &systemctl).await;
+
+    assert!(report.is_empty(), "{report}");
+    let state = BackupState::load(&bed.paths, "docs").await.unwrap();
+    assert_eq!(state.gate, None);
+    assert_eq!(
+        names(&bed.paths.units_preview_dir()),
+        [
+            "syncfast-backup_docs.service",
+            "syncfast-backup_docs.timer",
+            "syncfast-watch.service"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn syncs_and_backups_are_reconciled_side_by_side() {
+    let bed = Bed::new();
+    bed.write_config_text(&format!(
+        "version = 3\n{}\n{}",
+        pair_text(&bed, "docs", ""),
+        backup_text(&bed, "docs", "")
+    ));
+
+    let report = apply_backups(&bed, SystemdMode::Off, &FakeSystemctl::default()).await;
+
+    assert!(report.is_empty(), "{report}");
+    assert_eq!(
+        names(&bed.paths.units_preview_dir()),
+        [
+            "syncfast-backup_docs.service",
+            "syncfast-backup_docs.timer",
+            "syncfast-docs.service",
+            "syncfast-docs.timer",
+            "syncfast-watch.service"
+        ]
+    );
 }

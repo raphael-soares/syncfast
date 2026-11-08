@@ -56,6 +56,12 @@ pub enum Command {
         /// The transfer id
         id: String,
     },
+    /// Run one round of a backup (what the backup units call)
+    #[command(hide = true)]
+    BackupRun {
+        /// The backup id from config.toml
+        id: String,
+    },
     #[command(flatten)]
     Operation(Operation),
 }

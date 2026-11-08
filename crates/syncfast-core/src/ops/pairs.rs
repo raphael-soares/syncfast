@@ -72,11 +72,19 @@ pub struct ApplyView {
     pub config_error: Option<String>,
     /// Syncs that got no units because their config is invalid.
     pub invalid_syncs: Vec<InvalidSync>,
+    /// Backups that got no units because their config is invalid.
+    pub invalid_backups: Vec<InvalidBackup>,
     pub failures: Vec<ApplyFailureView>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct InvalidSync {
+    pub id: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct InvalidBackup {
     pub id: String,
     pub message: String,
 }
@@ -102,6 +110,14 @@ impl Ops {
                 .into_iter()
                 .map(|error| InvalidSync {
                     id: error.pair_id,
+                    message: error.message,
+                })
+                .collect(),
+            invalid_backups: report
+                .invalid_backups
+                .into_iter()
+                .map(|error| InvalidBackup {
+                    id: error.backup_id,
                     message: error.message,
                 })
                 .collect(),

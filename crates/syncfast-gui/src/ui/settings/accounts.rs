@@ -4,6 +4,7 @@
 
 use egui::text::{LayoutJob, TextFormat};
 use egui::{Align, Color32, Frame, Layout, Margin, RichText, Ui};
+use syncfast_core::backup::destination::Destination;
 use syncfast_core::config::split_remote;
 use syncfast_core::state::GateKind;
 
@@ -29,11 +30,23 @@ fn kind_label(kind: &str) -> &str {
     }
 }
 
-/// Whether a sync on `remote` stopped because the sign-in was lost.
+/// Whether a sync or a backup on `remote` stopped because the sign-in was
+/// lost.
 fn needs_reconnect(vm: &ViewModel, remote: &str) -> bool {
-    vm.pairs.iter().any(|pair| {
+    let sync = vm.pairs.iter().any(|pair| {
         pair.gate == Some(GateKind::AuthError)
             && split_remote(&pair.remote).is_some_and(|(account, _)| account == remote)
+    });
+    sync || vm.backups.iter().any(|backup| {
+        backup
+            .state
+            .gate
+            .as_ref()
+            .is_some_and(|gate| gate.kind == GateKind::AuthError)
+            && matches!(
+                Destination::parse(&backup.config.dest),
+                Ok(Destination::Account { name, .. }) if name == remote
+            )
     })
 }
 

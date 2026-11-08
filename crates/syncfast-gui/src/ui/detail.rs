@@ -62,6 +62,10 @@ pub fn show(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
                     inline_error(ui, error);
                 });
             }
+            if let Some(backup) = vm.selected_backup() {
+                actions.extend(super::backup_detail::detail(ui, vm, backup));
+                return;
+            }
             match vm.selected_pair() {
                 Some(pair) => actions.extend(pair_detail(ui, vm, pair, &palette)),
                 None => padded(ui, |ui| {
@@ -81,7 +85,7 @@ pub fn show(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
     actions
 }
 
-fn padded<R>(ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> R {
+pub(super) fn padded<R>(ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> R {
     Frame::new()
         .inner_margin(Margin::symmetric(SIDE, 0))
         .show(ui, content)

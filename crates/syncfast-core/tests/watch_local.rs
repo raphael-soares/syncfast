@@ -46,6 +46,10 @@ impl Trigger for Recorder {
             Ok(())
         })
     }
+
+    fn start_backup<'a>(&'a self, _backup_id: &'a str) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async { Err("this test starts no backups".to_owned()) })
+    }
 }
 
 impl Recorder {

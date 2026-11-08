@@ -18,6 +18,44 @@ The account shows **Signed out. Reconnect to resume syncing.** Reconnect from **
 
 With no network the status reads **Offline** and syncfast retries by itself. It sends no notification for that.
 
+## A backup says Needs attention
+
+A backup stops by itself, and does not delete anything, when it cannot run safely. The card at the top of the backup says why and offers the button that fixes it. After the fix, press **Back Up Now**.
+
+| The card says | What to do |
+|---|---|
+| Google Drive refused the account. | Press **Reconnect Account…**, or reconnect in **Settings…**, **Accounts**. |
+| Google Drive is full. | Free space on Drive, then press **Back Up Now**. |
+| No permission to the backup folder on Google Drive. | The account can no longer write to the destination folder. Check the folder's sharing on Drive. |
+| The backup folder is missing. | The destination folder was moved or deleted on Drive, or the disk shows an empty folder. Restore it, then press **Back Up Now**. |
+| `<destination>` is not available. | Plug in the disk. This appears when it has been away much longer than the schedule. |
+| The key for this backup is missing on this computer. | Press **Enter Key…** and type the key you saved. |
+| `<folder>` is missing. | The folder was moved, renamed or is on an unmounted disk. Put it back, or remove it from **Folders** in the **Settings** tab. No snapshot is made while a folder is missing. |
+| `<folder>` is empty. | If the folder is on a disk, mount it. An empty folder is never backed up, so an unmounted disk cannot replace good snapshots. |
+| Backups have failed since `<date>`: … | Open the **Activity** tab and read the last lines of a failed run. |
+| Old snapshots could not be cleaned up: … | The backups work, but retention could not delete old data. Read the reason. The cleanup is tried again after every backup; the card shows after the third failure in a row and goes away when one works. |
+| A message from the configuration | The backup is invalid, for example a destination that now overlaps a sync. Fix it in the **Settings** tab. |
+
+## Key storage is not available
+
+syncfast keeps each backup key in your keyring. It asks the Secret portal first. If there is no Secret portal, it asks the Secret Service of your session (`org.freedesktop.secrets`). If neither answers, no backup can be created.
+
+On Hyprland the portal does not use gnome-keyring for secrets by default. Add this line under `[preferred]` in `~/.config/xdg-desktop-portal/hyprland-portals.conf` (or in `portals.conf`):
+
+```text
+org.freedesktop.impl.portal.Secret=gnome-keyring
+```
+
+Then restart `xdg-desktop-portal` (or log out and in) and check it with:
+
+```sh
+busctl --user introspect org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop org.freedesktop.portal.Secret
+```
+
+Without the portal, syncfast uses the host keyring and **Settings > Backups** says "Host keyring". That works, but it lets the Flatpak read every secret in your keyring. The portal is safer.
+
+After the change, open **Settings > Backups** and press **Test Key Storage**: it should say **Secret portal**. If your keyring asks for a password and nobody answers, a scheduled backup waits 30 seconds and then needs attention; unlock the keyring and press **Back Up Now**. More in [Backing up with syncfast](backup.md#key-storage).
+
 ## Nothing syncs after a restart
 
 The syncs run as systemd user units that call `flatpak run`. Check them:

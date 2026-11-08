@@ -46,6 +46,7 @@ pub enum SettingsPane {
     #[default]
     Accounts,
     Defaults,
+    Backups,
     General,
     Notifications,
     Appearance,
@@ -55,16 +56,18 @@ pub enum SettingsPane {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsGroup {
     Syncs,
+    Backups,
     App,
 }
 
 impl SettingsGroup {
-    pub const ALL: [Self; 2] = [Self::Syncs, Self::App];
+    pub const ALL: [Self; 3] = [Self::Syncs, Self::Backups, Self::App];
 
     #[must_use]
     pub fn title(self) -> &'static str {
         match self {
             Self::Syncs => "Syncs",
+            Self::Backups => "Backups",
             Self::App => "App",
         }
     }
@@ -72,9 +75,10 @@ impl SettingsGroup {
 
 impl SettingsPane {
     /// In the order the sidebar lists them, group by group.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Accounts,
         Self::Defaults,
+        Self::Backups,
         Self::General,
         Self::Notifications,
         Self::Appearance,
@@ -86,6 +90,7 @@ impl SettingsPane {
         match self {
             Self::Accounts => "Accounts",
             Self::Defaults => "Defaults",
+            Self::Backups => "Backups",
             Self::General => "General",
             Self::Notifications => "Notifications",
             Self::Appearance => "Appearance",
@@ -96,6 +101,7 @@ impl SettingsPane {
     pub fn group(self) -> SettingsGroup {
         match self {
             Self::Accounts | Self::Defaults => SettingsGroup::Syncs,
+            Self::Backups => SettingsGroup::Backups,
             Self::General | Self::Notifications | Self::Appearance => SettingsGroup::App,
         }
     }
@@ -108,6 +114,7 @@ pub struct GuiState {
     /// welcome screen never comes back.
     pub welcome_done: bool,
     pub selected_pair: Option<String>,
+    pub selected_backup: Option<String>,
     pub sidebar_width: f32,
     /// What the desktop was last asked about starting syncfast at login:
     /// the portal is asked again only when the setting differs from this.
@@ -122,6 +129,7 @@ impl Default for GuiState {
         Self {
             welcome_done: false,
             selected_pair: None,
+            selected_backup: None,
             sidebar_width: SIDEBAR_DEFAULT_WIDTH,
             autostart_applied: false,
             window: WindowRecord::default(),
@@ -192,6 +200,7 @@ mod tests {
         let saved = GuiState {
             welcome_done: true,
             selected_pair: Some("notes".into()),
+            selected_backup: Some("photos".into()),
             sidebar_width: 280.0,
             autostart_applied: true,
             window: WindowRecord {
@@ -239,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn the_panes_list_accounts_and_defaults_under_syncs_then_the_app_panes() {
+    fn the_panes_list_syncs_then_backups_then_the_app_panes() {
         let order: Vec<_> = SettingsPane::ALL
             .iter()
             .map(|pane| (pane.group(), pane.title()))
@@ -250,6 +259,7 @@ mod tests {
             [
                 (SettingsGroup::Syncs, "Accounts"),
                 (SettingsGroup::Syncs, "Defaults"),
+                (SettingsGroup::Backups, "Backups"),
                 (SettingsGroup::App, "General"),
                 (SettingsGroup::App, "Notifications"),
                 (SettingsGroup::App, "Appearance"),

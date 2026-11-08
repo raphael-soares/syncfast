@@ -8,6 +8,8 @@ use std::time::Duration;
 use fastframe_instance::Slot;
 use fastframe_notifications::{App, Client, Event, Notification};
 
+use crate::backup::config::BackupConfig;
+use crate::backup::effects::BackupEvent;
 use crate::behavior::{Behavior, ConflictLoser};
 use crate::bisync::{FAILED_TO_BISYNC, Fault, failure_msgs, fault_of};
 use crate::bisync_log::{Level, LogLine, RunSummary};
@@ -69,6 +71,15 @@ impl Policy {
         match self.failures_after {
             0 => u32::from(DEFAULT_FAILURES_AFTER),
             after => u32::from(after),
+        }
+    }
+
+    #[must_use]
+    pub fn allows_backup(&self, event: &BackupEvent) -> bool {
+        match event {
+            BackupEvent::Gate { .. } | BackupEvent::KeyUnsaved => self.needs_action,
+            BackupEvent::Failing { .. } => self.failures_after > 0,
+            BackupEvent::Success { .. } => self.success,
         }
     }
 }
@@ -241,6 +252,120 @@ fn synced_body(uploaded: u32, downloaded: u32, deleted: u32) -> String {
     .join(", ")
 }
 
+/// The notification of one backup transition (spec phase 3, step 10). Its
+/// `pair_id` is `backup:<id>`, which is what a click on it opens.
+#[must_use]
+pub fn backup_notice(backup: &BackupConfig, event: &BackupEvent) -> Notice {
+    let name = &backup.name;
+    let attention = format!("{name}: backup needs attention");
+    let (title, body) = match event {
+        BackupEvent::Gate {
+            kind: GateKind::ConfigError,
+            detail,
+            ..
+        } => (format!("{name}: configuration error"), detail.clone()),
+        BackupEvent::Gate {
+            kind: GateKind::AuthError,
+            ..
+        } => (
+            format!("{name}: account disconnected"),
+            format!(
+                "Reconnect \"{}\" in Settings > Accounts.",
+                split_remote(&backup.dest).map_or(backup.dest.as_str(), |(account, _)| account)
+            ),
+        ),
+        BackupEvent::Gate {
+            fault: Some(Fault::RepoDamaged),
+            ..
+        } => (
+            format!("{name}: backup problem"),
+            "The check found damaged data. Backups are paused until you review it.".to_owned(),
+        ),
+        BackupEvent::Gate { fault, detail, .. } => {
+            (attention, backup_attention_body(backup, *fault, detail))
+        }
+        BackupEvent::Failing { failures, message } => (
+            format!("{name}: backup failing"),
+            format!("Failed {failures} times in a row. {message}"),
+        ),
+        BackupEvent::Success {
+            changed_files,
+            bytes_added,
+        } => (
+            format!("{name}: backup finished"),
+            format!(
+                "{changed_files} new or changed files, {} added.",
+                size_text(*bytes_added)
+            ),
+        ),
+        BackupEvent::KeyUnsaved => (
+            format!("{name}: save the backup key"),
+            "An agent created this backup. Open syncfast to save the key.".to_owned(),
+        ),
+    };
+    Notice {
+        pair_id: format!("backup:{}", backup.id),
+        title,
+        body,
+    }
+}
+
+fn backup_attention_body(backup: &BackupConfig, fault: Option<Fault>, detail: &str) -> String {
+    match fault {
+        Some(Fault::Auth | Fault::Account) => {
+            "Google Drive refused the account. Open syncfast for the fix.".to_owned()
+        }
+        Some(Fault::Quota) => "Google Drive is full.".to_owned(),
+        Some(Fault::Permission) => "No permission to the backup folder on Google Drive.".to_owned(),
+        Some(Fault::RemoteMissing | Fault::RepositoryMissing) => {
+            "The backup folder is missing.".to_owned()
+        }
+        Some(Fault::DestinationMissing) => format!(
+            "{} is not available. Plug it in to resume backups.",
+            backup.dest
+        ),
+        Some(Fault::KeyMissing | Fault::WrongKey) => {
+            "The key for this backup is missing on this computer. Open syncfast to enter it."
+                .to_owned()
+        }
+        Some(Fault::SourceMissing) => {
+            format!("{detail} is missing. Backups resume when it is back.")
+        }
+        Some(Fault::SourceEmpty) => format!("{detail} is empty. If it is on a drive, mount it."),
+        Some(Fault::RepoDamaged | Fault::LocalEmpty | Fault::RemoteEmpty) | None => {
+            "Backups keep failing. Open syncfast for details.".to_owned()
+        }
+    }
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn size_text(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["KiB", "MiB", "GiB", "TiB"];
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64 / 1024.0;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    format!("{value:.1} {}", UNITS[unit])
+}
+
+/// Sends the notice of each event the policy allows. Best effort, like
+/// every notification.
+pub fn notify_backup(
+    notifier: &dyn Notifier,
+    policy: &Policy,
+    backup: &BackupConfig,
+    events: &[BackupEvent],
+) {
+    for event in events.iter().filter(|event| policy.allows_backup(event)) {
+        notifier.notify(&backup_notice(backup, event));
+    }
+}
+
 /// What a `needs_attention` gate tells the user. Gates saved before they
 /// stored their `fault` read it back from `detail`, the failure message
 /// that named it; neither means a sync that kept failing for too long.
@@ -253,14 +378,17 @@ pub fn attention_body(fault: Option<Fault>, detail: &str) -> &'static str {
         Some(Fault::RemoteMissing) => "The folder on Google Drive is missing.",
         Some(Fault::LocalEmpty) => "The folder is empty. If it is on a drive, mount it.",
         Some(Fault::RemoteEmpty) => "The folder on Google Drive is empty. Nothing was changed.",
-        Some(Fault::KeyMissing) => "The backup key is missing. Open syncfast for the fix.",
-        Some(Fault::WrongKey) => "The saved key does not open this backup.",
-        Some(Fault::RepositoryMissing) => "No backup was found in its folder.",
-        Some(Fault::SourceMissing) => "A folder to back up is missing.",
-        Some(Fault::SourceEmpty) => "A folder to back up is empty. If it is on a drive, mount it.",
-        Some(Fault::DestinationMissing) => "The folder that holds the backup is not available.",
-        Some(Fault::RepoDamaged) => "The backup may be damaged. Open syncfast for details.",
-        Some(Fault::Auth) | None => "Syncing keeps failing. Open syncfast for details.",
+        Some(
+            Fault::Auth
+            | Fault::KeyMissing
+            | Fault::WrongKey
+            | Fault::RepositoryMissing
+            | Fault::SourceMissing
+            | Fault::SourceEmpty
+            | Fault::DestinationMissing
+            | Fault::RepoDamaged,
+        )
+        | None => "Syncing keeps failing. Open syncfast for details.",
     }
 }
 
@@ -875,15 +1003,14 @@ mod tests {
     }
 
     #[test]
-    fn every_backup_fault_has_its_own_attention_text() {
+    fn each_sync_fault_has_its_own_attention_text() {
         let faults = [
-            Fault::KeyMissing,
-            Fault::WrongKey,
-            Fault::RepositoryMissing,
-            Fault::SourceMissing,
-            Fault::SourceEmpty,
-            Fault::DestinationMissing,
-            Fault::RepoDamaged,
+            Fault::Account,
+            Fault::Quota,
+            Fault::Permission,
+            Fault::RemoteMissing,
+            Fault::LocalEmpty,
+            Fault::RemoteEmpty,
         ];
         let mut texts: Vec<_> = faults
             .iter()
@@ -894,5 +1021,276 @@ mod tests {
 
         assert_eq!(texts.len(), faults.len());
         assert!(texts.iter().all(|text| *text != attention_body(None, "")));
+    }
+
+    fn backup() -> BackupConfig {
+        BackupConfig {
+            id: "docs".into(),
+            name: "Documents".into(),
+            paths: vec!["/home/ada/Documents".into()],
+            dest: "gdrive:Backups/docs".into(),
+            every: "daily".into(),
+            keep: crate::backup::config::KeepSetting::default(),
+            presets: vec![],
+            filters: vec![],
+            one_file_system: true,
+            limit_upload: "off".into(),
+            limit_download: "off".into(),
+            enabled: true,
+        }
+    }
+
+    fn backup_gate(kind: GateKind, fault: Option<Fault>, detail: &str) -> BackupEvent {
+        BackupEvent::Gate {
+            kind,
+            detail: detail.into(),
+            fault,
+        }
+    }
+
+    fn attention(fault: Fault, detail: &str) -> Notice {
+        backup_notice(
+            &backup(),
+            &backup_gate(GateKind::NeedsAttention, Some(fault), detail),
+        )
+    }
+
+    #[test]
+    fn a_backup_notice_opens_the_backup_and_names_it() {
+        let notice = attention(Fault::Quota, "");
+
+        assert_eq!(notice.pair_id, "backup:docs");
+        assert_eq!(notice.title, "Documents: backup needs attention");
+    }
+
+    #[test]
+    fn backup_faults_that_are_google_drive_problems_say_so() {
+        assert_eq!(
+            attention(Fault::Account, "").body,
+            "Google Drive refused the account. Open syncfast for the fix."
+        );
+        assert_eq!(
+            attention(Fault::Auth, "").body,
+            attention(Fault::Account, "").body
+        );
+        assert_eq!(attention(Fault::Quota, "").body, "Google Drive is full.");
+        assert_eq!(
+            attention(Fault::Permission, "").body,
+            "No permission to the backup folder on Google Drive."
+        );
+    }
+
+    #[test]
+    fn a_missing_backup_folder_has_one_text_for_both_faults() {
+        for fault in [Fault::RemoteMissing, Fault::RepositoryMissing] {
+            assert_eq!(attention(fault, "").body, "The backup folder is missing.");
+        }
+    }
+
+    #[test]
+    fn an_unavailable_destination_names_where_it_is() {
+        assert_eq!(
+            attention(Fault::DestinationMissing, "").body,
+            "gdrive:Backups/docs is not available. Plug it in to resume backups."
+        );
+    }
+
+    #[test]
+    fn a_missing_or_wrong_key_asks_for_it_on_this_computer() {
+        for fault in [Fault::KeyMissing, Fault::WrongKey] {
+            assert_eq!(
+                attention(fault, "Fatal: wrong password").body,
+                "The key for this backup is missing on this computer. Open syncfast to enter it."
+            );
+        }
+    }
+
+    #[test]
+    fn a_missing_or_empty_source_names_the_folder() {
+        assert_eq!(
+            attention(Fault::SourceMissing, "/media/disk/docs").body,
+            "/media/disk/docs is missing. Backups resume when it is back."
+        );
+        assert_eq!(
+            attention(Fault::SourceEmpty, "/media/disk/docs").body,
+            "/media/disk/docs is empty. If it is on a drive, mount it."
+        );
+    }
+
+    #[test]
+    fn damaged_data_is_a_backup_problem_not_a_needs_attention() {
+        let notice = attention(Fault::RepoDamaged, "");
+
+        assert_eq!(notice.title, "Documents: backup problem");
+        assert_eq!(
+            notice.body,
+            "The check found damaged data. Backups are paused until you review it."
+        );
+    }
+
+    #[test]
+    fn a_long_failure_without_a_fault_says_backups_keep_failing() {
+        let notice = backup_notice(
+            &backup(),
+            &backup_gate(GateKind::NeedsAttention, None, "exit code 1"),
+        );
+
+        assert_eq!(notice.title, "Documents: backup needs attention");
+        assert_eq!(
+            notice.body,
+            "Backups keep failing. Open syncfast for details."
+        );
+    }
+
+    #[test]
+    fn a_disconnected_account_names_the_remote() {
+        let notice = backup_notice(&backup(), &backup_gate(GateKind::AuthError, None, ""));
+
+        assert_eq!(notice.title, "Documents: account disconnected");
+        assert_eq!(notice.body, "Reconnect \"gdrive\" in Settings > Accounts.");
+    }
+
+    #[test]
+    fn a_configuration_error_shows_its_message() {
+        let notice = backup_notice(
+            &backup(),
+            &backup_gate(GateKind::ConfigError, None, "keep.daily must be 0 or more"),
+        );
+
+        assert_eq!(notice.title, "Documents: configuration error");
+        assert_eq!(notice.body, "keep.daily must be 0 or more");
+    }
+
+    #[test]
+    fn failures_in_a_row_say_how_many_and_why() {
+        let notice = backup_notice(
+            &backup(),
+            &BackupEvent::Failing {
+                failures: 3,
+                message: "connection reset".into(),
+            },
+        );
+
+        assert_eq!(notice.title, "Documents: backup failing");
+        assert_eq!(notice.body, "Failed 3 times in a row. connection reset");
+    }
+
+    #[test]
+    fn a_finished_backup_says_how_much_changed() {
+        let notice = backup_notice(
+            &backup(),
+            &BackupEvent::Success {
+                changed_files: 12,
+                bytes_added: 1_572_864,
+            },
+        );
+
+        assert_eq!(notice.title, "Documents: backup finished");
+        assert_eq!(notice.body, "12 new or changed files, 1.5 MiB added.");
+    }
+
+    #[test]
+    fn small_sizes_are_in_bytes() {
+        let notice = backup_notice(
+            &backup(),
+            &BackupEvent::Success {
+                changed_files: 1,
+                bytes_added: 900,
+            },
+        );
+
+        assert_eq!(notice.body, "1 new or changed files, 900 B added.");
+    }
+
+    #[test]
+    fn an_agent_created_backup_asks_to_save_the_key() {
+        let notice = backup_notice(&backup(), &BackupEvent::KeyUnsaved);
+
+        assert_eq!(notice.title, "Documents: save the backup key");
+        assert_eq!(
+            notice.body,
+            "An agent created this backup. Open syncfast to save the key."
+        );
+    }
+
+    fn sent(policy: Policy, events: &[BackupEvent]) -> Vec<Notice> {
+        let recorder = Recorder::default();
+        notify_backup(&recorder, &policy, &backup(), events);
+        recorder.0.lock().unwrap().clone()
+    }
+
+    fn every_event() -> Vec<BackupEvent> {
+        vec![
+            backup_gate(GateKind::NeedsAttention, Some(Fault::Quota), ""),
+            BackupEvent::Failing {
+                failures: 3,
+                message: String::new(),
+            },
+            BackupEvent::Success {
+                changed_files: 1,
+                bytes_added: 1,
+            },
+            BackupEvent::KeyUnsaved,
+        ]
+    }
+
+    #[test]
+    fn the_default_policy_sends_everything_but_success() {
+        let titles: Vec<String> = sent(Policy::default(), &every_event())
+            .into_iter()
+            .map(|notice| notice.title)
+            .collect();
+
+        assert_eq!(
+            titles,
+            [
+                "Documents: backup needs attention",
+                "Documents: backup failing",
+                "Documents: save the backup key",
+            ]
+        );
+    }
+
+    #[test]
+    fn success_notifications_are_opt_in() {
+        let policy = Policy {
+            success: true,
+            ..Policy::default()
+        };
+
+        assert!(
+            sent(policy, &every_event())
+                .iter()
+                .any(|notice| notice.title == "Documents: backup finished")
+        );
+    }
+
+    #[test]
+    fn needs_action_off_silences_gates_and_the_unsaved_key() {
+        let policy = Policy {
+            needs_action: false,
+            ..Policy::default()
+        };
+
+        let titles: Vec<String> = sent(policy, &every_event())
+            .into_iter()
+            .map(|notice| notice.title)
+            .collect();
+
+        assert_eq!(titles, ["Documents: backup failing"]);
+    }
+
+    #[test]
+    fn failures_after_zero_silences_the_failing_notice() {
+        let policy = Policy {
+            failures_after: 0,
+            ..Policy::default()
+        };
+
+        assert!(
+            sent(policy, &every_event())
+                .iter()
+                .all(|notice| notice.title != "Documents: backup failing")
+        );
     }
 }

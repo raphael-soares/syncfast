@@ -17,6 +17,8 @@ use anyhow::Context as _;
 use clap::{CommandFactory as _, Parser as _};
 use jiff::Zoned;
 use serde::Serialize;
+use syncfast_core::backup::keystore::DefaultKeyStore;
+use syncfast_core::backup::run::{BackupRunEnv, BackupRunError, run_backup};
 use syncfast_core::flatpak;
 use syncfast_core::network::NetworkManager;
 use syncfast_core::notify::DesktopNotifier;
@@ -27,6 +29,7 @@ use syncfast_core::ops::{
 use syncfast_core::paths::Paths;
 use syncfast_core::preview::{PreviewError, preview};
 use syncfast_core::rclone::Rclone;
+use syncfast_core::restic::Restic;
 use syncfast_core::run::{RunEnv, RunError, run};
 use syncfast_core::status::{StatusError, collect};
 use syncfast_core::units::{ApplyEnv, SystemdMode, UserSystemctl, apply, current_binary};
@@ -71,6 +74,8 @@ fn failure_code(err: &anyhow::Error) -> u8 {
     if let Some(err) = err.downcast_ref::<OpError>() {
         err.exit_code()
     } else if let Some(err) = err.downcast_ref::<RunError>() {
+        err.exit_code()
+    } else if let Some(err) = err.downcast_ref::<BackupRunError>() {
         err.exit_code()
     } else if let Some(err) = err.downcast_ref::<PreviewError>() {
         err.exit_code()
@@ -189,6 +194,24 @@ async fn dispatch(command: Command, json: bool) -> anyhow::Result<ExitCode> {
         Command::TransferRun { id } => {
             run_transfer(&paths()?, &Rclone::from_env()?, &id).await?;
             Ok(ExitCode::SUCCESS)
+        }
+        Command::BackupRun { id } => {
+            let paths = paths()?;
+            let restic = Restic::from_env(Rclone::from_env()?, &paths).await?;
+            let keys = DefaultKeyStore::from_env(&paths);
+            let notifier = DesktopNotifier::new();
+            let clock = Zoned::now;
+            let env = BackupRunEnv {
+                paths: &paths,
+                restic: &restic,
+                keys: &keys,
+                network: &NetworkManager,
+                notifier: &notifier,
+                clock: &clock,
+                forward_signals: true,
+            };
+            let report = run_backup(&env, &id).await?;
+            Ok(ExitCode::from(report.exit_code()))
         }
         Command::Operation(operation) => operate(operation, json).await,
     }

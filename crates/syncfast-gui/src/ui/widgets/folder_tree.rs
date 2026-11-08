@@ -31,6 +31,7 @@ pub struct FolderNode {
 #[derive(Debug)]
 pub struct FolderTree<'a> {
     /// The always-present first row, e.g. `Entire gdrive`, with path `""`.
+    /// An empty label leaves the row out: the tree starts at its nodes.
     pub root_label: &'a str,
     pub nodes: &'a [FolderNode],
     pub selected: Option<&'a str>,
@@ -49,19 +50,22 @@ pub enum TreeAction {
 /// demand: the caller answers `Toggle` by fetching them.
 pub fn folder_tree(ui: &mut Ui, tree: &FolderTree<'_>) -> Vec<TreeAction> {
     let mut actions = Vec::new();
-    row(
-        ui,
-        &Row {
-            path: "",
-            name: tree.root_label,
-            depth: 0,
-            icon: Icon::FolderSync,
-            chevron: None,
-        },
-        tree,
-        &mut actions,
-    );
-    nodes(ui, tree.nodes, 0, tree, &mut actions);
+    let rooted = !tree.root_label.is_empty();
+    if rooted {
+        row(
+            ui,
+            &Row {
+                path: "",
+                name: tree.root_label,
+                depth: 0,
+                icon: Icon::FolderSync,
+                chevron: None,
+            },
+            tree,
+            &mut actions,
+        );
+    }
+    nodes(ui, tree.nodes, u16::from(rooted), tree, &mut actions);
     actions
 }
 
@@ -83,7 +87,7 @@ fn nodes(
             &Row {
                 path: &node.path,
                 name: &node.name,
-                depth: depth + 1,
+                depth,
                 icon: Icon::Folder,
                 chevron: chevron.map(|open| (open, matches!(node.children, NodeState::Loading))),
             },

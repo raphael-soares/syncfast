@@ -2,9 +2,12 @@
 //! with a check per line, a test against the real folder, and `Save`.
 
 use egui::{Align, Id, Layout, RichText, Ui};
+use syncfast_core::backup::config::filter_line_problem as backup_filter_line_problem;
+use syncfast_core::backup::test_filters::FilterTest as BackupFilterTest;
 use syncfast_core::config::filter_line_problem;
 use syncfast_core::filters::{ExclusionSummary, PRESETS};
 
+use super::format::bytes;
 use super::widgets::{inline_error, primary_button, secondary_button, switch, text_area};
 use super::{Action, ViewModel};
 use crate::theme::{self, space};
@@ -53,12 +56,23 @@ impl FilterDraft {
     /// `(line number, message)` of every line that is not a rule.
     #[must_use]
     pub fn problems(&self) -> Vec<(usize, String)> {
+        self.problems_for(FilterTarget::Sync)
+    }
+
+    /// [`Self::problems`] for the rules of a sync or of a backup.
+    #[must_use]
+    pub fn problems_for(&self, target: FilterTarget) -> Vec<(usize, String)> {
         self.rules
             .lines()
             .enumerate()
             .filter(|(_, line)| !line.trim().is_empty())
             .filter_map(|(index, line)| {
-                filter_line_problem(index + 1, line.trim_end()).map(|text| (index + 1, text))
+                let line = line.trim_end();
+                match target {
+                    FilterTarget::Sync => filter_line_problem(index + 1, line),
+                    FilterTarget::Backup => backup_filter_line_problem(index + 1, line),
+                }
+                .map(|text| (index + 1, text))
             })
             .collect()
     }
@@ -95,7 +109,17 @@ pub struct FilterRules {
 pub enum FilterTestState {
     Running,
     Done(ExclusionSummary),
+    /// The count of a backup's test: files and bytes, no folder list.
+    Counted(BackupFilterTest),
     Failed(String),
+}
+
+/// Whose rules the editor shows: backups read them with restic, which
+/// accepts fewer patterns and has its own warnings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterTarget {
+    Sync,
+    Backup,
 }
 
 /// The last `Test Filters` of a sync.
@@ -190,14 +214,36 @@ fn rules_of(draft: &FilterDraft) -> FilterRules {
     }
 }
 
-/// The editor: preset switches with their rules, the custom rules, and a
-/// `Test Filters` button with its result. `trailing` draws at the right end
-/// of the button row. Returns whether `Test Filters` was clicked.
+/// The editor of a sync: preset switches with their rules, the custom rules,
+/// and a `Test Filters` button with its result. `trailing` draws at the right
+/// end of the button row. Returns whether `Test Filters` was clicked.
 pub fn form(
     ui: &mut Ui,
     salt: &str,
     draft: &mut FilterDraft,
     test: Option<&FilterTest>,
+    trailing: impl FnOnce(&mut Ui),
+) -> bool {
+    form_for(ui, salt, draft, test, FilterTarget::Sync, trailing)
+}
+
+fn backup_warning(preset: &str) -> Option<&'static str> {
+    match preset {
+        "dev_dirs" => {
+            Some("This also leaves out .git folders, so repository history is not backed up.")
+        }
+        "git_repos" => Some("This leaves out every folder that holds a .git."),
+        _ => None,
+    }
+}
+
+/// [`form`] for the rules of a sync or of a backup.
+pub fn form_for(
+    ui: &mut Ui,
+    salt: &str,
+    draft: &mut FilterDraft,
+    test: Option<&FilterTest>,
+    target: FilterTarget,
     trailing: impl FnOnce(&mut Ui),
 ) -> bool {
     let palette = theme::palette(ui.ctx());
@@ -207,11 +253,28 @@ pub fn form(
         if switch(ui, &mut on, preset_title(preset.name)).changed() {
             draft.set(preset.name, on);
         }
-        if preset.rules.is_empty() {
+        if target == FilterTarget::Backup
+            && on
+            && let Some(warning) = backup_warning(preset.name)
+        {
             ui.label(
-                RichText::new("Leaves out every folder with a .git inside, found on each sync")
+                RichText::new(warning)
                     .font(theme::callout())
-                    .color(palette.secondary),
+                    .color(palette.warning),
+            );
+        }
+        if preset.rules.is_empty() {
+            let found = if target == FilterTarget::Backup {
+                "backup"
+            } else {
+                "sync"
+            };
+            ui.label(
+                RichText::new(format!(
+                    "Leaves out every folder with a .git inside, found on each {found}"
+                ))
+                .font(theme::callout())
+                .color(palette.secondary),
             );
             continue;
         }
@@ -247,7 +310,7 @@ pub fn form(
         6,
         "One rule per line, such as - *.bak",
     );
-    let problems = draft.problems();
+    let problems = draft.problems_for(target);
     for (_, message) in &problems {
         inline_error(ui, message);
     }
@@ -276,6 +339,18 @@ fn outcome(ui: &mut Ui, state: &FilterTestState) {
         }
         FilterTestState::Failed(message) => {
             inline_error(ui, message);
+        }
+        FilterTestState::Counted(count) => {
+            ui.label(
+                RichText::new(format!(
+                    "{} of {} files excluded \u{b7} {}",
+                    count.excluded_files,
+                    count.total_files,
+                    bytes(count.excluded_bytes)
+                ))
+                .font(theme::headline())
+                .color(palette.text),
+            );
         }
         FilterTestState::Done(summary) => {
             ui.label(

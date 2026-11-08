@@ -11,6 +11,11 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use fastframe_shell::Waker;
+use syncfast_core::backup::config::BackupConfig;
+use syncfast_core::backup::keystore::KeyBackend;
+use syncfast_core::backup::lifecycle;
+use syncfast_core::backup::snapshots::SnapshotView;
+use syncfast_core::backup::test_filters::FilterTest as BackupFilterCount;
 use syncfast_core::behavior::{ReviewLevel, SyncMode};
 use syncfast_core::bisync::ReviewKind;
 use syncfast_core::config::{Config, SettingScope};
@@ -32,6 +37,8 @@ use tokio::sync::{
 use tokio::task::{AbortHandle, JoinSet};
 
 use crate::app_settings;
+use crate::backup_runs::{self, BackupRunEntry};
+use crate::backup_tools;
 use crate::gui_state::{self, GuiState};
 use crate::instance::Inbox;
 use crate::notices::Notices;
@@ -43,6 +50,8 @@ use crate::ui::account_sheet::{AccountMode, ConnectRequest, Secret};
 use crate::ui::add_sync::{LocalFacts, NewSync};
 use crate::ui::{AccountStatus, RemoteRow};
 use syncfast_core::runs::{self, RunEntry};
+
+pub mod backup_sheets;
 
 const POLL_ACTIVE: Duration = Duration::from_secs(1);
 const POLL_VISIBLE: Duration = Duration::from_secs(2);
@@ -154,6 +163,36 @@ pub enum Command {
     /// Take an account out of rclone's config. Its syncs stay in the config
     /// and stop with the account missing.
     RemoveAccount(String),
+    BackUpNow(String),
+    /// A round for every enabled backup.
+    BackUpAll,
+    /// Pause (`false`) or resume (`true`) one backup, then `apply`.
+    SetBackupEnabled(String, bool),
+    LoadBackupSnapshots(String),
+    /// Read the rounds of a backup from its logs, for Activity.
+    LoadBackupRuns {
+        id: String,
+        running: bool,
+    },
+    /// The folder a backup writes to, when it is on this computer.
+    OpenBackupDestination(String),
+    /// Count what the rules of a backup would leave out of its folders.
+    TestBackupFilters {
+        backup: Box<BackupConfig>,
+    },
+    /// Write the settings of a backup, then `apply`.
+    SaveBackupSettings {
+        backup: Box<BackupConfig>,
+        filters_changed: bool,
+    },
+    /// Ask which storage holds the backup keys; `test` writes and reads a
+    /// test item instead of only looking.
+    CheckKeyStorage {
+        test: bool,
+    },
+    LoadResticVersion,
+    /// The wizard, the key sheets and the removal of a backup.
+    Backup(backup_sheets::BackupCommand),
 }
 
 /// A sync written to the config.
@@ -230,6 +269,37 @@ pub enum Event {
     },
     /// The filters of a sync were saved and applied.
     FiltersSaved(String),
+    /// The snapshots of a backup's repository, or why they cannot be read.
+    BackupSnapshots {
+        id: String,
+        outcome: Result<Arc<[SnapshotView]>, String>,
+    },
+    /// The rounds of a backup, newest first.
+    BackupRuns {
+        id: String,
+        runs: Arc<[BackupRunEntry]>,
+    },
+    /// The outcome of `Test Filters` of a backup for exactly these rules.
+    BackupFilterTest {
+        id: String,
+        presets: Vec<String>,
+        rules: Vec<String>,
+        outcome: Result<BackupFilterCount, String>,
+    },
+    /// The settings of a backup were saved and applied.
+    BackupSettingsSaved {
+        id: String,
+        filters_changed: bool,
+    },
+    /// Which storage holds the backup keys, or why none answered; `test`
+    /// when it answers the Test Key Storage button.
+    KeyStorage {
+        test: bool,
+        outcome: Result<KeyBackend, String>,
+    },
+    ResticVersion(Option<String>),
+    /// The answer to a [`backup_sheets::BackupCommand`].
+    Backup(backup_sheets::BackupReply),
 }
 
 #[derive(Clone)]
@@ -385,6 +455,7 @@ impl Context {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn run(
     paths: Arc<Paths>,
     emitter: Emitter,
@@ -472,6 +543,28 @@ async fn run(
                         id,
                         delete_versions,
                     } => spawn_remove_sync(&context, id, delete_versions),
+                    Command::BackUpNow(id) => spawn_backup(&context, vec![id]),
+                    Command::BackUpAll => spawn_backup_all(&context),
+                    Command::SetBackupEnabled(id, enabled) => {
+                        spawn_set_backup_enabled(&context, id, enabled);
+                    }
+                    Command::LoadBackupSnapshots(id) => spawn_load_backup_snapshots(&context, id),
+                    Command::LoadBackupRuns { id, running } => {
+                        spawn_load_backup_runs(&context, id, running);
+                    }
+                    Command::OpenBackupDestination(id) => {
+                        spawn_open_backup_destination(&context, id);
+                    }
+                    Command::TestBackupFilters { backup } => {
+                        spawn_test_backup_filters(&context, *backup);
+                    }
+                    Command::SaveBackupSettings {
+                        backup,
+                        filters_changed,
+                    } => spawn_save_backup_settings(&context, *backup, filters_changed),
+                    Command::CheckKeyStorage { test } => spawn_check_key_storage(&context, test),
+                    Command::LoadResticVersion => spawn_load_restic_version(&context),
+                    Command::Backup(command) => backup_sheets::spawn(&context, command),
                 }
             }
             () = context.refresh.notified() => {}
@@ -607,6 +700,7 @@ async fn apply_deleting_versions(paths: &Paths, delete_versions: &[String]) -> R
         .with_flatpak_id(flatpak_id.as_deref());
     let mut report = apply(&env, delete_versions).await;
     report.invalid_pairs.clear();
+    report.invalid_backups.clear();
     if report.is_empty() {
         Ok(())
     } else {
@@ -747,7 +841,8 @@ async fn remove_sync(paths: &Paths, id: &str, delete_versions: bool) -> Result<(
 fn spawn_sync(context: &Arc<Context>, ids: Vec<String>) {
     let context = Arc::clone(context);
     guarded(context.emitter.clone(), "starting a sync", async move {
-        match start_rounds(&ids).await {
+        let started = async { start_rounds(&*round_trigger()?, &ids).await }.await;
+        match started {
             Ok(()) => tokio::time::sleep(ROUND_START_WAIT).await,
             Err(text) => fail(&context, text),
         }
@@ -757,8 +852,7 @@ fn spawn_sync(context: &Arc<Context>, ids: Vec<String>) {
 
 /// Starts a round of each sync; the error joins the reason of every one
 /// that could not start.
-async fn start_rounds(ids: &[String]) -> Result<(), String> {
-    let trigger = round_trigger()?;
+async fn start_rounds(trigger: &dyn Trigger, ids: &[String]) -> Result<(), String> {
     let mut failures = Vec::new();
     for id in ids {
         if let Err(reason) = trigger.start(id).await {
@@ -842,6 +936,189 @@ async fn write_enabled(paths: &Paths, enabled: bool) -> Result<(), String> {
     })
     .await
     .map_err(|err| err.to_string())
+}
+
+/// A backup run for each id; the error joins the reason of every one that
+/// could not start.
+async fn start_backups(trigger: &dyn Trigger, ids: &[String]) -> Result<(), String> {
+    let mut failures = Vec::new();
+    for id in ids {
+        if let Err(reason) = trigger.start_backup(id).await {
+            failures.push(reason);
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
+}
+
+fn spawn_backup(context: &Arc<Context>, ids: Vec<String>) {
+    let context = Arc::clone(context);
+    guarded(context.emitter.clone(), "starting a backup", async move {
+        let started = async { start_backups(&*round_trigger()?, &ids).await }.await;
+        match started {
+            Ok(()) => tokio::time::sleep(ROUND_START_WAIT).await,
+            Err(text) => fail(&context, text),
+        }
+        context.refresh.notify_one();
+    });
+}
+
+fn spawn_backup_all(context: &Arc<Context>) {
+    let context = Arc::clone(context);
+    guarded(
+        context.emitter.clone(),
+        "starting every backup",
+        async move {
+            match backup_tools::enabled_backups(&context.paths).await {
+                Ok(ids) => spawn_backup(&context, ids),
+                Err(text) => fail(&context, text),
+            }
+        },
+    );
+}
+
+fn spawn_set_backup_enabled(context: &Arc<Context>, id: String, enabled: bool) {
+    let context = Arc::clone(context);
+    guarded(
+        context.emitter.clone(),
+        "pausing or resuming the backup",
+        async move {
+            match backup_tools::set_enabled(&context.paths, &id, enabled).await {
+                Ok(true) => {
+                    if let Err(text) = apply_config(&context.paths).await {
+                        fail(&context, text);
+                    }
+                }
+                Ok(false) => fail(&context, format!("There is no backup \"{id}\".")),
+                Err(text) => fail(&context, text),
+            }
+            context.refresh.notify_one();
+        },
+    );
+}
+
+fn spawn_load_backup_snapshots(context: &Arc<Context>, id: String) {
+    let context = Arc::clone(context);
+    guarded(
+        context.emitter.clone(),
+        "reading the snapshots",
+        async move {
+            let outcome = match load_tools(&context).await {
+                Ok(tools) => tools.snapshots(&id).await,
+                Err(text) => Err(text),
+            };
+            context.emitter.send(Event::BackupSnapshots { id, outcome });
+        },
+    );
+}
+
+async fn load_tools(context: &Context) -> Result<backup_tools::Tools, String> {
+    backup_tools::Tools::load(Arc::clone(&context.paths), current_cli()?, round_trigger()?).await
+}
+
+fn spawn_load_backup_runs(context: &Arc<Context>, id: String, running: bool) {
+    let context = Arc::clone(context);
+    guarded(
+        context.emitter.clone(),
+        "loading the backup history",
+        async move {
+            let runs = backup_runs::load(&context.paths, &id, running).await;
+            context.emitter.send(Event::BackupRuns { id, runs });
+        },
+    );
+}
+
+fn spawn_open_backup_destination(context: &Arc<Context>, id: String) {
+    let context = Arc::clone(context);
+    guarded(context.emitter.clone(), "opening a folder", async move {
+        match backup_tools::local_destination(&context.paths, &id).await {
+            Ok(Some(folder)) => {
+                if let Err(text) = open_folder(
+                    OPENER.as_ref(),
+                    &folder,
+                    "The folder of this backup is missing.",
+                )
+                .await
+                {
+                    fail(&context, text);
+                }
+            }
+            Ok(None) => fail(&context, "This backup is not on this computer.".to_owned()),
+            Err(text) => fail(&context, text),
+        }
+    });
+}
+
+fn spawn_test_backup_filters(context: &Arc<Context>, backup: BackupConfig) {
+    let context = Arc::clone(context);
+    guarded(context.emitter.clone(), "testing the filters", async move {
+        let outcome = match load_tools(&context).await {
+            Ok(tools) => tools.test_filters(&backup).await,
+            Err(text) => Err(text),
+        };
+        context.emitter.send(Event::BackupFilterTest {
+            id: backup.id,
+            presets: backup.presets,
+            rules: backup.filters,
+            outcome,
+        });
+    });
+}
+
+fn spawn_check_key_storage(context: &Arc<Context>, test: bool) {
+    let context = Arc::clone(context);
+    guarded(
+        context.emitter.clone(),
+        "checking the key storage",
+        async move {
+            let outcome = backup_tools::key_storage(&context.paths, test).await;
+            context.emitter.send(Event::KeyStorage { test, outcome });
+        },
+    );
+}
+
+fn spawn_load_restic_version(context: &Arc<Context>) {
+    let context = Arc::clone(context);
+    guarded(
+        context.emitter.clone(),
+        "reading the restic version",
+        async move {
+            let version = backup_tools::restic_version().await;
+            context.emitter.send(Event::ResticVersion(version));
+        },
+    );
+}
+
+fn spawn_save_backup_settings(context: &Arc<Context>, backup: BackupConfig, filters_changed: bool) {
+    let context = Arc::clone(context);
+    guarded(
+        context.emitter.clone(),
+        "saving the backup settings",
+        async move {
+            let saved = match load_tools(&context).await {
+                Ok(tools) => lifecycle::save_backup_settings(&tools.env(), &backup)
+                    .await
+                    .map_err(|err| err.to_string()),
+                Err(text) => Err(text),
+            };
+            match saved {
+                Ok(applied) => {
+                    context.emitter.send(Event::BackupSettingsSaved {
+                        id: backup.id,
+                        filters_changed,
+                    });
+                    if !applied.warnings.is_empty() {
+                        fail(&context, applied.warnings.join(" "));
+                    }
+                }
+                Err(text) => fail(&context, text),
+            }
+            context.refresh.notify_one();
+        },
+    );
 }
 
 fn spawn_load_runs(context: &Arc<Context>, id: String) {
@@ -1129,17 +1406,67 @@ fn spawn_connect(context: &Arc<Context>, request: ConnectRequest) {
     });
 }
 
-/// A sign-in worked: the remote list changed, and syncs that waited for
-/// access can run.
+/// A sign-in worked: the remote list changed, and the syncs and backups
+/// that waited for access can run.
 async fn reconnected(context: &Arc<Context>, account: String) {
     publish_remotes(context).await;
-    match sheet_io::clear_auth_gates(&context.paths, &account).await {
-        Ok(ids) if ids.is_empty() => {}
-        Ok(ids) => spawn_sync(context, ids),
-        Err(text) => fail(context, text),
+    let resumed = resume_after_sign_in(&context.paths, &account, round_trigger).await;
+    for text in resumed.failures {
+        fail(context, text);
     }
     context.emitter.send(Event::Connected(Ok(account)));
     spawn_check_accounts(context);
+    if resumed.started {
+        tokio::time::sleep(ROUND_START_WAIT).await;
+        context.refresh.notify_one();
+    }
+}
+
+struct Resumed {
+    started: bool,
+    failures: Vec<String>,
+}
+
+/// Clears the sign-in stop of every sync and backup on `account` and starts
+/// what it held. The trigger is only asked for when something was held.
+/// `started` is true when the trigger was obtained, `failures` has the reason
+/// of every failure.
+async fn resume_after_sign_in(
+    paths: &Paths,
+    account: &str,
+    trigger: impl FnOnce() -> Result<Arc<dyn Trigger>, String>,
+) -> Resumed {
+    let mut failures = Vec::new();
+    let syncs = sheet_io::clear_auth_gates(paths, account)
+        .await
+        .unwrap_or_else(|text| {
+            failures.push(text);
+            Vec::new()
+        });
+    let backups = sheet_io::clear_backup_auth_gates(paths, account)
+        .await
+        .unwrap_or_else(|text| {
+            failures.push(text);
+            Vec::new()
+        });
+    if syncs.is_empty() && backups.is_empty() {
+        return Resumed {
+            started: false,
+            failures,
+        };
+    }
+    let started = match trigger() {
+        Ok(trigger) => {
+            failures.extend(start_rounds(&*trigger, &syncs).await.err());
+            failures.extend(start_backups(&*trigger, &backups).await.err());
+            true
+        }
+        Err(text) => {
+            failures.push(text);
+            false
+        }
+    };
+    Resumed { started, failures }
 }
 
 /// The new account is signed in: the syncs of `from` move to it, held for a
@@ -1276,6 +1603,7 @@ fn spawn_remove_account(context: &Arc<Context>, name: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
 
     fn emitter() -> (Emitter, mpsc::Receiver<Event>) {
         let (events, received) = mpsc::channel();
@@ -1543,5 +1871,180 @@ mod tests {
             refused.unwrap_err(),
             "Cannot open https://example.org.".to_owned()
         );
+    }
+
+    #[derive(Default)]
+    struct Starts(Mutex<Vec<String>>);
+
+    impl Trigger for Starts {
+        fn start<'a>(
+            &'a self,
+            pair_id: &'a str,
+        ) -> syncfast_core::network::BoxFuture<'a, Result<(), String>> {
+            self.0.lock().unwrap().push(format!("sync {pair_id}"));
+            Box::pin(async { Ok(()) })
+        }
+
+        fn start_backup<'a>(
+            &'a self,
+            backup_id: &'a str,
+        ) -> syncfast_core::network::BoxFuture<'a, Result<(), String>> {
+            self.0.lock().unwrap().push(format!("backup {backup_id}"));
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    fn paths_in(root: &std::path::Path) -> Paths {
+        Paths::new(
+            root.join("home"),
+            root.join("config"),
+            root.join("state"),
+            root.join("data"),
+            root.join("run"),
+        )
+    }
+
+    fn write_config(paths: &Paths, syncs: &[(&str, &str)], backups: &[(&str, &str)]) {
+        let mut text = "version = 3\n".to_owned();
+        for (id, remote) in syncs {
+            write!(
+                text,
+                "\n[[pair]]\nid = \"{id}\"\nname = \"{id}\"\nlocal = \"/work/{id}\"\nremote = \"{remote}\"\n"
+            )
+            .unwrap();
+        }
+        for (id, dest) in backups {
+            write!(
+                text,
+                "\n[[backup]]\nid = \"{id}\"\nname = \"{id}\"\npaths = [\"/work/{id}\"]\ndest = \"{dest}\"\n"
+            )
+            .unwrap();
+        }
+        let file = paths.config_file();
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, text).unwrap();
+    }
+
+    fn auth_gate() -> syncfast_core::state::Gate {
+        syncfast_core::state::Gate {
+            kind: syncfast_core::state::GateKind::AuthError,
+            since: jiff::Timestamp::UNIX_EPOCH,
+            detail: String::new(),
+            fault: None,
+            auto_checked: None,
+        }
+    }
+
+    async fn stop_sync_for_auth(paths: &Paths, id: &str) {
+        syncfast_core::state::State {
+            gate: Some(auth_gate()),
+            ..syncfast_core::state::State::default()
+        }
+        .save(paths, id)
+        .await
+        .unwrap();
+    }
+
+    async fn stop_backup_for_auth(paths: &Paths, id: &str) {
+        syncfast_core::backup::state::BackupState {
+            gate: Some(auth_gate()),
+            ..syncfast_core::backup::state::BackupState::default()
+        }
+        .save(paths, id)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn signing_in_again_starts_the_backup_that_waited_for_the_account() {
+        use syncfast_core::backup::state::BackupState;
+        use syncfast_core::state::GateKind;
+
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        write_config(
+            &paths,
+            &[],
+            &[
+                ("docs", "gdrive:Backups/docs"),
+                ("other", "work:Backups/other"),
+            ],
+        );
+        stop_backup_for_auth(&paths, "docs").await;
+        stop_backup_for_auth(&paths, "other").await;
+        let starts = Arc::new(Starts::default());
+        let trigger: Arc<dyn Trigger> = starts.clone();
+
+        let resumed = resume_after_sign_in(&paths, "gdrive", || Ok(trigger)).await;
+
+        assert!(resumed.failures.is_empty(), "{:?}", resumed.failures);
+        assert!(resumed.started);
+        assert_eq!(*starts.0.lock().unwrap(), ["backup docs"]);
+        assert_eq!(BackupState::load(&paths, "docs").await.unwrap().gate, None);
+        let other = BackupState::load(&paths, "other").await.unwrap();
+        assert_eq!(other.gate.map(|gate| gate.kind), Some(GateKind::AuthError));
+    }
+
+    #[tokio::test]
+    async fn signing_in_again_starts_a_sync_and_a_backup_on_the_same_account() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        write_config(
+            &paths,
+            &[("notes", "gdrive:notes")],
+            &[("docs", "gdrive:Backups/docs")],
+        );
+        stop_sync_for_auth(&paths, "notes").await;
+        stop_backup_for_auth(&paths, "docs").await;
+        let starts = Arc::new(Starts::default());
+        let trigger: Arc<dyn Trigger> = starts.clone();
+
+        let resumed = resume_after_sign_in(&paths, "gdrive", || Ok(trigger)).await;
+
+        assert!(resumed.failures.is_empty(), "{:?}", resumed.failures);
+        assert!(resumed.started);
+        let mut started = starts.0.lock().unwrap().clone();
+        started.sort();
+        assert_eq!(started, ["backup docs", "sync notes"]);
+    }
+
+    #[tokio::test]
+    async fn a_trigger_that_cannot_be_made_is_reported_once_for_all_that_waited() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        write_config(
+            &paths,
+            &[("notes", "gdrive:notes")],
+            &[("docs", "gdrive:Backups/docs")],
+        );
+        stop_sync_for_auth(&paths, "notes").await;
+        stop_backup_for_auth(&paths, "docs").await;
+
+        let resumed =
+            resume_after_sign_in(&paths, "gdrive", || Err("no way to start".to_owned())).await;
+
+        assert_eq!(resumed.failures, ["no way to start"]);
+        assert!(!resumed.started);
+    }
+
+    #[tokio::test]
+    async fn nothing_stopped_for_the_account_never_asks_for_a_trigger() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        write_config(
+            &paths,
+            &[("notes", "gdrive:notes")],
+            &[("docs", "gdrive:Backups/docs")],
+        );
+        stop_sync_for_auth(&paths, "notes").await;
+        stop_backup_for_auth(&paths, "docs").await;
+
+        let resumed = resume_after_sign_in(&paths, "work", || {
+            panic!("no sync or backup waits for this account")
+        })
+        .await;
+
+        assert!(resumed.failures.is_empty(), "{:?}", resumed.failures);
+        assert!(!resumed.started);
     }
 }

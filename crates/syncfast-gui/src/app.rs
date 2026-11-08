@@ -13,14 +13,21 @@ use syncfast_core::paths::Paths;
 use syncfast_core::state::LastOutcome;
 
 use crate::autostart;
+use crate::backend::backup_sheets::BackupReply;
 use crate::backend::{Backend, Command, Event};
+use crate::backup_screens::BackupScreens;
 use crate::gui_state::{self, GuiState, SettingsPane};
 use crate::instance::{Inbox, Request};
 use crate::screens::Screens;
 use crate::sheets::{Sheets, Surroundings};
 use crate::snapshot::Snapshot;
 use crate::theme::{self, Palette, ThemeChoice, Themes};
-use crate::tray::{IconLook, PairView, Summary, SyncTray, TrayView, action as tray_action};
+use crate::tray::{
+    BackupSummary, BackupView, IconLook, PairView, Summary, SyncTray, TrayView,
+    action as tray_action,
+};
+use crate::ui::backup_detail::BackupDetailData;
+use crate::ui::backup_wizard::BackupFacts;
 use crate::ui::settings::{AppearanceView, AutostartView};
 use crate::ui::welcome::{self, WelcomeView};
 use crate::ui::{self, Action, DetailTab, PairRow, ViewModel};
@@ -101,6 +108,7 @@ pub struct App {
     runs_key: Option<RunsKey>,
     sheets: Sheets,
     screens: Screens,
+    backup_screens: BackupScreens,
     /// The sync just created needed no review: the welcome says so until
     /// the snapshot brings the sync in.
     auto_confirmed_sync: Option<String>,
@@ -149,6 +157,7 @@ impl App {
             runs_key: None,
             sheets: Sheets::new(paths.home.clone(), paths.data_dir()),
             screens: Screens::default(),
+            backup_screens: BackupScreens::default(),
             auto_confirmed_sync: None,
             autostart: AutostartState {
                 view: AutostartView {
@@ -217,10 +226,37 @@ impl App {
             .map(|pair| pair.pair.id.clone())
     }
 
+    /// The backup the detail shows: the selected one, or the first one when
+    /// there is no sync to show instead.
+    fn selected_backup_id(&self) -> Option<String> {
+        let backups = &self.snapshot.backups;
+        let wanted = self.gui.selected_backup.as_deref();
+        backups
+            .iter()
+            .find(|backup| Some(backup.config.id.as_str()) == wanted)
+            .or_else(|| backups.first().filter(|_| self.snapshot.pairs.is_empty()))
+            .map(|backup| backup.config.id.clone())
+    }
+
+    /// Asks for what the open tab of the selected backup lacks.
+    fn refresh_backup(&mut self) {
+        let selected = self.selected_backup_id();
+        for command in self
+            .backup_screens
+            .refresh(&self.snapshot, selected.as_deref())
+        {
+            self.backend.send(command);
+        }
+    }
+
     fn view_model(&self) -> ViewModel {
+        let selected_backup = self.selected_backup_id();
         let mut vm = ViewModel {
             pairs: self.snapshot.pairs.iter().map(PairRow::from).collect(),
-            selected: self.selected_id(),
+            selected: self.selected_id().filter(|_| selected_backup.is_none()),
+            backups: self.snapshot.backups.clone(),
+            selected_backup,
+            backup: BackupDetailData::default(),
             sidebar_width: self.gui.sidebar_width,
             error: self.snapshot.config_error.clone().or(self.error.clone()),
             now: Timestamp::now(),
@@ -245,7 +281,10 @@ impl App {
             removing_account: None,
             defaults: self.snapshot.defaults.clone(),
             defaults_overrides: self.snapshot.defaults_overrides.clone(),
+            key_storage: ui::settings::KeyStorageView::default(),
+            restic_version: None,
         };
+        self.backup_screens.fill(&mut vm);
         self.screens.fill(&mut vm);
         vm
     }
@@ -291,9 +330,20 @@ impl App {
             })
             .collect();
         let summary = Summary::of(&pairs);
+        let backups: Vec<BackupView> = self
+            .snapshot
+            .backups
+            .iter()
+            .map(|backup| BackupView {
+                status: backup.status,
+                runnable: backup.config.enabled && !backup.config.paths.is_empty(),
+            })
+            .collect();
+        let backups = BackupSummary::of(&backups);
         TrayView {
-            look: IconLook::of(summary.worst, self.system_dark),
+            look: IconLook::of(summary.worst, self.system_dark).counting(&backups),
             summary,
+            backups,
             window_hidden: self.window_hidden,
         }
     }
@@ -393,6 +443,19 @@ impl App {
                 {
                     self.backend.send(command);
                 }
+                self.refresh_backup();
+                self.sheets.set_backups(
+                    self.snapshot
+                        .backups
+                        .iter()
+                        .map(|backup| BackupFacts {
+                            id: backup.config.id.clone(),
+                            name: backup.config.name.clone(),
+                            dest: backup.config.dest.clone(),
+                            key_unsaved: backup.state.key_unsaved,
+                        })
+                        .collect(),
+                );
             }
             Event::Runs { pair, runs } => self.runs = Some((pair, runs)),
             Event::Themes(themes) => self.themes = themes,
@@ -406,10 +469,31 @@ impl App {
             }
             Event::SystemDark(dark) => self.system_dark = Some(dark),
             Event::Failed(text) => self.error = Some(text),
+            Event::BackupFilterTest { ref id, .. } if id.is_empty() => {
+                self.forward_to_sheets(&event);
+            }
+            Event::KeyStorage { .. } => {
+                self.forward_to_sheets(&event);
+                self.backup_screens.on_event(event);
+            }
+            Event::Backup(ref reply) => {
+                if let BackupReply::Created(Ok(id)) | BackupReply::Added(Ok(id)) = reply {
+                    self.actions.push(Action::SelectBackup(id.clone()));
+                }
+                self.forward_to_sheets(&event);
+            }
             event @ (Event::Conflicts { .. }
             | Event::FilterTest { .. }
             | Event::FiltersSaved(_)
             | Event::AccountStatus { .. }) => self.screens.on_event(event),
+            event @ (Event::BackupSnapshots { .. }
+            | Event::BackupRuns { .. }
+            | Event::BackupFilterTest { .. }
+            | Event::BackupSettingsSaved { .. }
+            | Event::ResticVersion(_)) => self.backup_screens.on_event(event),
+            Event::FolderPicked(picked) if self.backup_screens.picking() => {
+                self.backup_screens.on_event(Event::FolderPicked(picked));
+            }
             other => {
                 if let Event::SyncCreated(Ok(created)) = &other {
                     self.auto_confirmed_sync =
@@ -447,6 +531,7 @@ impl App {
     fn welcome_visible(&self) -> bool {
         !self.gui.welcome_done
             && self.snapshot.pairs.is_empty()
+            && self.snapshot.backups.is_empty()
             && self.snapshot.config_error.is_none()
     }
 
@@ -462,6 +547,10 @@ impl App {
                 Request::Notify(notice) => self.backend.send(Command::Notify(notice)),
                 Request::Opened(id) => {
                     self.actions.push(Action::ShowWindow);
+                    if let Some(backup) = id.strip_prefix("backup:") {
+                        self.actions.push(Action::SelectBackup(backup.to_owned()));
+                        continue;
+                    }
                     self.actions.push(Action::SelectPair(id.clone()));
                     if self.pair_needs_review(&id) {
                         self.actions.push(Action::OpenReview(id));
@@ -623,15 +712,58 @@ impl App {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn apply(&mut self, action: Action, ctx: &egui::Context) {
         match action {
             Action::SelectPair(id) => {
                 self.screens.settings_open = false;
-                if self.gui.selected_pair.as_ref() != Some(&id) {
+                if self.gui.selected_pair.as_ref() != Some(&id)
+                    || self.gui.selected_backup.is_some()
+                {
                     self.gui.selected_pair = Some(id);
+                    self.gui.selected_backup = None;
                     self.mark_gui_dirty();
                     self.load_runs_if_stale();
                 }
+            }
+            Action::SelectBackup(id) => {
+                self.screens.settings_open = false;
+                if self.gui.selected_backup.as_ref() != Some(&id) {
+                    self.gui.selected_backup = Some(id);
+                    self.mark_gui_dirty();
+                }
+                self.refresh_backup();
+            }
+            Action::SelectBackupTab(_) | Action::RefreshBackupSnapshots(_) => {
+                self.backup_screens.act(action);
+                self.refresh_backup();
+            }
+            action @ (Action::TestBackupFilters { .. }
+            | Action::SaveBackupSettings { .. }
+            | Action::PickBackupFolder
+            | Action::TakeBackupFolder
+            | Action::TestKeyStorage
+            | Action::DismissBackupSaved(_)) => {
+                if let Some(command) = self.backup_screens.act(action) {
+                    self.error = None;
+                    self.backend.send(command);
+                }
+            }
+            Action::BackUpNow(id) => {
+                self.error = None;
+                self.backend.send(Command::BackUpNow(id));
+            }
+            Action::BackUpAll => {
+                self.error = None;
+                self.backend.send(Command::BackUpAll);
+            }
+            Action::SetBackupEnabled(id, enabled) => {
+                self.error = None;
+                self.backend.send(Command::SetBackupEnabled(id, enabled));
+            }
+            Action::OpenBackupDestination(id) => {
+                self.error = None;
+                self.backend.send(Command::OpenBackupDestination(id));
             }
             Action::ResizeSidebar(width) => {
                 if (width - self.gui.sidebar_width).abs() > SIDEBAR_SLACK {
@@ -648,6 +780,12 @@ impl App {
             | Action::RenameAccount(_)
             | Action::Review(_)
             | Action::AddSyncSheet(_)
+            | Action::NewBackup
+            | Action::AddExistingBackup
+            | Action::ShowBackupKey(_)
+            | Action::EnterBackupKey(_)
+            | Action::RemoveBackup(_)
+            | Action::BackupSheet(_)
             | Action::Account(_) => {
                 self.apply_to_sheets(&action);
             }
@@ -725,6 +863,12 @@ impl App {
         }
     }
 
+    fn forward_to_sheets(&mut self, event: &Event) {
+        for command in self.sheets.handle_event(event) {
+            self.backend.send(command);
+        }
+    }
+
     fn apply_to_sheets(&mut self, action: &Action) {
         let pairs = self.pair_rows();
         let around = Surroundings {
@@ -740,8 +884,10 @@ impl App {
         match action {
             Action::OpenSettings => {
                 self.open_settings(ctx);
-                if self.gui.settings_pane == SettingsPane::Accounts {
-                    self.backend.send(Command::CheckAccounts);
+                match self.gui.settings_pane {
+                    SettingsPane::Accounts => self.backend.send(Command::CheckAccounts),
+                    SettingsPane::Backups => self.enter_backups_pane(),
+                    _ => {}
                 }
             }
             Action::OpenAccounts => {
@@ -751,14 +897,23 @@ impl App {
             }
             Action::CloseSettings => self.screens.settings_open = false,
             &Action::SetSettingsPane(pane) => {
-                let entering_accounts =
-                    pane == SettingsPane::Accounts && self.gui.settings_pane != pane;
+                let entering = self.gui.settings_pane != pane;
                 self.remember_pane(pane);
-                if entering_accounts {
-                    self.backend.send(Command::CheckAccounts);
+                if entering {
+                    match pane {
+                        SettingsPane::Accounts => self.backend.send(Command::CheckAccounts),
+                        SettingsPane::Backups => self.enter_backups_pane(),
+                        _ => {}
+                    }
                 }
             }
             _ => {}
+        }
+    }
+
+    fn enter_backups_pane(&mut self) {
+        for command in self.backup_screens.enter_settings() {
+            self.backend.send(command);
         }
     }
 

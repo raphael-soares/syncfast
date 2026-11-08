@@ -1,3 +1,4 @@
+use syncfast_core::backup::status::BackupStatus;
 use syncfast_core::state::DisplayStatus;
 
 fastframe_icons::icons! {
@@ -6,6 +7,7 @@ fastframe_icons::icons! {
     pub enum Icon {
         prefix: "syncfast-icon-",
         directory: "../assets/icons/",
+        Archive => "archive",
         Bell => "bell",
         Check => lucide "check",
         ChevronDown => lucide "chevron-down",
@@ -14,6 +16,7 @@ fastframe_icons::icons! {
         Clock => lucide "clock",
         CloudOff => "cloud-off",
         Copy => lucide "copy",
+        Download => "download",
         Ellipsis => lucide "ellipsis",
         ExternalLink => lucide "external-link",
         Eye => lucide "eye",
@@ -22,7 +25,9 @@ fastframe_icons::icons! {
         Folder => "folder",
         FolderPlus => "folder-plus",
         FolderSync => "folder-sync",
+        HardDrive => "hard-drive",
         History => "history",
+        KeyRound => "key-round",
         LogOut => lucide "log-out",
         Palette => "palette",
         Pause => lucide "pause",
@@ -54,6 +59,21 @@ pub fn status_icon(status: DisplayStatus) -> Icon {
     }
 }
 
+/// The icon of a backup's status; [`BackupStatus::icon`] names it.
+#[must_use]
+pub fn backup_status_icon(status: BackupStatus) -> Icon {
+    match status {
+        BackupStatus::BackingUp => Icon::Refresh,
+        BackupStatus::Error | BackupStatus::Failing => Icon::CircleAlert,
+        BackupStatus::SaveKey => Icon::KeyRound,
+        BackupStatus::Paused => Icon::Pause,
+        BackupStatus::Offline => Icon::CloudOff,
+        BackupStatus::Unavailable => Icon::HardDrive,
+        BackupStatus::Retrying => Icon::Clock,
+        BackupStatus::UpToDate => Icon::Check,
+    }
+}
+
 /// The icon's raw SVG, for rasterizers outside egui such as the tray.
 #[must_use]
 pub fn svg(icon: Icon) -> &'static str {
@@ -80,6 +100,29 @@ mod tests {
         for status in statuses {
             let name = status.icon();
             let uri = status_icon(status).uri();
+            assert!(
+                uri.ends_with(&format!("{name}.svg")),
+                "{status:?}: {uri} does not draw {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_backup_status_icon_matches_the_name_core_assigns() {
+        let statuses = [
+            BackupStatus::BackingUp,
+            BackupStatus::Error,
+            BackupStatus::SaveKey,
+            BackupStatus::Paused,
+            BackupStatus::Offline,
+            BackupStatus::Unavailable,
+            BackupStatus::Failing,
+            BackupStatus::Retrying,
+            BackupStatus::UpToDate,
+        ];
+        for status in statuses {
+            let name = status.icon();
+            let uri = backup_status_icon(status).uri();
             assert!(
                 uri.ends_with(&format!("{name}.svg")),
                 "{status:?}: {uri} does not draw {name}"

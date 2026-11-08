@@ -79,6 +79,9 @@ pub struct BackupState {
     pub next_check: Option<Timestamp>,
     pub check_after_failure_done: bool,
     pub prune_failures: u32,
+    /// The message of the last failed `forget`; gone when one succeeds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prune_error: Option<String>,
     /// An agent created the backup and the person has not yet confirmed
     /// saving the key. Holds no round.
     pub key_unsaved: bool,
@@ -139,6 +142,7 @@ mod tests {
         assert!(!state.destination_unavailable);
         assert!(!state.check_after_failure_done);
         assert_eq!(state.prune_failures, 0);
+        assert_eq!(state.prune_error, None);
         assert!(state.notified.is_empty());
         assert_eq!(state.last_snapshot, None);
     }
@@ -173,6 +177,7 @@ mod tests {
             "next_check": "2026-05-01T00:00:00Z",
             "check_after_failure_done": true,
             "prune_failures": 1,
+            "prune_error": "repository is locked",
             "key_unsaved": true,
             "notified": ["failures"]
         }"#;
@@ -194,6 +199,7 @@ mod tests {
         assert!(!check.ok);
         assert!(state.check_after_failure_done);
         assert_eq!(state.prune_failures, 1);
+        assert_eq!(state.prune_error.as_deref(), Some("repository is locked"));
         assert_eq!(state.notified, ["failures"]);
     }
 

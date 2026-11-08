@@ -188,6 +188,7 @@ pub fn show(ctx: &egui::Context, view: &AccountView<'_>, state: &mut AccountStat
         primary_kind: PrimaryKind::Normal,
         primary_enabled: can_connect(state, view),
         back: false,
+        cancel: true,
     };
     let mut actions = Vec::new();
     let chosen = sheet(ctx, "account", &title(&state.mode), &buttons, |ui| {

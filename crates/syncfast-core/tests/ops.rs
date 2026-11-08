@@ -76,6 +76,10 @@ impl Trigger for InProcess {
             Ok(())
         })
     }
+
+    fn start_backup<'a>(&'a self, _backup_id: &'a str) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async { Err("this test starts no backups".to_owned()) })
+    }
 }
 
 /// Runs a transfer as a task of this process, what the detached
@@ -1599,6 +1603,10 @@ impl Trigger for RefusesToStart {
     fn start<'a>(&'a self, _pair_id: &'a str) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async { Err("systemd is not running".to_owned()) })
     }
+
+    fn start_backup<'a>(&'a self, _backup_id: &'a str) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async { Err("systemd is not running".to_owned()) })
+    }
 }
 
 #[tokio::test]
@@ -1670,6 +1678,10 @@ impl Trigger for HoldsTheRound {
         let lock = try_lock_pair(&self.paths, pair_id).unwrap();
         *self.held.lock().unwrap() = lock;
         Box::pin(async { Ok(()) })
+    }
+
+    fn start_backup<'a>(&'a self, _backup_id: &'a str) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async { Err("this test starts no backups".to_owned()) })
     }
 }
 

@@ -20,6 +20,7 @@ pub struct SheetButtons<'a> {
     pub primary_enabled: bool,
     /// Adds a `Back` button and moves `Cancel` to the left edge.
     pub back: bool,
+    pub cancel: bool,
 }
 
 impl<'a> SheetButtons<'a> {
@@ -30,6 +31,7 @@ impl<'a> SheetButtons<'a> {
             primary_kind: PrimaryKind::Normal,
             primary_enabled: true,
             back: false,
+            cancel: true,
         }
     }
 }
@@ -41,10 +43,10 @@ pub enum SheetAction {
     Primary,
 }
 
-/// A modal sheet: one at a time, always with `Cancel`. Enter triggers the
-/// primary button (or `Cancel` when the primary is destructive), Esc
-/// triggers `Cancel`. `body` scrolls when taller than 80% of the window.
-/// Returns the button the user chose this frame.
+/// A modal sheet: one at a time. Enter triggers the primary button (or
+/// `Cancel` when the primary is destructive), Esc triggers `Cancel`. `body`
+/// scrolls when taller than 80% of the window. Returns the button the user
+/// chose this frame.
 pub fn sheet(
     ctx: &egui::Context,
     id: &str,
@@ -126,7 +128,7 @@ fn footer(ui: &mut Ui, buttons: &SheetButtons<'_>) -> Option<SheetAction> {
     let mut action = None;
     ui.add_space(space::XS);
     ui.horizontal(|ui| {
-        if buttons.back && secondary_button(ui, "Cancel").clicked() {
+        if buttons.back && buttons.cancel && secondary_button(ui, "Cancel").clicked() {
             action = Some(SheetAction::Cancel);
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -144,7 +146,7 @@ fn footer(ui: &mut Ui, buttons: &SheetButtons<'_>) -> Option<SheetAction> {
                 if secondary_button(ui, "Back").clicked() {
                     action = Some(SheetAction::Back);
                 }
-            } else if secondary_button(ui, "Cancel").clicked() {
+            } else if buttons.cancel && secondary_button(ui, "Cancel").clicked() {
                 action = Some(SheetAction::Cancel);
             }
         });

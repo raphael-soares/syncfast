@@ -11,11 +11,13 @@ use syncfast_core::ops::FirstRound;
 use syncfast_core::state::GateKind;
 
 use crate::backend::{Command, CreatedSync, Event};
+use crate::backup_sheets::{BackupSheet, Shared, WizardSession};
 use crate::sheet_io::PreviewFailure;
 use crate::ui::account_sheet::{self, AccountAction, AccountMode, AccountState, AccountView};
 use crate::ui::add_sync::{
     self, AddSyncAction, AddSyncState, AddSyncView, DirListing, LocalFacts, NewSync,
 };
+use crate::ui::backup_wizard::{BackupFacts, BackupSheetAction, Flow};
 use crate::ui::filters::FilterTest;
 use crate::ui::review::{self, ReviewAction, ReviewPhase, ReviewView};
 use crate::ui::{Action, PairRow, RemoteRow};
@@ -29,6 +31,7 @@ enum Current {
     AddSync(Box<AddSyncSession>),
     Review(Box<ReviewSession>),
     Account(Box<AccountSession>),
+    Backup(Box<BackupSheet>),
 }
 
 #[derive(Debug)]
@@ -63,6 +66,8 @@ struct AccountSession {
     then_add_sync: bool,
     /// Closing without an account brings the Add Sync sheet back.
     back_to_add_sync: bool,
+    /// Closing without an account brings the New Backup sheet back.
+    back_to_backup: Option<Box<WizardSession>>,
 }
 
 /// What the sheets need to know about the app.
@@ -79,6 +84,7 @@ pub struct Sheets {
     home: PathBuf,
     data_dir: PathBuf,
     current: Current,
+    backups: Vec<BackupFacts>,
 }
 
 impl Sheets {
@@ -89,12 +95,18 @@ impl Sheets {
             home,
             data_dir,
             current: Current::Closed,
+            backups: Vec::new(),
         }
     }
 
     #[must_use]
     pub fn remotes(&self) -> &[RemoteRow] {
         &self.remotes
+    }
+
+    /// The backups that exist, for the sheets that name one.
+    pub fn set_backups(&mut self, backups: Vec<BackupFacts>) {
+        self.backups = backups;
     }
 
     #[must_use]
@@ -118,7 +130,20 @@ impl Sheets {
             Action::RenameAccount(name) => {
                 self.edit_account(AccountMode::Rename { from: name.clone() }, around)
             }
-            Action::AddSyncSheet(action) => self.add_sync_action(action),
+            Action::NewBackup => self.open_backup(BackupSheet::wizard(Flow::New)),
+            Action::AddExistingBackup => self.open_backup(BackupSheet::wizard(Flow::Existing)),
+            Action::ShowBackupKey(id) => self.open_backup_of(id, BackupSheet::show_key),
+            Action::EnterBackupKey(id) => {
+                self.open_backup_of(id, |facts| (BackupSheet::enter_key(facts), Vec::new()))
+            }
+            Action::RemoveBackup(id) => {
+                self.open_backup_of(id, |facts| (BackupSheet::remove(facts), Vec::new()))
+            }
+            Action::BackupSheet(action) => self.backup_action(action),
+            Action::AddSyncSheet(action) => match &mut self.current {
+                Current::Backup(sheet) => sheet.dirs_action(action),
+                _ => self.add_sync_action(action),
+            },
             Action::Review(action) => self.review_action(*action),
             Action::Account(action) => self.account_action(action),
             _ => Vec::new(),
@@ -195,6 +220,11 @@ impl Sheets {
     }
 
     fn open_account(&mut self, mode: AccountMode, around: &Surroundings<'_>) -> Vec<Command> {
+        let parked = if matches!(mode, AccountMode::Add) {
+            self.park_wizard()
+        } else {
+            None
+        };
         let from_wizard = matches!(self.current, Current::AddSync(_));
         let renaming = matches!(mode, AccountMode::Rename { .. });
         let mut commands = self.leave();
@@ -203,8 +233,9 @@ impl Sheets {
             state: AccountState::new(mode),
             connecting: false,
             error: None,
-            then_add_sync: !renaming && (from_wizard || around.welcome),
+            then_add_sync: !renaming && parked.is_none() && (from_wizard || around.welcome),
             back_to_add_sync: from_wizard,
+            back_to_backup: parked,
         }));
         commands
     }
@@ -288,12 +319,15 @@ impl Sheets {
             AccountAction::Cancel => {
                 let was_connecting = session.connecting;
                 let back = session.back_to_add_sync;
+                let parked = session.back_to_backup.take();
                 self.current = Current::Closed;
                 let mut commands = Vec::new();
                 if was_connecting {
                     commands.push(Command::CancelConnect);
                 }
-                if back {
+                if let Some(wizard) = parked {
+                    self.current = Current::Backup(Box::new(BackupSheet::from_wizard(wizard)));
+                } else if back {
                     commands.extend(self.open_add_sync(AddSyncState::default()));
                 }
                 commands
@@ -301,8 +335,82 @@ impl Sheets {
         }
     }
 
+    /// The sheet of a backup flow replaces the one that is open.
+    fn open_backup(&mut self, (sheet, mut commands): (BackupSheet, Vec<Command>)) -> Vec<Command> {
+        let mut stops = self.leave();
+        self.current = Current::Backup(Box::new(sheet));
+        stops.append(&mut commands);
+        stops
+    }
+
+    fn open_backup_of(
+        &mut self,
+        id: &str,
+        open: impl FnOnce(&BackupFacts) -> (BackupSheet, Vec<Command>),
+    ) -> Vec<Command> {
+        let Some(facts) = self.backups.iter().find(|facts| facts.id == id) else {
+            return Vec::new();
+        };
+        let opened = open(facts);
+        self.open_backup(opened)
+    }
+
+    fn backup_action(&mut self, action: &BackupSheetAction) -> Vec<Command> {
+        let Current::Backup(sheet) = &mut self.current else {
+            return Vec::new();
+        };
+        let outcome = sheet.apply(action, &self.backups);
+        if outcome.close {
+            self.current = Current::Closed;
+        }
+        outcome.commands
+    }
+
+    /// The New Backup sheet, kept aside while an account is added.
+    fn park_wizard(&mut self) -> Option<Box<WizardSession>> {
+        match std::mem::replace(&mut self.current, Current::Closed) {
+            Current::Backup(sheet) => match (*sheet).into_wizard() {
+                Ok(wizard) => Some(wizard),
+                Err(sheet) => {
+                    self.current = Current::Backup(Box::new(sheet));
+                    None
+                }
+            },
+            other => {
+                self.current = other;
+                None
+            }
+        }
+    }
+
+    /// What the backend said that concerns the sheet of a backup flow.
+    fn backup_event(&mut self, event: &Event) -> Option<Vec<Command>> {
+        let Current::Backup(sheet) = &mut self.current else {
+            return None;
+        };
+        match event {
+            Event::Dirs { path, result } => sheet.on_dirs(path, result),
+            Event::RemoteDirMade { path, result } => return Some(sheet.on_dir_made(path, result)),
+            Event::FolderPicked(picked) => sheet.on_picked(picked.as_ref()),
+            Event::KeyStorage { outcome, .. } => sheet.on_key_storage(outcome),
+            Event::BackupFilterTest { .. } => sheet.on_filter_test(event),
+            Event::Backup(reply) => {
+                let outcome = sheet.on_reply(reply);
+                if outcome.close {
+                    self.current = Current::Closed;
+                }
+                return Some(outcome.commands);
+            }
+            _ => return None,
+        }
+        Some(Vec::new())
+    }
+
     /// Takes in what the backend reported, if it concerns the sheets.
     pub fn handle_event(&mut self, event: &Event) -> Vec<Command> {
+        if let Some(commands) = self.backup_event(event) {
+            return commands;
+        }
         match event {
             Event::Remotes(remotes) => {
                 self.remotes.clone_from(remotes);
@@ -461,7 +569,14 @@ impl Sheets {
             }
             Ok(name) => {
                 let next = session.then_add_sync;
+                let parked = session.back_to_backup.take();
                 self.current = Current::Closed;
+                if let Some(wizard) = parked {
+                    let mut sheet = BackupSheet::from_wizard(wizard);
+                    sheet.account_added(name);
+                    self.current = Current::Backup(Box::new(sheet));
+                    return vec![Command::LoadRemotes];
+                }
                 if next {
                     let state = AddSyncState {
                         account: Some(name.clone()),
@@ -543,6 +658,14 @@ impl Sheets {
                     error: session.error.as_deref(),
                 };
                 account_sheet::show(ctx, &view, &mut session.state)
+            }
+            Current::Backup(sheet) => {
+                let shared = Shared {
+                    remotes: &self.remotes,
+                    home: &self.home,
+                    backups: &self.backups,
+                };
+                sheet.show(ctx, &shared)
             }
         }
     }

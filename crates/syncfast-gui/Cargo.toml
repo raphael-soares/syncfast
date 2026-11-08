@@ -40,6 +40,7 @@ serde_json.workspace = true
 syncfast-core = { path = "../syncfast-core" }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
 zbus.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 egui_kittest.workspace = true

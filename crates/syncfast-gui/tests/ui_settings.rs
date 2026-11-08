@@ -121,6 +121,65 @@ fn a_remote_whose_sync_lost_its_sign_in_offers_reconnect() {
     );
 }
 
+fn backup_on(account: &str, gate: Option<GateKind>) -> syncfast_gui::snapshot::BackupSnapshot {
+    let text = format!(
+        "version = 3\n\n[[backup]]\nid = \"docs\"\nname = \"Documents\"\npaths = [\"/work/docs\"]\ndest = \"{account}:Backups/docs\"\n"
+    );
+    let config = syncfast_core::config::Config::parse(&text, std::path::Path::new("/home/ada"))
+        .unwrap()
+        .backups()[0]
+        .clone();
+    let state = syncfast_core::backup::state::BackupState {
+        gate: gate.map(|kind| syncfast_core::state::Gate {
+            kind,
+            since: common::now(),
+            detail: String::new(),
+            fault: None,
+            auto_checked: None,
+        }),
+        ..Default::default()
+    };
+    syncfast_gui::snapshot::BackupSnapshot {
+        config,
+        state,
+        running: None,
+        status: syncfast_core::backup::status::BackupStatus::Error,
+        progress: None,
+        missing_folders: Vec::new(),
+    }
+}
+
+#[test]
+fn a_remote_whose_backup_lost_its_sign_in_offers_reconnect() {
+    let mut vm = accounts(vec![
+        remote("gdrive", "drive", true),
+        remote("trabalho", "drive", true),
+    ]);
+    vm.backups = vec![backup_on("gdrive", Some(GateKind::AuthError))];
+    let mut harness = harness(vm, screen());
+
+    harness.run();
+
+    assert_eq!(harness.query_all_by_label("Reconnect…").count(), 1);
+    harness.get_by_label("Reconnect…").click();
+    harness.run();
+    assert_eq!(
+        harness.state().actions,
+        [Action::ReconnectAccount("gdrive".to_owned())]
+    );
+}
+
+#[test]
+fn a_backup_that_is_fine_or_stopped_for_another_reason_does_not_offer_reconnect() {
+    let mut vm = accounts(vec![remote("gdrive", "drive", true)]);
+    vm.backups = vec![backup_on("gdrive", Some(GateKind::NeedsAttention))];
+    let mut harness = harness(vm, screen());
+
+    harness.run();
+
+    assert!(harness.query_by_label("Reconnect…").is_none());
+}
+
 #[test]
 fn without_a_lost_sign_in_there_is_no_reconnect() {
     let mut harness = harness(accounts(vec![remote("gdrive", "drive", true)]), screen());

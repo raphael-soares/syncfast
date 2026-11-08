@@ -40,6 +40,10 @@ Afterwards the status reads **Up to date** and syncfast runs a round on a schedu
 - **Pause** stops a sync until you resume it. **Remove Sync…** leaves the files on both sides.
 - By default, files replaced on this computer by a download are kept for 30 days (**Keep replaced files** and **Keep for** in the **Options** tab, or in **Settings › Defaults**): **Open Versions Folder** in the **…** menu.
 
+## Back up
+
+A sync is not a backup: a deleted file is deleted on both sides. For versioned, encrypted copies of your folders, press **+** next to **Backups**; [Backing up with syncfast](backup.md) covers it, including the key you must save.
+
 ## Command line
 
 ```sh
