@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/raphael-soares/syncfast/compare/v0.13.0...v0.14.0) (2026-11-08)
+
+
+### Features
+
+* schedule backups with restic ([#88](https://github.com/raphael-soares/syncfast/issues/88)) ([41eb45d](https://github.com/raphael-soares/syncfast/commit/41eb45da108435148686945ef4a580d213ed2dbc))
+
 ## [0.13.0](https://github.com/raphael-soares/syncfast/compare/v0.12.2...v0.13.0) (2026-11-08)
 
 
