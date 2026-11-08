@@ -152,6 +152,7 @@ impl Ops {
         }
         let accounts = self.rclone.listremotes().await?;
         let validation = config.validate_backups(&self.paths, &accounts);
+        let failing_after = config.defaults().notifications.failing_after();
         let mut views = Vec::new();
         for backup in config
             .backups()
@@ -163,7 +164,7 @@ impl Ops {
                 .iter()
                 .find(|error| error.backup_id == backup.id)
                 .map(|error| error.message.clone());
-            views.push(self.make_view(backup, problem).await?);
+            views.push(self.make_view(backup, problem, failing_after).await?);
         }
         Ok(views)
     }
@@ -172,10 +173,11 @@ impl Ops {
         &self,
         backup: &BackupConfig,
         config_error: Option<String>,
+        failing_after: u32,
     ) -> Result<BackupView, OpError> {
         let state = BackupState::load(&self.paths, &backup.id).await?;
         let step = running_step(&self.paths, &backup.id);
-        let status = display_backup_status(backup, &state, step);
+        let status = display_backup_status(backup, &state, step, failing_after);
         let stored = matches!(self.keys.get(&backup.id).await, Ok(Some(_)));
         Ok(BackupView {
             id: backup.id.clone(),
