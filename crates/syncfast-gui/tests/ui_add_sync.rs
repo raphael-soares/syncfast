@@ -150,9 +150,38 @@ fn harness_with(state: AddSyncState, edit: impl FnOnce(&mut Sheet)) -> Harness<'
             sheet,
         );
     harness.run_ok();
-    // The Filters step outgrows the sheet, which then recentres over several frames.
-    harness.run_steps(10);
+    settle(&mut harness, 1);
     harness
+}
+
+const SETTLE_CEILING: usize = 30;
+/// `scroll_to_me` moves nothing for its first two frames.
+const SCROLL_LATENCY: usize = 3;
+
+fn layout(harness: &Harness<'_, Sheet>) -> Vec<Option<egui::accesskit::Rect>> {
+    harness
+        .root()
+        .children_recursive()
+        .map(|node| node.accesskit_node().bounding_box())
+        .collect()
+}
+
+/// Steps, at least `at_least` frames, until no widget moves for two frames
+/// in a row: the sheet is an `Area` that recentres over a few frames when
+/// its content changes size.
+fn settle(harness: &mut Harness<'_, Sheet>, at_least: usize) {
+    let mut before = layout(harness);
+    let mut still = 0;
+    for frames in 1..=SETTLE_CEILING {
+        harness.step();
+        let after = layout(harness);
+        still = if after == before { still + 1 } else { 0 };
+        if still >= 2 && frames >= at_least {
+            return;
+        }
+        before = after;
+    }
+    panic!("the layout still moves after {SETTLE_CEILING} frames");
 }
 
 fn harness_at(step: Step) -> Harness<'static, Sheet> {
@@ -165,7 +194,7 @@ fn is_disabled(harness: &Harness<'_, Sheet>, label: &str) -> bool {
 
 fn click(harness: &mut Harness<'_, Sheet>, label: &str) {
     harness.get_by_label(label).scroll_to_me();
-    harness.run_steps(6);
+    settle(harness, SCROLL_LATENCY);
     harness.get_by_label(label).click();
     harness.run_steps(4);
 }
