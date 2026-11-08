@@ -254,8 +254,16 @@ fn the_raw_detail_shows_under_the_sentence_only_when_it_adds_something() {
         );
         assert!(harness.query_by_label(detail).is_some(), "{detail}");
     }
+    let key_missing = card(
+        BackupStatus::Error,
+        gate(
+            GateKind::NeedsAttention,
+            Some(Fault::KeyMissing),
+            KEY_ABSENT,
+        ),
+    );
+    assert_eq!(key_missing.query_all_by_label(KEY_ABSENT).count(), 1);
     let hidden = [
-        (Fault::KeyMissing, KEY_ABSENT),
         (Fault::SourceMissing, "/work/docs"),
         (Fault::SourceEmpty, "/work/docs"),
         (
@@ -287,6 +295,32 @@ fn a_lost_sign_in_offers_reconnect_account() {
         harness.state().actions,
         [Action::ReconnectAccount("gdrive".into())]
     );
+}
+
+#[test]
+fn a_damaged_repository_links_to_the_troubleshooting_guide() {
+    let mut harness = card(
+        BackupStatus::Error,
+        gate(GateKind::NeedsAttention, Some(Fault::RepoDamaged), "bad"),
+    );
+
+    harness.get_by_label("Troubleshooting").click();
+    harness.run_steps(4);
+
+    let [Action::OpenUrl(url)] = harness.state().actions.as_slice() else {
+        panic!("{:?}", harness.state().actions);
+    };
+    assert!(url.ends_with("troubleshooting.md#backups-are-paused-after-a-check"));
+}
+
+#[test]
+fn only_a_damaged_repository_links_to_the_troubleshooting_guide() {
+    let harness = card(
+        BackupStatus::Error,
+        gate(GateKind::NeedsAttention, None, "boom"),
+    );
+
+    assert!(harness.query_by_label("Troubleshooting").is_none());
 }
 
 #[test]
@@ -476,6 +510,87 @@ fn a_paused_backup_with_folders_can_resume() {
     let harness = screen(view(snapshot));
 
     assert!(enabled(&harness, "Resume"));
+}
+
+#[test]
+fn a_paused_backup_with_folders_cannot_back_up_and_offers_no_button_in_the_empty_list() {
+    let mut snapshot = backup(BackupStatus::Paused);
+    snapshot.config.enabled = false;
+    let harness = screen(view(snapshot));
+
+    assert_eq!(harness.query_all_by_label("Back Up Now").count(), 1);
+    assert!(disabled(&harness, "Back Up Now"));
+}
+
+#[test]
+fn the_checks_are_disabled_when_the_next_round_would_not_run_them() {
+    let mut paused = backup(BackupStatus::Paused);
+    paused.config.enabled = false;
+    let cases = [
+        ("paused", paused),
+        (
+            "auth gate",
+            with_state_snapshot(
+                BackupStatus::Error,
+                gate(GateKind::AuthError, None, "Sign in again."),
+            ),
+        ),
+        (
+            "config gate",
+            with_state_snapshot(
+                BackupStatus::Error,
+                gate(GateKind::ConfigError, None, "Bad config."),
+            ),
+        ),
+        (
+            "offline",
+            with_state_snapshot(
+                BackupStatus::Offline,
+                BackupState {
+                    offline: true,
+                    ..BackupState::default()
+                },
+            ),
+        ),
+        (
+            "destination unavailable",
+            with_state_snapshot(
+                BackupStatus::Unavailable,
+                BackupState {
+                    destination_unavailable: true,
+                    ..BackupState::default()
+                },
+            ),
+        ),
+    ];
+
+    for (name, snapshot) in cases {
+        let mut harness = screen(view(snapshot));
+        open_check_menu(&mut harness);
+        for label in ["Quick Check", "Check Sample", "Full Check…"] {
+            assert!(disabled(&harness, label), "{name}: {label}");
+        }
+    }
+}
+
+#[test]
+fn the_checks_stay_enabled_for_a_damaged_repository() {
+    let state = gate(
+        GateKind::NeedsAttention,
+        Some(Fault::RepoDamaged),
+        "Damaged.",
+    );
+    let mut harness = screen(view(with_state_snapshot(BackupStatus::Error, state)));
+
+    open_check_menu(&mut harness);
+
+    assert!(enabled(&harness, "Full Check…"));
+}
+
+fn with_state_snapshot(status: BackupStatus, state: BackupState) -> BackupSnapshot {
+    let mut snapshot = backup(status);
+    snapshot.state = state;
+    snapshot
 }
 
 #[test]

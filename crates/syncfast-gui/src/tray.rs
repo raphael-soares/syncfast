@@ -133,6 +133,9 @@ pub struct BackupSummary {
     pub runnable: usize,
     pub running: usize,
     pub attention: usize,
+    pub offline: usize,
+    pub unavailable: usize,
+    pub paused: usize,
 }
 
 impl BackupSummary {
@@ -153,6 +156,9 @@ impl BackupSummary {
             attention: count_of(|status| {
                 matches!(status, BackupStatus::Error | BackupStatus::Failing)
             }),
+            offline: count_of(|status| status == BackupStatus::Offline),
+            unavailable: count_of(|status| status == BackupStatus::Unavailable),
+            paused: count_of(|status| status == BackupStatus::Paused),
         }
     }
 
@@ -165,6 +171,12 @@ impl BackupSummary {
             "Backing up…".to_owned()
         } else if self.attention > 0 {
             format!("{} backups need attention", self.attention)
+        } else if self.offline > 0 {
+            "Offline".to_owned()
+        } else if self.unavailable > 0 {
+            "Destination not available".to_owned()
+        } else if self.paused == self.count {
+            "All backups paused".to_owned()
         } else {
             "Backups up to date".to_owned()
         }
@@ -641,6 +653,23 @@ mod tests {
             "2 backups need attention"
         );
         assert_eq!(line(&[BackupStatus::Retrying]), "Backups up to date");
+        assert_eq!(line(&[BackupStatus::Paused]), "All backups paused");
+        assert_eq!(
+            line(&[BackupStatus::Paused, BackupStatus::Paused]),
+            "All backups paused"
+        );
+        assert_eq!(
+            line(&[BackupStatus::Paused, BackupStatus::UpToDate]),
+            "Backups up to date"
+        );
+        assert_eq!(
+            line(&[BackupStatus::Offline, BackupStatus::UpToDate]),
+            "Offline"
+        );
+        assert_eq!(
+            line(&[BackupStatus::Unavailable, BackupStatus::Paused]),
+            "Destination not available"
+        );
     }
 
     #[test]
