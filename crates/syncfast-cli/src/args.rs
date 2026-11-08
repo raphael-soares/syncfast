@@ -224,7 +224,7 @@ pub struct AddArgs {
     /// Sync id; made from the name when absent
     #[arg(long)]
     pub id: Option<String>,
-    /// A preset to turn on (repeat); all presets when none is given
+    /// A preset to turn on (repeat); `system_junk`, `dev_dirs` and `git_repos` when none is given
     #[arg(long = "preset", value_name = "NAME")]
     pub presets: Vec<String>,
     /// Turn every preset off
@@ -268,7 +268,7 @@ pub enum FiltersCommand {
         /// A folder on this computer, when there is no sync yet
         #[arg(long, conflicts_with = "id")]
         local: Option<String>,
-        /// Presets to test with (repeat); none given: the sync's, or all
+        /// Presets to test with (repeat); none given: the sync's, or `system_junk`, `dev_dirs` and `git_repos`
         #[arg(long = "preset", value_name = "NAME")]
         presets: Vec<String>,
         /// Test with no preset

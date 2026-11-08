@@ -93,6 +93,13 @@ impl Rclone {
         &self.bin
     }
 
+    /// The config file this rclone is pinned to, when it is not the
+    /// environment's.
+    #[must_use]
+    pub fn config(&self) -> Option<&Path> {
+        self.config.as_deref()
+    }
+
     /// A command for `rclone <args>` with a null stdin. The caller decides
     /// where stdout and stderr go and spawns it.
     pub fn command<I, S>(&self, args: I) -> Command
@@ -441,6 +448,40 @@ impl Rclone {
         })
     }
 
+    /// Whether anything is directly inside `path`. A folder that does not
+    /// exist holds nothing.
+    ///
+    /// # Errors
+    /// rclone cannot run or fails for a reason other than a missing folder.
+    pub async fn has_entries(&self, path: &str) -> Result<bool, RcloneError> {
+        let command = self
+            .command(["lsjson", "--no-modtime", "--no-mimetype", "--", path])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output();
+        let output = match tokio::time::timeout(SHORT_CALL_TIMEOUT, command).await {
+            Ok(done) => done.map_err(RcloneError::Spawn)?,
+            Err(_) => {
+                return Err(RcloneError::Failed {
+                    command: "lsjson",
+                    detail: format!("no answer within {} seconds", SHORT_CALL_TIMEOUT.as_secs()),
+                });
+            }
+        };
+        if output.status.success() {
+            let entries: Vec<ListedEntry> = serde_json::from_slice(&output.stdout)
+                .map_err(|_| RcloneError::BadOutput("lsjson"))?;
+            return Ok(!entries.is_empty());
+        }
+        if output.status.code() == Some(NOT_FOUND) {
+            return Ok(false);
+        }
+        Err(RcloneError::Failed {
+            command: "lsjson",
+            detail: last_line(&output.stderr).unwrap_or_else(|| exit_detail(output.status)),
+        })
+    }
+
     /// Whether `source` holds a file that `filters` (a `--filter-from` file)
     /// lets through. It reads the first name `lsf` prints and stops rclone,
     /// so a large source costs one step of the listing, not all of it.
@@ -584,7 +625,7 @@ fn sandbox_config(flatpak_id: Option<&str>, configured: bool, paths: &Paths) -> 
         .then(|| paths.config_home.join("rclone").join("rclone.conf"))
 }
 
-fn is_executable_file(path: &Path) -> bool {
+pub(crate) fn is_executable_file(path: &Path) -> bool {
     std::fs::metadata(path)
         .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
 }

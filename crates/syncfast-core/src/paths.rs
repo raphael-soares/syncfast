@@ -217,6 +217,78 @@ impl Paths {
     pub fn units_preview_dir(&self) -> PathBuf {
         self.state_dir().join("units-preview")
     }
+
+    #[must_use]
+    pub fn backups_dir(&self) -> PathBuf {
+        self.state_dir().join("backups")
+    }
+
+    #[must_use]
+    pub fn backup_state_dir(&self, backup_id: &str) -> PathBuf {
+        self.backups_dir().join(backup_id)
+    }
+
+    #[must_use]
+    pub fn backup_state_file(&self, backup_id: &str) -> PathBuf {
+        self.backup_state_dir(backup_id).join("state.json")
+    }
+
+    #[must_use]
+    pub fn backup_excludes_file(&self, backup_id: &str) -> PathBuf {
+        self.backup_state_dir(backup_id).join("excludes.txt")
+    }
+
+    #[must_use]
+    pub fn backup_runs_dir(&self, backup_id: &str) -> PathBuf {
+        self.backup_state_dir(backup_id).join("runs")
+    }
+
+    #[must_use]
+    pub fn backup_progress_file(&self, backup_id: &str) -> PathBuf {
+        self.backup_state_dir(backup_id).join("progress.json")
+    }
+
+    #[must_use]
+    pub fn backup_request_file(&self, backup_id: &str) -> PathBuf {
+        self.backup_state_dir(backup_id).join("request.json")
+    }
+
+    /// Held exclusively while a backup runs. The `_` cannot be in a sync id,
+    /// so it never collides with [`Paths::lock_file`].
+    #[must_use]
+    pub fn backup_lock_file(&self, backup_id: &str) -> PathBuf {
+        self.runtime_subdir()
+            .join(format!("backup_{backup_id}.lock"))
+    }
+
+    /// `RESTIC_CACHE_DIR`: losing it costs only time.
+    #[must_use]
+    pub fn restic_cache_dir(&self) -> PathBuf {
+        self.state_dir().join("restic-cache")
+    }
+
+    /// The job files of restores, one per job.
+    #[must_use]
+    pub fn restores_dir(&self) -> PathBuf {
+        self.state_dir().join("restores")
+    }
+
+    #[must_use]
+    pub fn restore_file(&self, job: &str) -> PathBuf {
+        self.restores_dir().join(format!("{job}.json"))
+    }
+
+    /// Held exclusively while the restore's restic runs.
+    #[must_use]
+    pub fn restore_lock_file(&self, job: &str) -> PathBuf {
+        self.runtime_subdir().join(format!("restore-{job}.lock"))
+    }
+
+    /// Backup keys of dev mode, where there is no Secret Service to ask.
+    #[must_use]
+    pub fn dev_keys_dir(&self) -> PathBuf {
+        self.data_dir().join("dev-keys")
+    }
 }
 
 fn current_uid() -> std::io::Result<u32> {
@@ -310,6 +382,61 @@ mod tests {
             paths.units_preview_dir(),
             Path::new("/s/syncfast/units-preview")
         );
+    }
+
+    #[test]
+    fn backup_locations_live_under_their_xdg_roots() {
+        let paths = Paths::new(
+            "/home/ada".into(),
+            "/c".into(),
+            "/s".into(),
+            "/d".into(),
+            "/r".into(),
+        );
+
+        assert_eq!(paths.backups_dir(), Path::new("/s/syncfast/backups"));
+        assert_eq!(
+            paths.backup_state_dir("docs"),
+            Path::new("/s/syncfast/backups/docs")
+        );
+        assert_eq!(
+            paths.backup_state_file("docs"),
+            Path::new("/s/syncfast/backups/docs/state.json")
+        );
+        assert_eq!(
+            paths.backup_excludes_file("docs"),
+            Path::new("/s/syncfast/backups/docs/excludes.txt")
+        );
+        assert_eq!(
+            paths.backup_runs_dir("docs"),
+            Path::new("/s/syncfast/backups/docs/runs")
+        );
+        assert_eq!(
+            paths.backup_progress_file("docs"),
+            Path::new("/s/syncfast/backups/docs/progress.json")
+        );
+        assert_eq!(
+            paths.backup_request_file("docs"),
+            Path::new("/s/syncfast/backups/docs/request.json")
+        );
+        assert_eq!(
+            paths.backup_lock_file("docs"),
+            Path::new("/r/syncfast/backup_docs.lock")
+        );
+        assert_eq!(
+            paths.restic_cache_dir(),
+            Path::new("/s/syncfast/restic-cache")
+        );
+        assert_eq!(paths.restores_dir(), Path::new("/s/syncfast/restores"));
+        assert_eq!(
+            paths.restore_file("j1"),
+            Path::new("/s/syncfast/restores/j1.json")
+        );
+        assert_eq!(
+            paths.restore_lock_file("j1"),
+            Path::new("/r/syncfast/restore-j1.lock")
+        );
+        assert_eq!(paths.dev_keys_dir(), Path::new("/d/syncfast/dev-keys"));
     }
 
     #[test]

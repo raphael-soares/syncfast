@@ -1,7 +1,7 @@
 # AGENTS.md
 
 ## Layout
-- `crates/syncfast-core`: library with all logic (paths, config, filters, bisync, state, units, rclone, network, notifications). No egui, eframe, winit or fastframe UI crates; `tests/boundary.rs` enforces it.
+- `crates/syncfast-core`: library with all logic (paths, config, filters, bisync, state, units, rclone, restic, backup, network, notifications). No egui, eframe, winit or fastframe UI crates; `tests/boundary.rs` enforces it.
 - `crates/syncfast-cli`: binary `syncfast` (`apply`, `run`, `watch`, `preview`, `status`, the agent commands, `mcp`, `agent-guide`). The systemd units call it. Commands and MCP tools only translate to `syncfast_core::ops` (ADR 0007); the agent guide is `docs/agents.md`.
 - `crates/syncfast-gui`: binary `syncfast-gui` (egui + fastframe). Uses the core as a library and never calls the CLI binary, except in dev mode (`SYNCFAST_SYSTEMD=off`).
 
@@ -10,6 +10,7 @@
 - `ui/` only draws and emits `Action`. All I/O goes through the backend (`Command`/`Event`).
 - No literal colour outside `theme.rs`, except the two tray badge colours.
 - Never log a token or the output of `rclone config dump`.
+- Never log, print or return the backup key.
 - All UI text is English. Buttons use Title Case and a verb, with `…` when they ask for more input.
 - No em or en dashes anywhere (code, comments, docs, commits).
 - Comments default to zero; see the `comentarios` skill. Structural decisions go in `docs/adr/`.

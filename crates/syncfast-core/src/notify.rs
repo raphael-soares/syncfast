@@ -253,6 +253,13 @@ pub fn attention_body(fault: Option<Fault>, detail: &str) -> &'static str {
         Some(Fault::RemoteMissing) => "The folder on Google Drive is missing.",
         Some(Fault::LocalEmpty) => "The folder is empty. If it is on a drive, mount it.",
         Some(Fault::RemoteEmpty) => "The folder on Google Drive is empty. Nothing was changed.",
+        Some(Fault::KeyMissing) => "The backup key is missing. Open syncfast for the fix.",
+        Some(Fault::WrongKey) => "The saved key does not open this backup.",
+        Some(Fault::RepositoryMissing) => "No backup was found in its folder.",
+        Some(Fault::SourceMissing) => "A folder to back up is missing.",
+        Some(Fault::SourceEmpty) => "A folder to back up is empty. If it is on a drive, mount it.",
+        Some(Fault::DestinationMissing) => "The folder that holds the backup is not available.",
+        Some(Fault::RepoDamaged) => "The backup may be damaged. Open syncfast for details.",
         Some(Fault::Auth) | None => "Syncing keeps failing. Open syncfast for details.",
     }
 }
@@ -865,5 +872,27 @@ mod tests {
 
         assert_eq!(off.failing_after(), 3);
         assert_eq!(five.failing_after(), 5);
+    }
+
+    #[test]
+    fn every_backup_fault_has_its_own_attention_text() {
+        let faults = [
+            Fault::KeyMissing,
+            Fault::WrongKey,
+            Fault::RepositoryMissing,
+            Fault::SourceMissing,
+            Fault::SourceEmpty,
+            Fault::DestinationMissing,
+            Fault::RepoDamaged,
+        ];
+        let mut texts: Vec<_> = faults
+            .iter()
+            .map(|fault| attention_body(Some(*fault), ""))
+            .collect();
+        texts.sort_unstable();
+        texts.dedup();
+
+        assert_eq!(texts.len(), faults.len());
+        assert!(texts.iter().all(|text| *text != attention_body(None, "")));
     }
 }

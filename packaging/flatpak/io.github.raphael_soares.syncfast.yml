@@ -12,9 +12,12 @@ finish-args:
   - --device=dri
   - --share=network
   - --filesystem=home
+  - --filesystem=/run/media
+  - --filesystem=/mnt
   - --filesystem=xdg-config/systemd:create
   - --talk-name=org.freedesktop.Flatpak
   - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.freedesktop.secrets
   - --talk-name=org.kde.StatusNotifierWatcher
   - --system-talk-name=org.freedesktop.NetworkManager
 
@@ -34,6 +37,23 @@ modules:
         url: https://github.com/rclone/rclone/releases/download/v1.75.2/rclone-v1.75.2-linux-arm64.zip
         sha256: 7e1e8d69654941b7b7df84ee74c5f7fb09cce7d5496947fb7bf16b55ff427d10
         strip-components: 1
+
+  - name: restic
+    buildsystem: simple
+    build-commands:
+      - bzip2 -dc restic.bz2 > restic
+      - install -Dm755 restic /app/bin/restic
+    sources:
+      - type: file
+        only-arches: [x86_64]
+        url: https://github.com/restic/restic/releases/download/v0.19.1/restic_0.19.1_linux_amd64.bz2
+        sha256: f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c
+        dest-filename: restic.bz2
+      - type: file
+        only-arches: [aarch64]
+        url: https://github.com/restic/restic/releases/download/v0.19.1/restic_0.19.1_linux_arm64.bz2
+        sha256: a5f64aaab53d51e311fa3829124c5b703f2d14cf187d8640b6be3b2b49376465
+        dest-filename: restic.bz2
 
   - name: syncfast
     buildsystem: simple

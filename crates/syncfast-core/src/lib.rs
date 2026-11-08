@@ -1,3 +1,4 @@
+pub mod backup;
 pub mod behavior;
 pub mod bisync;
 pub mod bisync_log;
@@ -12,6 +13,7 @@ pub mod ops;
 pub mod paths;
 pub mod preview;
 pub mod rclone;
+pub mod restic;
 pub mod run;
 pub mod run_decision;
 pub mod runs;

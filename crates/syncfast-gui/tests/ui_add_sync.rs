@@ -150,7 +150,39 @@ fn harness_with(state: AddSyncState, edit: impl FnOnce(&mut Sheet)) -> Harness<'
             sheet,
         );
     harness.run_ok();
+    settle(&mut harness, 1);
     harness
+}
+
+const SETTLE_CEILING: usize = 30;
+/// `scroll_to_me` moves nothing for its first two frames.
+const SCROLL_LATENCY: usize = 3;
+
+fn layout(harness: &Harness<'_, Sheet>) -> Vec<Option<egui::accesskit::Rect>> {
+    harness
+        .root()
+        .children_recursive()
+        .map(|node| node.accesskit_node().bounding_box())
+        .collect()
+}
+
+/// Steps, at least `at_least` frames, until no widget moves for two frames
+/// in a row: the sheet is an `Area` that recentres over a few frames when
+/// its content changes size.
+fn settle(harness: &mut Harness<'_, Sheet>, at_least: usize) {
+    let mut before = layout(harness);
+    let mut still = 0;
+    let settled = (1..=SETTLE_CEILING).any(|frames| {
+        harness.step();
+        let after = layout(harness);
+        still = if after == before { still + 1 } else { 0 };
+        before = after;
+        still >= 2 && frames >= at_least
+    });
+    assert!(
+        settled,
+        "the layout still moves after {SETTLE_CEILING} frames"
+    );
 }
 
 fn harness_at(step: Step) -> Harness<'static, Sheet> {
@@ -162,6 +194,8 @@ fn is_disabled(harness: &Harness<'_, Sheet>, label: &str) -> bool {
 }
 
 fn click(harness: &mut Harness<'_, Sheet>, label: &str) {
+    harness.get_by_label(label).scroll_to_me();
+    settle(harness, SCROLL_LATENCY);
     harness.get_by_label(label).click();
     harness.run_steps(4);
 }
@@ -818,7 +852,7 @@ fn clicking_a_preset_switch_turns_it_off() {
 }
 
 #[test]
-fn a_new_sync_starts_with_every_preset_and_the_git_switch_turns_one_off() {
+fn a_new_sync_starts_with_the_default_presets_and_the_git_switch_turns_one_off() {
     let mut harness = harness_at(Step::Filters);
     assert_eq!(
         harness.state().state.presets,

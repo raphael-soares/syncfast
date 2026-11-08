@@ -184,11 +184,11 @@ mod tests {
         let paths = paths(dir.path());
         let file = paths.config_file();
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(file, "version = 3\n").unwrap();
+        std::fs::write(file, "version = 4\n").unwrap();
 
         let err = collect(&paths).await.unwrap_err();
 
         assert_eq!(err.exit_code(), 2);
-        assert_eq!(err.to_string(), "unsupported config version 3");
+        assert_eq!(err.to_string(), "unsupported config version 4");
     }
 }

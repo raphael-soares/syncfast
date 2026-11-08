@@ -8,16 +8,30 @@ use std::path::{Component, Path, PathBuf};
 use serde::Deserialize;
 use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, TableLike, Value};
 
+use crate::backup::config::{
+    BACKUP_KEYS, BackupConfig, BackupValidation, Surroundings, validate_backups,
+};
 use crate::behavior::{Behavior, SyncMode};
 use crate::filters;
+use crate::flatpak;
 use crate::oneway;
 use crate::paths::Paths;
 use crate::settings::{self, Effective, Origin, Overrides};
 
-const SUPPORTED_VERSION: i64 = 2;
+/// What a config without `[[backup]]` is written as.
+const SYNC_VERSION: i64 = 2;
+/// The version `[[backup]]` needs.
+const BACKUP_VERSION: i64 = 3;
 const FIRST_VERSION: i64 = 1;
 const V1_TOP_LEVEL_KEYS: [&str; 2] = ["version", "pair"];
-const TOP_LEVEL_KEYS: [&str; 5] = ["version", "defaults", "notifications", "app", "pair"];
+const TOP_LEVEL_KEYS: [&str; 6] = [
+    "version",
+    "defaults",
+    "notifications",
+    "app",
+    "pair",
+    "backup",
+];
 const APP_TABLES: [&str; 2] = ["notifications", "app"];
 const PAIR_KEYS: [&str; 7] = [
     "id", "name", "local", "remote", "enabled", "presets", "filters",
@@ -39,6 +53,8 @@ pub enum GlobalConfigError {
     Defaults(String),
     #[error("config.toml: {0}")]
     App(String),
+    #[error("backups need config version 3")]
+    BackupsNeedVersion3,
 }
 
 /// Why one pair cannot run; the other pairs are unaffected.
@@ -122,10 +138,7 @@ fn default_enabled() -> bool {
 }
 
 fn default_presets() -> Vec<String> {
-    filters::PRESETS
-        .iter()
-        .map(|preset| preset.name.to_owned())
-        .collect()
+    filters::preset_names(&filters::DEFAULT_SYNC_PRESETS)
 }
 
 /// Splits `account:folder` at the first colon. `None` when there is no colon
@@ -143,6 +156,8 @@ struct Raw {
     _version: i64,
     #[serde(default)]
     pair: Vec<Pair>,
+    #[serde(default)]
+    backup: Vec<BackupConfig>,
 }
 
 /// The loaded file. Keeps the TOML document so edits and [`Config::save`]
@@ -151,6 +166,7 @@ struct Raw {
 pub struct Config {
     document: DocumentMut,
     pairs: Vec<Pair>,
+    backups: Vec<BackupConfig>,
     defaults: Overrides,
 }
 
@@ -165,10 +181,11 @@ impl Config {
     #[must_use]
     pub fn empty() -> Self {
         let mut document = DocumentMut::new();
-        document["version"] = toml_edit::value(SUPPORTED_VERSION);
+        document["version"] = toml_edit::value(SYNC_VERSION);
         Self {
             document,
             pairs: Vec::new(),
+            backups: Vec::new(),
             defaults: Overrides::default(),
         }
     }
@@ -188,43 +205,60 @@ impl Config {
     /// Parses `text`, expanding a leading `~` in each `local` with `home`.
     ///
     /// # Errors
-    /// Invalid TOML or types, an unsupported `version`, or an unknown key.
+    /// Invalid TOML or types, an unsupported `version`, a `[[backup]]` in a
+    /// file older than version 3, or an unknown key.
     pub fn parse(text: &str, home: &Path) -> Result<Self, GlobalConfigError> {
         let mut document: DocumentMut = text
             .parse()
             .map_err(|err: toml_edit::TomlError| GlobalConfigError::Toml(err.to_string()))?;
         let version = document.get("version").and_then(Item::as_integer);
         if let Some(version) = version
-            && version != FIRST_VERSION
-            && version != SUPPORTED_VERSION
+            && !(FIRST_VERSION..=BACKUP_VERSION).contains(&version)
         {
             return Err(GlobalConfigError::UnsupportedVersion(version));
         }
+        if version.is_some_and(|version| version < BACKUP_VERSION)
+            && document.contains_key("backup")
+        {
+            return Err(GlobalConfigError::BackupsNeedVersion3);
+        }
         normalize_pair_array(&mut document);
-        reject_unknown_keys(&document, version.unwrap_or(SUPPORTED_VERSION))?;
+        reject_unknown_keys(&document, version.unwrap_or(SYNC_VERSION))?;
         let defaults = read_settings(&document)?;
         let mut raw: Raw =
             toml::from_str(text).map_err(|err| GlobalConfigError::Toml(err.to_string()))?;
         for pair in &mut raw.pair {
             pair.local = expand_tilde(&pair.local, home);
         }
+        for backup in &mut raw.backup {
+            for path in &mut backup.paths {
+                *path = expand_tilde(path, home);
+            }
+            if backup.dest == "~" || backup.dest.starts_with("~/") {
+                backup.dest = expand_tilde(Path::new(&backup.dest), home)
+                    .to_string_lossy()
+                    .into_owned();
+            }
+        }
         let mut config = Self {
             document,
             pairs: raw.pair,
+            backups: raw.backup,
             defaults,
         };
         config.refresh_overrides();
         Ok(config)
     }
 
-    /// The version the file was written with when it is older than the
-    /// current one: it migrates on the next save.
+    /// The version the file was written with when it is older than the sync
+    /// format: it migrates on the next save. A version 2 file is current for
+    /// a config without backups and is not rewritten.
     #[must_use]
     pub fn migrated_from(&self) -> Option<i64> {
         self.document
             .get("version")
             .and_then(Item::as_integer)
-            .filter(|&version| version < SUPPORTED_VERSION)
+            .filter(|&version| version < SYNC_VERSION)
     }
 
     /// Rewrites an older `config.toml` as the current version, keeping the
@@ -302,6 +336,40 @@ impl Config {
     #[must_use]
     pub fn pairs(&self) -> &[Pair] {
         &self.pairs
+    }
+
+    #[must_use]
+    pub fn backups(&self) -> &[BackupConfig] {
+        &self.backups
+    }
+
+    /// Checks every backup against the rest of the config. `accounts` are
+    /// the rclone remote names, as for [`Config::validate`].
+    #[must_use]
+    pub fn validate_backups(&self, paths: &Paths, accounts: &[String]) -> BackupValidation {
+        self.validate_backups_in(paths, accounts, flatpak::app_id().is_some())
+    }
+
+    fn validate_backups_in(
+        &self,
+        paths: &Paths,
+        accounts: &[String],
+        sandboxed: bool,
+    ) -> BackupValidation {
+        let accounts: HashSet<&str> = accounts
+            .iter()
+            .map(|account| account.trim_end_matches(':'))
+            .collect();
+        validate_backups(
+            &self.backups,
+            &Surroundings {
+                paths,
+                accounts: &accounts,
+                pairs: &self.pairs,
+                defaults: &self.defaults(),
+                sandboxed,
+            },
+        )
     }
 
     /// Checks every pair. `accounts` are the rclone remote names (a trailing
@@ -522,15 +590,17 @@ impl Config {
     /// What `save` writes: the document, with the version line brought up to
     /// date and nothing else touched.
     fn saved_text(&self) -> String {
-        if self.migrated_from().is_none() {
+        let version = self.document.get("version").and_then(Item::as_integer);
+        let wanted = if self.document.contains_key("backup") || version == Some(BACKUP_VERSION) {
+            BACKUP_VERSION
+        } else {
+            SYNC_VERSION
+        };
+        if version == Some(wanted) || version.is_some_and(|version| version > wanted) {
             return self.to_toml();
         }
         let mut document = self.document.clone();
-        replace_value(
-            document.as_table_mut(),
-            "version",
-            Value::from(SUPPORTED_VERSION),
-        );
+        replace_value(document.as_table_mut(), "version", Value::from(wanted));
         document.to_string()
     }
 
@@ -650,13 +720,15 @@ impl Config {
                 next += 1;
             }
         }
-        let pairs = self
-            .document
-            .get_mut("pair")
-            .and_then(Item::as_array_of_tables_mut);
-        for table in pairs.into_iter().flat_map(ArrayOfTables::iter_mut) {
-            table.set_position(next);
-            next += 1;
+        for name in ["pair", "backup"] {
+            let tables = self
+                .document
+                .get_mut(name)
+                .and_then(Item::as_array_of_tables_mut);
+            for table in tables.into_iter().flat_map(ArrayOfTables::iter_mut) {
+                table.set_position(next);
+                next += 1;
+            }
         }
     }
 
@@ -770,16 +842,19 @@ fn replace_value(table: &mut dyn TableLike, key: &str, mut new: Value) {
     }
 }
 
-/// Turns an inline `pair = [{ ... }]` into `[[pair]]` tables so edits find it.
+/// Turns an inline `pair = [{ ... }]` (and `backup`) into `[[pair]]` tables
+/// so edits find it.
 fn normalize_pair_array(document: &mut DocumentMut) {
-    let Some(item) = document.get_mut("pair") else {
-        return;
-    };
-    if item.is_array() {
-        *item = match std::mem::take(item).into_array_of_tables() {
-            Ok(tables) => Item::ArrayOfTables(tables),
-            Err(original) => original,
+    for key in ["pair", "backup"] {
+        let Some(item) = document.get_mut(key) else {
+            continue;
         };
+        if item.is_array() {
+            *item = match std::mem::take(item).into_array_of_tables() {
+                Ok(tables) => Item::ArrayOfTables(tables),
+                Err(original) => original,
+            };
+        }
     }
 }
 
@@ -897,6 +972,13 @@ fn reject_unknown_keys(document: &DocumentMut, version: i64) -> Result<(), Globa
     if let Some(tables) = document.get("pair").and_then(Item::as_array_of_tables) {
         for table in tables {
             if let Some(err) = unknown(table, &pair_key, "") {
+                return Err(err);
+            }
+        }
+    }
+    if let Some(tables) = document.get("backup").and_then(Item::as_array_of_tables) {
+        for table in tables {
+            if let Some(err) = unknown(table, &|key| BACKUP_KEYS.contains(&key), "") {
                 return Err(err);
             }
         }
@@ -1060,7 +1142,7 @@ pub fn filter_line_problem(number: usize, line: &str) -> Option<String> {
 
 /// The remote folders a sync occupies: its own, and for a `mirror_up` with
 /// versions the folder where the replaced and deleted files are kept.
-fn occupied_remotes(pair: &Pair, behavior: &Behavior) -> Vec<String> {
+pub(crate) fn occupied_remotes(pair: &Pair, behavior: &Behavior) -> Vec<String> {
     let mut occupied = vec![pair.remote.clone()];
     if behavior.mode == SyncMode::MirrorUp
         && behavior.versions
@@ -1278,10 +1360,10 @@ mod tests {
     }
 
     #[test]
-    fn version_3_is_unsupported() {
-        let err = Config::parse("version = 3\nfuture = true\n", Path::new(HOME)).unwrap_err();
+    fn version_4_is_unsupported() {
+        let err = Config::parse("version = 4\nfuture = true\n", Path::new(HOME)).unwrap_err();
 
-        assert_eq!(err.to_string(), "unsupported config version 3");
+        assert_eq!(err.to_string(), "unsupported config version 4");
     }
 
     #[test]
@@ -2113,6 +2195,85 @@ mod tests {
             std::fs::read_to_string(paths.config_file()).unwrap(),
             V1_FILE
         );
+    }
+
+    const BACKUP_TABLE: &str = "[[backup]]\nid = \"docs\"\nname = \"Documents\"\npaths = [\"/work/docs\"]\ndest = \"gdrive:Backups/docs\"\n";
+
+    fn v2_file() -> String {
+        V1_FILE.replace("version = 1", "version = 2")
+    }
+
+    async fn saved(paths: &Paths) -> String {
+        tokio::fs::read_to_string(paths.config_file())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_first_backup_on_a_v2_config_makes_the_file_version_3() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths_in(root.path());
+        write_config_file(&paths, &v2_file());
+
+        Config::edit(&paths, |config| {
+            let backup: DocumentMut = BACKUP_TABLE.parse().unwrap();
+            config
+                .document
+                .as_table_mut()
+                .insert("backup", backup["backup"].clone());
+        })
+        .await
+        .unwrap();
+
+        let text = saved(&paths).await;
+        assert!(text.starts_with("# mine\nversion = 3\n"), "{text}");
+        assert_eq!(Config::load(&paths).await.unwrap().backups().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_v3_config_stays_version_3_even_after_its_backups_are_gone() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths_in(root.path());
+        write_config_file(
+            &paths,
+            &format!(
+                "{}\n{BACKUP_TABLE}",
+                v2_file().replace("version = 2", "version = 3")
+            ),
+        );
+
+        Config::edit(&paths, |config| config.set_enabled("a", false))
+            .await
+            .unwrap();
+        assert!(saved(&paths).await.starts_with("# mine\nversion = 3\n"));
+
+        Config::edit(&paths, |config| {
+            config.document.as_table_mut().remove("backup");
+        })
+        .await
+        .unwrap();
+
+        let text = saved(&paths).await;
+        assert!(text.starts_with("# mine\nversion = 3\n"), "{text}");
+        assert!(!text.contains("[[backup]]"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_v2_config_without_backups_stays_version_2() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths_in(root.path());
+        write_config_file(&paths, &v2_file());
+
+        Config::edit(&paths, |_| ()).await.unwrap();
+        assert_eq!(saved(&paths).await, v2_file());
+
+        Config::edit(&paths, |config| config.set_enabled("a", false))
+            .await
+            .unwrap();
+
+        let text = saved(&paths).await;
+        assert!(text.starts_with("# mine\nversion = 2\n"), "{text}");
+        assert!(text.contains("enabled = false"), "{text}");
     }
 
     #[tokio::test]

@@ -202,13 +202,13 @@ mod tests {
     async fn config_with_a_global_error_reports_it_and_lists_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let paths = paths(dir.path());
-        write_config(&paths, "version = 3\n");
+        write_config(&paths, "version = 4\n");
 
         let snapshot = load(&paths).await;
 
         assert_eq!(
             snapshot.config_error.as_deref(),
-            Some("unsupported config version 3")
+            Some("unsupported config version 4")
         );
         assert!(snapshot.pairs.is_empty());
     }

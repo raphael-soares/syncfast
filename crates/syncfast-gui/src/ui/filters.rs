@@ -106,10 +106,16 @@ pub struct FilterTest {
     pub state: FilterTestState,
 }
 
+const BUILD_ARTIFACTS_NOTES: [&str; 2] = [
+    "Leaves out node_modules, target, .venv and caches. They can be rebuilt.",
+    "Build folders (build/, dist/) are not part of this preset. Add them as custom rules if they only hold output.",
+];
+
 fn preset_title(name: &str) -> &str {
     match name {
         "system_junk" => "System junk files",
         "dev_dirs" => "Developer folders",
+        "build_artifacts" => "Build artifacts and caches",
         "git_repos" => "Git repositories",
         other => other,
     }
@@ -208,6 +214,15 @@ pub fn form(
                     .color(palette.secondary),
             );
             continue;
+        }
+        if preset.name == "build_artifacts" {
+            for note in BUILD_ARTIFACTS_NOTES {
+                ui.label(
+                    RichText::new(note)
+                        .font(theme::callout())
+                        .color(palette.secondary),
+                );
+            }
         }
         egui::CollapsingHeader::new(
             RichText::new("Show rules")

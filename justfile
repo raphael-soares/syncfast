@@ -14,6 +14,9 @@ mutants:
 capture-fixtures *scenarios:
     crates/syncfast-core/tests/capture_fixtures.sh {{scenarios}}
 
+capture-restic-fixtures *scenarios:
+    crates/syncfast-core/tests/capture_restic_fixtures.sh {{scenarios}}
+
 dev-env:
     mkdir -p .dev/config/syncfast .dev/state .dev/data .dev/run .dev/remote
     printf '[devremote]\ntype = alias\nremote = %s/.dev/remote\n' "$PWD" > .dev/rclone.conf
@@ -50,6 +53,10 @@ flatpak-sources:
     target/flatpak-tools/bin/pip install --quiet aiohttp PyYAML tomlkit
     curl -fsSL https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/{{cargo_generator_rev}}/cargo/flatpak-cargo-generator.py -o target/flatpak-tools/flatpak-cargo-generator.py
     target/flatpak-tools/bin/python target/flatpak-tools/flatpak-cargo-generator.py Cargo.lock -o packaging/flatpak/cargo-sources.json
+
+# Pins the restic that ships in the Flatpak, for example `just pin-restic 0.19.1`.
+pin-restic version:
+    scripts/pin-restic.sh {{version}}
 
 hooks:
     lefthook install
