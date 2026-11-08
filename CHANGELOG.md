@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/raphael-soares/syncfast/compare/v0.15.0...v0.16.0) (2026-11-08)
+
+
+### Features
+
+* browse snapshots and restore to a new folder ([#92](https://github.com/raphael-soares/syncfast/issues/92)) ([54a0b65](https://github.com/raphael-soares/syncfast/commit/54a0b6593916bd5ce86b6c3592c7edb8ad5c2444))
+
 ## [0.15.0](https://github.com/raphael-soares/syncfast/compare/v0.14.0...v0.15.0) (2026-11-08)
 
 
