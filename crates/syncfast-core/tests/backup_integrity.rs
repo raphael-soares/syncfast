@@ -940,6 +940,48 @@ async fn a_request_survives_a_round_that_could_not_read_the_config() {
     assert!(is_checked(&report).is_some(), "{report:?}");
 }
 
+async fn a_request_is_dropped_by_a_round_that_skips_a_paused_backup() {
+    let Some(rig) = Rig::new().await else { return };
+    let source = rig.folder("docs", &[("a.txt", b"hello")]);
+    let mut b = backup("docs", &[&source], rig.dest("repo"));
+    b.enabled = false;
+    rig.add(&b).await;
+    save_request(&rig.paths, "docs", BackupRequest::Check(CheckKind::Full))
+        .await
+        .unwrap();
+
+    let report = rig.run("docs").await;
+
+    assert_eq!(report, BackupRunReport::Skipped(SkipReason::Paused));
+    assert!(!rig.paths.backup_request_file("docs").exists());
+}
+
+async fn a_request_is_dropped_by_a_round_that_skips_a_gated_backup() {
+    let Some(rig) = Rig::new().await else { return };
+    let source = rig.folder("docs", &[("a.txt", b"hello")]);
+    let b = backup("docs", &[&source], rig.dest("repo"));
+    rig.add(&b).await;
+    let state = BackupState {
+        gate: Some(Gate {
+            kind: GateKind::AuthError,
+            since: Zoned::now().timestamp(),
+            detail: "Sign in again.".to_owned(),
+            fault: None,
+            auto_checked: None,
+        }),
+        ..BackupState::default()
+    };
+    state.save(&rig.paths, "docs").await.unwrap();
+    save_request(&rig.paths, "docs", BackupRequest::Check(CheckKind::Full))
+        .await
+        .unwrap();
+
+    let report = rig.run("docs").await;
+
+    assert_eq!(report, BackupRunReport::Skipped(SkipReason::Gated));
+    assert!(!rig.paths.backup_request_file("docs").exists());
+}
+
 async fn a_request_waits_for_a_destination_that_is_not_there_yet() {
     let Some(rig) = Rig::new().await else { return };
     let source = rig.folder("docs", &[("a.txt", b"hello")]);

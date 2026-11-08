@@ -630,6 +630,21 @@ async fn changes_that_keep_more_are_applied() {
 async fn turning_one_file_system_on_is_allowed_and_an_invalid_value_changes_nothing() {
     let Some(rig) = rig().await else { return };
     let id = rig.create().await;
+    let mut stored = rig.config().await;
+    stored.one_file_system = false;
+    Config::edit(&rig.ops.paths, |config| {
+        assert!(config.replace_backup(&stored));
+    })
+    .await
+    .unwrap();
+    let on = BackupEdit {
+        one_file_system: Some(true),
+        ..BackupEdit::default()
+    };
+
+    rig.ops.edit_backup(&id, &on).await.unwrap();
+
+    assert!(rig.config().await.one_file_system);
     let before = fs::read_to_string(rig.ops.paths.config_file()).unwrap();
     let bad = BackupEdit {
         options: BackupOptions {
