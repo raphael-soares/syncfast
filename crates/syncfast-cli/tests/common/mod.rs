@@ -4,8 +4,13 @@
 #![allow(dead_code, clippy::unwrap_used, clippy::panic)]
 
 use std::fs;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+/// No command of a test lasts this long; a hung restic or rclone is killed.
+pub const RUN_DEADLINE: Duration = Duration::from_secs(150);
 
 pub struct Bed {
     pub _dir: tempfile::TempDir,
@@ -26,6 +31,17 @@ pub fn bed() -> Option<Bed> {
         fs::create_dir_all(root.join(folder)).unwrap();
     }
     Some(Bed { _dir: dir, root })
+}
+
+/// `bed()` for the backup tests: restic is needed too.
+#[allow(clippy::print_stderr)]
+pub fn backup_bed() -> Option<Bed> {
+    let bed = bed()?;
+    if Command::new("restic").arg("version").output().is_err() {
+        eprintln!("skipping: restic is not installed");
+        return None;
+    }
+    Some(bed)
 }
 
 pub struct Run {
@@ -65,6 +81,7 @@ impl Bed {
             .env("XDG_RUNTIME_DIR", self.root.join("run"))
             .env("RCLONE_CONFIG", self.root.join("rclone.conf"))
             .env("SYNCFAST_SYSTEMD", "off")
+            .env("SYNCFAST_KEYSTORE", "plain")
             .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
             .env("DBUS_SYSTEM_BUS_ADDRESS", "unix:path=/nonexistent")
             .env_remove("SYNCFAST_RCLONE");
@@ -72,11 +89,44 @@ impl Bed {
     }
 
     pub fn run(&self, args: &[&str]) -> Run {
-        let output: Output = self.command().args(args).output().unwrap();
+        self.run_in(&self.root, args)
+    }
+
+    /// `run` from the working folder `cwd`.
+    pub fn run_in(&self, cwd: &Path, args: &[&str]) -> Run {
+        let mut child = self
+            .command()
+            .args(args)
+            .current_dir(cwd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let drain = |mut pipe: Box<dyn std::io::Read + Send>| {
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let _ = pipe.read_to_end(&mut bytes);
+                String::from_utf8_lossy(&bytes).into_owned()
+            })
+        };
+        let stdout = drain(Box::new(child.stdout.take().unwrap()));
+        let stderr = drain(Box::new(child.stderr.take().unwrap()));
+        let started = Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            assert!(
+                started.elapsed() < RUN_DEADLINE,
+                "syncfast {args:?} ran past the deadline"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
         Run {
-            code: output.status.code().unwrap_or(-1),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            code: status.code().unwrap_or(-1),
+            stdout: stdout.join().unwrap(),
+            stderr: stderr.join().unwrap(),
         }
     }
 

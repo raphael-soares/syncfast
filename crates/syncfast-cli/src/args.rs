@@ -4,7 +4,9 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use syncfast_core::bisync::ReviewKind;
-use syncfast_core::ops::{DEFAULT_DEPTH, DEFAULT_MAX_FOLDERS, DEFAULT_WAIT_SECONDS, Keep};
+use syncfast_core::ops::{
+    DEFAULT_DEPTH, DEFAULT_FILE_LIMIT, DEFAULT_MAX_FOLDERS, DEFAULT_WAIT_SECONDS, Keep,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -163,6 +165,12 @@ pub enum Operation {
         /// `system`, `light`, `dark` or a file of the themes folder
         name: Option<String>,
     },
+    /// One line per backup: id, status and last success (`--json`:
+    /// everything about each backup)
+    Backups,
+    /// Backups: snapshots, files, runs, checks, settings and restores
+    #[command(subcommand)]
+    Backup(BackupCommand),
     /// Show or change how syncs behave: for one sync, or the defaults
     Settings {
         #[command(subcommand)]
@@ -171,6 +179,151 @@ pub enum Operation {
         #[arg(long, global = true, value_name = "ID")]
         sync: Option<String>,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BackupCommand {
+    /// Show one backup: folders, schedule, keep, status and the last run
+    /// and check
+    Show {
+        /// The backup id
+        id: String,
+    },
+    /// List the snapshots of a backup, newest first
+    Snapshots {
+        /// The backup id
+        id: String,
+    },
+    /// List the files of a snapshot folder: names, sizes and dates, never
+    /// content
+    Files {
+        /// The backup id
+        id: String,
+        /// `latest`, or a snapshot id (or the start of one)
+        snapshot: String,
+        /// A folder of the snapshot, as `files` printed it; the top when
+        /// absent
+        dir: Option<String>,
+        /// The most files to list
+        #[arg(long, default_value_t = DEFAULT_FILE_LIMIT)]
+        limit: usize,
+    },
+    /// Back up now
+    Run {
+        /// The backup id
+        id: String,
+        #[command(flatten)]
+        wait: Wait,
+    },
+    /// Check the repository of a backup
+    Check {
+        /// The backup id
+        id: String,
+        /// Read a sample of the data too
+        #[arg(long, conflicts_with = "full")]
+        sample: bool,
+        /// Read all the data
+        #[arg(long)]
+        full: bool,
+        #[command(flatten)]
+        wait: Wait,
+    },
+    /// Pause the schedule of a backup, or of all
+    Pause(BackupTarget),
+    /// Resume the schedule of a backup, or of all
+    Resume(BackupTarget),
+    /// Create a backup with a new key; the key stays in the key storage and
+    /// the user saves it in syncfast
+    Add(BackupAddArgs),
+    /// Change one setting: `name`, `paths`, `every`, `keep.daily`,
+    /// `keep.weekly`, `keep.monthly`, `keep.yearly`, `presets`, `filters`,
+    /// `limit_upload`, `limit_download` or `one_file_system`. Settings that
+    /// lower safety are for the user to change
+    Set {
+        /// The backup id
+        id: String,
+        /// The setting
+        key: String,
+        /// `true` or `false`, a number, or text; any number of values for
+        /// paths, presets and filters (none empties the list)
+        #[arg(num_args = 0.., allow_hyphen_values = true)]
+        value: Vec<String>,
+    },
+    /// Removing a backup is for the user: this refuses
+    Remove {
+        /// The backup id
+        id: String,
+    },
+    /// Restore a snapshot into a new folder
+    Restore {
+        /// The backup id
+        id: String,
+        /// `latest`, or a snapshot id (or the start of one)
+        snapshot: String,
+        /// The folder to create; it must not exist
+        #[arg(long)]
+        to: String,
+        /// A folder or file of the snapshot to restore (repeat); all when
+        /// none is given
+        #[arg(long = "path", value_name = "PATH")]
+        paths: Vec<String>,
+        /// Say what would be restored (files, bytes) and change nothing
+        #[arg(long)]
+        dry_run: bool,
+        #[command(flatten)]
+        wait: Wait,
+    },
+    /// Read a restore that was still running when its command returned
+    Job {
+        /// The restore id that `backup restore` returned
+        id: String,
+    },
+}
+
+#[derive(Debug, clap::Args)]
+pub struct BackupTarget {
+    /// The backup id
+    #[arg(required_unless_present = "all")]
+    pub id: Option<String>,
+    /// Every backup
+    #[arg(long, conflicts_with = "id")]
+    pub all: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct BackupAddArgs {
+    /// Name shown for the backup
+    #[arg(long)]
+    pub name: String,
+    /// A folder on this computer to back up (repeat; `~` is the home folder)
+    #[arg(long = "path", value_name = "PATH", required = true)]
+    pub paths: Vec<String>,
+    /// Where the backup goes: a folder on this computer or `account:folder`;
+    /// it must be empty or new
+    #[arg(long)]
+    pub dest: String,
+    /// `hourly`, `daily`, `weekly` or another interval, as the GUI lists
+    #[arg(long)]
+    pub every: Option<String>,
+    /// How many to keep, as `daily=7,weekly=4,monthly=6,yearly=0`; what is
+    /// not given has the default
+    #[arg(long)]
+    pub keep: Option<String>,
+    /// A preset to turn on (repeat); the defaults when none is given
+    #[arg(long = "preset", value_name = "NAME")]
+    pub presets: Vec<String>,
+    /// Turn every preset off
+    #[arg(long, conflicts_with = "presets")]
+    pub no_presets: bool,
+    /// A custom filter rule, `- pattern` or `+ pattern` (repeat)
+    #[arg(long = "filter", value_name = "RULE", allow_hyphen_values = true)]
+    pub filters: Vec<String>,
+    /// Upload limit, such as `1M`, or `off`
+    #[arg(long)]
+    pub limit_upload: Option<String>,
+    /// Download limit, such as `1M`, or `off`
+    #[arg(long)]
+    pub limit_download: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

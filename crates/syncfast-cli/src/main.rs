@@ -5,8 +5,8 @@ mod mcp;
 mod render;
 
 use args::{
-    Cli, Command, ConflictsCommand, FiltersCommand, Operation, ReviewCommand, SettingsCommand,
-    TransferArgs,
+    BackupAddArgs, BackupCommand, Cli, Command, ConflictsCommand, FiltersCommand, Operation,
+    ReviewCommand, SettingsCommand, TransferArgs,
 };
 
 use std::process::ExitCode;
@@ -20,12 +20,13 @@ use serde::Serialize;
 use syncfast_core::backup::keystore::DefaultKeyStore;
 use syncfast_core::backup::restore_job::{RestoreEnv, RestoreError, run_restore};
 use syncfast_core::backup::run::{BackupRunEnv, BackupRunError, run_backup};
+use syncfast_core::backup::state::CheckKind;
 use syncfast_core::flatpak;
 use syncfast_core::network::NetworkManager;
 use syncfast_core::notify::DesktopNotifier;
 use syncfast_core::ops::{
-    ExploreOptions, NewSync, OpError, Ops, RoundOutcome, TransferOptions, TransferReport,
-    run_transfer,
+    BackupEdit, BackupOptions, ExploreOptions, KeepPartial, NewBackupRequest, NewSync, OpError,
+    Ops, RestoreArgs, RoundOutcome, TransferOptions, TransferReport, run_transfer,
 };
 use syncfast_core::paths::Paths;
 use syncfast_core::preview::{PreviewError, preview};
@@ -324,8 +325,123 @@ async fn operate(operation: Operation, json: bool) -> anyhow::Result<ExitCode> {
         Operation::Theme { name: Some(name) } => {
             emit(json, &ops.set_theme(&name).await?, render::theme_set)
         }
+        Operation::Backups => emit(json, &ops.backups().await?, |found| render::backups(found)),
+        Operation::Backup(command) => backup(&ops, command, json).await,
         Operation::Settings { command, sync } => settings(&ops, command, sync, json).await,
     }
+}
+
+async fn backup(ops: &Ops, command: BackupCommand, json: bool) -> anyhow::Result<ExitCode> {
+    match command {
+        BackupCommand::Show { id } => emit(json, &ops.show_backup(&id).await?, render::backup_show),
+        BackupCommand::Snapshots { id } => emit(json, &ops.snapshots(&id).await?, |found| {
+            render::snapshots(found)
+        }),
+        BackupCommand::Files {
+            id,
+            snapshot,
+            dir,
+            limit,
+        } => {
+            let found = ops
+                .snapshot_files(&id, &snapshot, dir.as_deref().unwrap_or(""), limit)
+                .await?;
+            emit(json, &found, render::snapshot_files)
+        }
+        BackupCommand::Run { id, wait } => {
+            let run = ops.backup_now(&id, Duration::from_secs(wait.wait)).await?;
+            emit(json, &run, render::backup_run)
+        }
+        BackupCommand::Check {
+            id,
+            sample,
+            full,
+            wait,
+        } => {
+            let kind = match (sample, full) {
+                (_, true) => CheckKind::Full,
+                (true, false) => CheckKind::Sample,
+                (false, false) => CheckKind::Quick,
+            };
+            let run = ops
+                .check_backup(&id, kind, Duration::from_secs(wait.wait))
+                .await?;
+            emit(json, &run, render::backup_run)
+        }
+        BackupCommand::Pause(target) => emit(
+            json,
+            &ops.pause_backup(target.id.as_deref()).await?,
+            render::backups_toggled,
+        ),
+        BackupCommand::Resume(target) => emit(
+            json,
+            &ops.resume_backup(target.id.as_deref()).await?,
+            render::backups_toggled,
+        ),
+        BackupCommand::Add(add) => {
+            let request = new_backup(add)?;
+            emit(
+                json,
+                &ops.create_backup(request).await?,
+                render::backup_created,
+            )
+        }
+        BackupCommand::Set { id, key, value } => {
+            let edit = BackupEdit::setting(&key, &value)?;
+            emit(
+                json,
+                &ops.edit_backup(&id, &edit).await?,
+                render::backup_saved,
+            )
+        }
+        BackupCommand::Remove { id } => {
+            Ops::remove_backup(&id)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        BackupCommand::Restore {
+            id,
+            snapshot,
+            to,
+            paths,
+            dry_run,
+            wait,
+        } => {
+            let args = RestoreArgs {
+                backup: id,
+                snapshot,
+                to,
+                paths,
+                dry_run,
+            };
+            let report = ops.restore(args, Duration::from_secs(wait.wait)).await?;
+            emit(json, &report, render::restore_report)
+        }
+        BackupCommand::Job { id } => {
+            emit(json, &ops.restore_job(&id).await?, render::restore_report)
+        }
+    }
+}
+
+fn new_backup(add: BackupAddArgs) -> Result<NewBackupRequest, OpError> {
+    let keep = add
+        .keep
+        .as_deref()
+        .map(KeepPartial::parse)
+        .transpose()?
+        .unwrap_or_default();
+    Ok(NewBackupRequest {
+        name: add.name,
+        paths: add.paths,
+        dest: add.dest,
+        options: BackupOptions {
+            every: add.every,
+            keep,
+            presets: preset_choice(add.presets, add.no_presets),
+            filters: (!add.filters.is_empty()).then_some(add.filters),
+            limit_upload: add.limit_upload,
+            limit_download: add.limit_download,
+        },
+    })
 }
 
 async fn settings(
