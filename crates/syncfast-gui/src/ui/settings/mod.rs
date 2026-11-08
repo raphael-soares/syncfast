@@ -2,6 +2,9 @@
 //! panes, grouped. Close, a click outside and Esc dismiss it.
 
 mod accounts;
+mod backups;
+
+pub use backups::KeyStorageView;
 
 use egui::{RichText, Ui};
 
@@ -34,6 +37,7 @@ fn pane_icon(pane: SettingsPane) -> Icon {
     match pane {
         SettingsPane::Accounts => Icon::User,
         SettingsPane::Defaults => Icon::Settings,
+        SettingsPane::Backups => Icon::Archive,
         SettingsPane::General => Icon::Power,
         SettingsPane::Notifications => Icon::Bell,
         SettingsPane::Appearance => Icon::Palette,
@@ -111,6 +115,7 @@ fn pane(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
     match vm.settings_pane {
         SettingsPane::Accounts => accounts::show(ui, vm),
         SettingsPane::Defaults => options::defaults(ui, vm),
+        SettingsPane::Backups => backups::show(ui, vm),
         SettingsPane::General => options::general(ui, vm),
         SettingsPane::Notifications => options::notifications(ui, vm),
         SettingsPane::Appearance => options::appearance(ui, vm),

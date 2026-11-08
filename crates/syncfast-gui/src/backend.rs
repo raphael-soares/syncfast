@@ -11,6 +11,12 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use fastframe_shell::Waker;
+use syncfast_core::backup::config::BackupConfig;
+use syncfast_core::backup::keystore::KeyBackend;
+use syncfast_core::backup::lifecycle;
+use syncfast_core::backup::snapshots::SnapshotView;
+use syncfast_core::backup::state::CheckKind;
+use syncfast_core::backup::test_filters::FilterTest as BackupFilterCount;
 use syncfast_core::behavior::{ReviewLevel, SyncMode};
 use syncfast_core::bisync::ReviewKind;
 use syncfast_core::config::{Config, SettingScope};
@@ -32,6 +38,8 @@ use tokio::sync::{
 use tokio::task::{AbortHandle, JoinSet};
 
 use crate::app_settings;
+use crate::backup_runs::{self, BackupRunEntry};
+use crate::backup_tools;
 use crate::gui_state::{self, GuiState};
 use crate::instance::Inbox;
 use crate::notices::Notices;
@@ -43,6 +51,8 @@ use crate::ui::account_sheet::{AccountMode, ConnectRequest, Secret};
 use crate::ui::add_sync::{LocalFacts, NewSync};
 use crate::ui::{AccountStatus, RemoteRow};
 use syncfast_core::runs::{self, RunEntry};
+
+pub mod backup_sheets;
 
 const POLL_ACTIVE: Duration = Duration::from_secs(1);
 const POLL_VISIBLE: Duration = Duration::from_secs(2);
@@ -154,6 +164,43 @@ pub enum Command {
     /// Take an account out of rclone's config. Its syncs stay in the config
     /// and stop with the account missing.
     RemoveAccount(String),
+    /// Start a backup round now.
+    BackUpNow(String),
+    /// A round for every enabled backup.
+    BackUpAll,
+    /// Pause (`false`) or resume (`true`) one backup, then `apply`.
+    SetBackupEnabled(String, bool),
+    /// Ask a backup's next round for a check of the repository.
+    CheckBackup {
+        id: String,
+        kind: CheckKind,
+    },
+    /// Ask the repository of a backup for its snapshots.
+    LoadBackupSnapshots(String),
+    /// Read the rounds of a backup from its logs, for Activity.
+    LoadBackupRuns {
+        id: String,
+        running: bool,
+    },
+    /// The folder a backup writes to, when it is on this computer.
+    OpenBackupDestination(String),
+    /// Count what the rules of a backup would leave out of its folders.
+    TestBackupFilters {
+        backup: Box<BackupConfig>,
+    },
+    /// Write the settings of a backup, then `apply`.
+    SaveBackupSettings {
+        backup: Box<BackupConfig>,
+        filters_changed: bool,
+    },
+    /// Ask which storage holds the backup keys; `test` writes and reads a
+    /// test item instead of only looking.
+    CheckKeyStorage {
+        test: bool,
+    },
+    LoadResticVersion,
+    /// The wizard, the key sheets and the removal of a backup.
+    Backup(backup_sheets::BackupCommand),
 }
 
 /// A sync written to the config.
@@ -230,6 +277,33 @@ pub enum Event {
     },
     /// The filters of a sync were saved and applied.
     FiltersSaved(String),
+    /// The snapshots of a backup's repository, or why they cannot be read.
+    BackupSnapshots {
+        id: String,
+        outcome: Result<Arc<[SnapshotView]>, String>,
+    },
+    /// The rounds of a backup, newest first.
+    BackupRuns {
+        id: String,
+        runs: Arc<[BackupRunEntry]>,
+    },
+    /// The outcome of `Test Filters` of a backup for exactly these rules.
+    BackupFilterTest {
+        id: String,
+        presets: Vec<String>,
+        rules: Vec<String>,
+        outcome: Result<BackupFilterCount, String>,
+    },
+    /// The settings of a backup were saved and applied.
+    BackupSettingsSaved {
+        id: String,
+        filters_changed: bool,
+    },
+    /// Which storage holds the backup keys, or why none answered.
+    KeyStorage(Result<KeyBackend, String>),
+    ResticVersion(Option<String>),
+    /// The answer to a [`backup_sheets::BackupCommand`].
+    Backup(backup_sheets::BackupReply),
 }
 
 #[derive(Clone)]
@@ -385,6 +459,7 @@ impl Context {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn run(
     paths: Arc<Paths>,
     emitter: Emitter,
@@ -472,6 +547,29 @@ async fn run(
                         id,
                         delete_versions,
                     } => spawn_remove_sync(&context, id, delete_versions),
+                    Command::BackUpNow(id) => spawn_backup(&context, vec![id]),
+                    Command::BackUpAll => spawn_backup_all(&context),
+                    Command::SetBackupEnabled(id, enabled) => {
+                        spawn_set_backup_enabled(&context, id, enabled);
+                    }
+                    Command::CheckBackup { id, kind } => spawn_check_backup(&context, id, kind),
+                    Command::LoadBackupSnapshots(id) => spawn_load_backup_snapshots(&context, id),
+                    Command::LoadBackupRuns { id, running } => {
+                        spawn_load_backup_runs(&context, id, running);
+                    }
+                    Command::OpenBackupDestination(id) => {
+                        spawn_open_backup_destination(&context, id);
+                    }
+                    Command::TestBackupFilters { backup } => {
+                        spawn_test_backup_filters(&context, *backup);
+                    }
+                    Command::SaveBackupSettings {
+                        backup,
+                        filters_changed,
+                    } => spawn_save_backup_settings(&context, *backup, filters_changed),
+                    Command::CheckKeyStorage { test } => spawn_check_key_storage(&context, test),
+                    Command::LoadResticVersion => spawn_load_restic_version(&context),
+                    Command::Backup(command) => backup_sheets::spawn(&context, command),
                 }
             }
             () = context.refresh.notified() => {}
@@ -843,6 +941,199 @@ async fn write_enabled(paths: &Paths, enabled: bool) -> Result<(), String> {
     })
     .await
     .map_err(|err| err.to_string())
+}
+
+/// A backup run for each id; the error joins the reason of every one that
+/// could not start.
+async fn start_backups(ids: &[String]) -> Result<(), String> {
+    let trigger = round_trigger()?;
+    let mut failures = Vec::new();
+    for id in ids {
+        if let Err(reason) = trigger.start_backup(id).await {
+            failures.push(reason);
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
+}
+
+fn spawn_backup(context: &Arc<Context>, ids: Vec<String>) {
+    let context = Arc::clone(context);
+    guarded(context.emitter.clone(), "starting a backup", async move {
+        match start_backups(&ids).await {
+            Ok(()) => tokio::time::sleep(ROUND_START_WAIT).await,
+            Err(text) => fail(&context, text),
+        }
+        context.refresh.notify_one();
+    });
+}
+
+fn spawn_backup_all(context: &Arc<Context>) {
+    let context = Arc::clone(context);
+    guarded(
+        context.emitter.clone(),
+        "starting every backup",
+        async move {
+            match backup_tools::enabled_backups(&context.paths).await {
+                Ok(ids) => spawn_backup(&context, ids),
+                Err(text) => fail(&context, text),
+            }
+        },
+    );
+}
+
+fn spawn_set_backup_enabled(context: &Arc<Context>, id: String, enabled: bool) {
+    let context = Arc::clone(context);
+    guarded(
+        context.emitter.clone(),
+        "pausing or resuming the backup",
+        async move {
+            match backup_tools::set_enabled(&context.paths, &id, enabled).await {
+                Ok(true) => {
+                    if let Err(text) = apply_config(&context.paths).await {
+                        fail(&context, text);
+                    }
+                }
+                Ok(false) => fail(&context, format!("There is no backup \"{id}\".")),
+                Err(text) => fail(&context, text),
+            }
+            context.refresh.notify_one();
+        },
+    );
+}
+
+fn spawn_check_backup(context: &Arc<Context>, id: String, kind: CheckKind) {
+    let context = Arc::clone(context);
+    guarded(context.emitter.clone(), "starting a check", async move {
+        match backup_tools::request_check(&context.paths, &id, kind).await {
+            Ok(()) => spawn_backup(&context, vec![id]),
+            Err(text) => fail(&context, text),
+        }
+    });
+}
+
+fn spawn_load_backup_snapshots(context: &Arc<Context>, id: String) {
+    let context = Arc::clone(context);
+    guarded(
+        context.emitter.clone(),
+        "reading the snapshots",
+        async move {
+            let outcome = match load_tools(&context).await {
+                Ok(tools) => tools.snapshots(&id).await,
+                Err(text) => Err(text),
+            };
+            context.emitter.send(Event::BackupSnapshots { id, outcome });
+        },
+    );
+}
+
+async fn load_tools(context: &Context) -> Result<backup_tools::Tools, String> {
+    backup_tools::Tools::load(Arc::clone(&context.paths), current_cli()?, round_trigger()?).await
+}
+
+fn spawn_load_backup_runs(context: &Arc<Context>, id: String, running: bool) {
+    let context = Arc::clone(context);
+    guarded(
+        context.emitter.clone(),
+        "loading the backup history",
+        async move {
+            let runs = backup_runs::load(&context.paths, &id, running).await;
+            context.emitter.send(Event::BackupRuns { id, runs });
+        },
+    );
+}
+
+fn spawn_open_backup_destination(context: &Arc<Context>, id: String) {
+    let context = Arc::clone(context);
+    guarded(context.emitter.clone(), "opening a folder", async move {
+        match backup_tools::local_destination(&context.paths, &id).await {
+            Ok(Some(folder)) => {
+                if let Err(text) = open_folder(
+                    OPENER.as_ref(),
+                    &folder,
+                    "The folder of this backup is missing.",
+                )
+                .await
+                {
+                    fail(&context, text);
+                }
+            }
+            Ok(None) => fail(&context, "This backup is not on this computer.".to_owned()),
+            Err(text) => fail(&context, text),
+        }
+    });
+}
+
+fn spawn_test_backup_filters(context: &Arc<Context>, backup: BackupConfig) {
+    let context = Arc::clone(context);
+    guarded(context.emitter.clone(), "testing the filters", async move {
+        let outcome = match load_tools(&context).await {
+            Ok(tools) => tools.test_filters(&backup).await,
+            Err(text) => Err(text),
+        };
+        context.emitter.send(Event::BackupFilterTest {
+            id: backup.id,
+            presets: backup.presets,
+            rules: backup.filters,
+            outcome,
+        });
+    });
+}
+
+fn spawn_check_key_storage(context: &Arc<Context>, test: bool) {
+    let context = Arc::clone(context);
+    guarded(
+        context.emitter.clone(),
+        "checking the key storage",
+        async move {
+            let outcome = backup_tools::key_storage(&context.paths, test).await;
+            context.emitter.send(Event::KeyStorage(outcome));
+        },
+    );
+}
+
+fn spawn_load_restic_version(context: &Arc<Context>) {
+    let context = Arc::clone(context);
+    guarded(
+        context.emitter.clone(),
+        "reading the restic version",
+        async move {
+            let version = backup_tools::restic_version().await;
+            context.emitter.send(Event::ResticVersion(version));
+        },
+    );
+}
+
+fn spawn_save_backup_settings(context: &Arc<Context>, backup: BackupConfig, filters_changed: bool) {
+    let context = Arc::clone(context);
+    guarded(
+        context.emitter.clone(),
+        "saving the backup settings",
+        async move {
+            let saved = match load_tools(&context).await {
+                Ok(tools) => lifecycle::save_backup_settings(&tools.env(), &backup)
+                    .await
+                    .map_err(|err| err.to_string()),
+                Err(text) => Err(text),
+            };
+            match saved {
+                Ok(applied) => {
+                    context.emitter.send(Event::BackupSettingsSaved {
+                        id: backup.id,
+                        filters_changed,
+                    });
+                    if !applied.warnings.is_empty() {
+                        fail(&context, applied.warnings.join(" "));
+                    }
+                }
+                Err(text) => fail(&context, text),
+            }
+            context.refresh.notify_one();
+        },
+    );
 }
 
 fn spawn_load_runs(context: &Arc<Context>, id: String) {

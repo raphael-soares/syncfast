@@ -350,7 +350,7 @@ fn sidebar_row_announces_title_status_and_subtitle() {
                 title: "Notes",
                 subtitle: Some("Synced 3 min ago"),
                 selected: true,
-                status: Some(DisplayStatus::UpToDate),
+                status: Some(DisplayStatus::UpToDate.into()),
             };
             if sidebar_row(ui, &row).clicked() {
                 *clicked = true;

@@ -274,7 +274,6 @@ fn remote_step_title(state: &AddSyncState) -> String {
 }
 
 fn step_indicator(ui: &mut Ui, step: Step, remote_title: &str) {
-    let palette = theme::palette(ui.ctx());
     let current = match step {
         Step::Account => 0,
         Step::RemoteFolder => 1,
@@ -289,8 +288,14 @@ fn step_indicator(ui: &mut Ui, step: Step, remote_title: &str) {
         "Filters",
         "Name",
     ];
+    steps_header(ui, &names, current);
+}
+
+/// `A › B › C` with the step at `current` in bold.
+pub(super) fn steps_header(ui: &mut Ui, names: &[&str], current: usize) {
+    let palette = theme::palette(ui.ctx());
     let mut job = LayoutJob::default();
-    for (index, name) in names.into_iter().enumerate() {
+    for (index, name) in names.iter().enumerate() {
         if index > 0 {
             job.append(
                 " \u{203a} ",
@@ -353,11 +358,11 @@ fn step_requests(
     }
 }
 
-fn remote_key(account: &str, rel: &str) -> String {
+pub(super) fn remote_key(account: &str, rel: &str) -> String {
     format!("{account}:{rel}")
 }
 
-fn join_rel(parent: &str, name: &str) -> String {
+pub(super) fn join_rel(parent: &str, name: &str) -> String {
     if parent.is_empty() {
         name.to_owned()
     } else {
@@ -402,7 +407,7 @@ fn account_step(
     }
 }
 
-fn account_row(ui: &mut Ui, remote: &RemoteRow, selected: bool) -> bool {
+pub(super) fn account_row(ui: &mut Ui, remote: &RemoteRow, selected: bool) -> bool {
     let palette = theme::palette(ui.ctx());
     let warn = remote.shares_client_id();
     let height = if warn {
@@ -515,13 +520,24 @@ fn remote_step(
         }
     }
     listing_notes(ui, &account, view.dirs, actions);
-    new_folder_section(ui, view, state, &account, actions);
+    new_folder_section(
+        ui,
+        &mut state.new_folder,
+        state.remote_path.as_deref().unwrap_or_default(),
+        view.mkdir_error,
+        &account,
+        actions,
+    );
     if let Some(problem) = remote_problem(view, state) {
         widgets::inline_error(ui, &problem);
     }
 }
 
-fn children(account: &str, dirs: &HashMap<String, DirListing>, parent: &str) -> NodeState {
+pub(super) fn children(
+    account: &str,
+    dirs: &HashMap<String, DirListing>,
+    parent: &str,
+) -> NodeState {
     match dirs.get(&remote_key(account, parent)) {
         None => NodeState::Unloaded,
         Some(DirListing::Loading) => NodeState::Loading,
@@ -548,7 +564,7 @@ fn children(account: &str, dirs: &HashMap<String, DirListing>, parent: &str) -> 
 }
 
 /// The root loading line and the listings that failed.
-fn listing_notes(
+pub(super) fn listing_notes(
     ui: &mut Ui,
     account: &str,
     dirs: &HashMap<String, DirListing>,
@@ -585,16 +601,19 @@ fn listing_notes(
     }
 }
 
-fn new_folder_section(
+/// `parent` is the folder (relative to the account root) that is chosen:
+/// the new folder is made inside it.
+pub(super) fn new_folder_section(
     ui: &mut Ui,
-    view: &AddSyncView<'_>,
-    state: &mut AddSyncState,
+    new_folder: &mut Option<String>,
+    parent: &str,
+    mkdir_error: Option<&str>,
     account: &str,
     actions: &mut Vec<Action>,
 ) {
     let focus = Id::new("syncfast-add-sync-focus-new-folder");
     ui.add_space(space::XS);
-    let open = state.new_folder.is_some();
+    let open = new_folder.is_some();
     if widgets::button_with_icon(
         ui,
         ButtonKind::Secondary,
@@ -603,12 +622,11 @@ fn new_folder_section(
     )
     .clicked()
     {
-        state.new_folder = if open { None } else { Some(String::new()) };
+        *new_folder = if open { None } else { Some(String::new()) };
         ui.ctx().data_mut(|data| data.insert_temp(focus, !open));
         ui.ctx().request_repaint();
     }
-    let parent = state.remote_path.as_deref().unwrap_or_default();
-    let Some(name) = &mut state.new_folder else {
+    let Some(name) = new_folder else {
         return;
     };
     let response = widgets::text_field(ui, "Folder name", name, "");
@@ -632,7 +650,7 @@ fn new_folder_section(
         let path = join_rel(parent, name.trim());
         emit(actions, AddSyncAction::MakeDir(remote_key(account, &path)));
     }
-    if let Some(error) = view.mkdir_error {
+    if let Some(error) = mkdir_error {
         widgets::inline_error(ui, error);
     }
 }
@@ -660,7 +678,7 @@ enum LocalCheck {
 
 /// `~` and `~/x` are the home folder; the result has no `.` or trailing
 /// separator.
-fn expand_local(home: &Path, text: &str) -> PathBuf {
+pub(super) fn expand_local(home: &Path, text: &str) -> PathBuf {
     let path = if text == "~" {
         home.to_path_buf()
     } else if let Some(rest) = text.strip_prefix("~/") {

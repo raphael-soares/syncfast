@@ -8,6 +8,7 @@ use fastframe_shell::Waker;
 use fastframe_tray::{Config, DrawIcon, Event, IconColour, MenuItem, Tray};
 use resvg::tiny_skia::{BlendMode, FillRule, Paint, Path, PathBuilder, Pixmap, Transform};
 use resvg::usvg;
+use syncfast_core::backup::status::BackupStatus;
 use syncfast_core::state::DisplayStatus;
 
 use crate::icons::{Icon, svg};
@@ -16,6 +17,8 @@ use crate::ui::Action;
 pub const ID_STATUS: &str = "status";
 pub const ID_TOGGLE: &str = "toggle";
 pub const ID_SYNC_ALL: &str = "sync-all";
+pub const ID_BACKUPS: &str = "backups";
+pub const ID_BACKUP_ALL: &str = "backup-all";
 pub const ID_PAUSE: &str = "pause";
 pub const ID_SETTINGS: &str = "settings";
 pub const ID_QUIT: &str = "quit";
@@ -120,6 +123,46 @@ impl Summary {
     }
 }
 
+/// What the tray says about all the backups together.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupSummary {
+    pub count: usize,
+    pub running: usize,
+    pub attention: usize,
+}
+
+impl BackupSummary {
+    #[must_use]
+    pub fn of(statuses: &[BackupStatus]) -> Self {
+        let count_of = |matches: fn(BackupStatus) -> bool| {
+            statuses.iter().filter(|status| matches(**status)).count()
+        };
+        Self {
+            count: statuses.len(),
+            running: count_of(|status| {
+                matches!(status, BackupStatus::BackingUp | BackupStatus::Checking)
+            }),
+            attention: count_of(|status| {
+                matches!(status, BackupStatus::Error | BackupStatus::Failing)
+            }),
+        }
+    }
+
+    /// The disabled line of the menu below the one of the syncs.
+    #[must_use]
+    pub fn status_line(&self) -> String {
+        if self.count == 0 {
+            "No backups yet".to_owned()
+        } else if self.running > 0 {
+            "Backing up…".to_owned()
+        } else if self.attention > 0 {
+            format!("{} backups need attention", self.attention)
+        } else {
+            "Backups up to date".to_owned()
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Glyph {
     FolderSync,
@@ -171,12 +214,27 @@ impl IconLook {
         };
         Self { glyph, dot, ink }
     }
+
+    /// A backup that needs attention or fails puts the red dot on the icon,
+    /// whatever the syncs show.
+    #[must_use]
+    pub fn counting(self, backups: &BackupSummary) -> Self {
+        if backups.attention > 0 {
+            Self {
+                dot: Dot::Error,
+                ..self
+            }
+        } else {
+            self
+        }
+    }
 }
 
 /// What the menu and the icon show right now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrayView {
     pub summary: Summary,
+    pub backups: BackupSummary,
     pub window_hidden: bool,
     pub look: IconLook,
 }
@@ -214,9 +272,11 @@ impl TrayView {
 pub fn menu_items(view: &TrayView) -> Vec<MenuItem> {
     vec![
         MenuItem::action(ID_STATUS, view.summary.status_line()).enabled(false),
+        MenuItem::action(ID_BACKUPS, view.backups.status_line()).enabled(false),
         MenuItem::Separator,
         MenuItem::action(ID_TOGGLE, view.toggle_label()),
         MenuItem::action(ID_SYNC_ALL, "Sync All Now").enabled(view.has_syncs()),
+        MenuItem::action(ID_BACKUP_ALL, "Back Up All Now").enabled(view.backups.count > 0),
         MenuItem::action(ID_PAUSE, view.pause_label()).enabled(view.has_syncs()),
         MenuItem::Separator,
         MenuItem::action(ID_SETTINGS, "Settings…"),
@@ -238,6 +298,7 @@ pub fn action(event: &Event, view: &TrayView) -> Option<Action> {
         Event::Show => Some(Action::ShowWindow),
         Event::Toggle | Event::Menu(ID_TOGGLE) => Some(toggle()),
         Event::Menu(ID_SYNC_ALL) => Some(Action::SyncAll),
+        Event::Menu(ID_BACKUP_ALL) => Some(Action::BackUpAll),
         Event::Menu(ID_PAUSE) => Some(Action::SetAllEnabled(!view.pauses())),
         Event::Menu(ID_SETTINGS) => Some(Action::OpenSettings),
         Event::Menu(ID_QUIT) => Some(Action::Quit),
@@ -433,8 +494,15 @@ mod tests {
         TrayView {
             look: IconLook::of(summary.worst, Some(true)),
             summary,
+            backups: BackupSummary::of(&[]),
             window_hidden,
         }
+    }
+
+    fn with_backups(mut view: TrayView, statuses: &[BackupStatus]) -> TrayView {
+        view.backups = BackupSummary::of(statuses);
+        view.look = view.look.counting(&view.backups);
+        view
     }
 
     fn labels(items: &[MenuItem]) -> Vec<String> {
@@ -509,27 +577,76 @@ mod tests {
     }
 
     #[test]
-    fn menu_has_the_same_eight_items_with_or_without_syncs() {
+    fn menu_has_the_same_ten_items_with_or_without_syncs() {
         let empty = menu_items(&view(&[], false));
         let busy = menu_items(&view(&[pair(DisplayStatus::UpToDate, true)], false));
 
-        assert_eq!(empty.len(), 8);
+        assert_eq!(empty.len(), 10);
         assert_eq!(
             labels(&busy),
             [
                 "All syncs up to date",
+                "No backups yet",
                 "---",
                 "Hide syncfast",
                 "Sync All Now",
+                "Back Up All Now",
                 "Pause All",
                 "---",
                 "Settings…",
                 "Quit syncfast"
             ]
         );
-        assert_eq!(labels(&empty)[2], labels(&busy)[2]);
-        assert_eq!(labels(&empty)[3], labels(&busy)[3]);
-        assert_eq!(labels(&empty)[5..], labels(&busy)[5..]);
+        assert_eq!(labels(&empty)[3..6], labels(&busy)[3..6]);
+        assert_eq!(labels(&empty)[7..], labels(&busy)[7..]);
+    }
+
+    #[test]
+    fn backups_line_says_what_the_backups_are_doing() {
+        let line = |statuses: &[BackupStatus]| BackupSummary::of(statuses).status_line();
+
+        assert_eq!(line(&[]), "No backups yet");
+        assert_eq!(line(&[BackupStatus::UpToDate]), "Backups up to date");
+        assert_eq!(
+            line(&[BackupStatus::BackingUp, BackupStatus::Error]),
+            "Backing up…"
+        );
+        assert_eq!(
+            line(&[
+                BackupStatus::Error,
+                BackupStatus::Failing,
+                BackupStatus::UpToDate
+            ]),
+            "2 backups need attention"
+        );
+        assert_eq!(line(&[BackupStatus::Retrying]), "Backups up to date");
+    }
+
+    #[test]
+    fn back_up_all_is_disabled_without_backups_and_runs_every_backup() {
+        let none = view(&[], false);
+        let some = with_backups(view(&[], false), &[BackupStatus::UpToDate]);
+
+        assert!(!enabled(&menu_items(&none), ID_BACKUP_ALL));
+        assert!(enabled(&menu_items(&some), ID_BACKUP_ALL));
+        assert!(!enabled(&menu_items(&some), ID_BACKUPS));
+        assert_eq!(
+            action(&Event::Menu(ID_BACKUP_ALL), &some),
+            Some(Action::BackUpAll)
+        );
+    }
+
+    #[test]
+    fn a_backup_that_fails_puts_the_red_dot_on_the_icon_of_calm_syncs() {
+        let calm = view(&[pair(DisplayStatus::UpToDate, true)], false);
+
+        assert_eq!(calm.look.dot, Dot::None);
+        for status in [BackupStatus::Error, BackupStatus::Failing] {
+            let dotted = with_backups(calm.clone(), &[status]);
+            assert_eq!(dotted.look.dot, Dot::Error, "{status:?}");
+        }
+        let retrying = with_backups(calm, &[BackupStatus::Retrying, BackupStatus::Offline]);
+        assert_eq!(retrying.look.dot, Dot::None);
     }
 
     fn enabled(items: &[MenuItem], wanted: &str) -> bool {
@@ -559,8 +676,8 @@ mod tests {
         let shown = menu_items(&view(&[], false));
         let hidden = menu_items(&view(&[], true));
 
-        assert_eq!(labels(&shown)[2], "Hide syncfast");
-        assert_eq!(labels(&hidden)[2], "Show syncfast");
+        assert_eq!(labels(&shown)[3], "Hide syncfast");
+        assert_eq!(labels(&hidden)[3], "Show syncfast");
     }
 
     #[test]
@@ -574,8 +691,8 @@ mod tests {
         );
         let none = view(&[pair(DisplayStatus::Paused, false)], false);
 
-        assert_eq!(labels(&menu_items(&active))[4], "Pause All");
-        assert_eq!(labels(&menu_items(&none))[4], "Resume All");
+        assert_eq!(labels(&menu_items(&active))[6], "Pause All");
+        assert_eq!(labels(&menu_items(&none))[6], "Resume All");
         assert_eq!(
             action(&Event::Menu(ID_PAUSE), &active),
             Some(Action::SetAllEnabled(false))

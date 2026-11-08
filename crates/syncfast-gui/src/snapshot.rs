@@ -5,6 +5,11 @@
 use std::path::{Path, PathBuf};
 
 use jiff::Timestamp;
+use syncfast_core::backup::config::BackupConfig;
+use syncfast_core::backup::state::BackupState;
+use syncfast_core::backup::status::{
+    BackupProgressFile, BackupStatus, RunningStep, display_backup_status, running_step,
+};
 use syncfast_core::behavior::Behavior;
 use syncfast_core::bisync_log::{Progress, last_stats, parse_log};
 use syncfast_core::config::{Config, Pair};
@@ -30,11 +35,23 @@ pub struct PairSnapshot {
     pub effective: Effective,
 }
 
+/// One backup as the window shows it: its config, its state and what a
+/// run in progress reports.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BackupSnapshot {
+    pub config: BackupConfig,
+    pub state: BackupState,
+    pub running: Option<RunningStep>,
+    pub status: BackupStatus,
+    pub progress: Option<BackupProgressFile>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Snapshot {
     /// The config has a global problem: no sync can be listed.
     pub config_error: Option<String>,
     pub pairs: Vec<PairSnapshot>,
+    pub backups: Vec<BackupSnapshot>,
     /// The built-in values with `[defaults]` on top.
     pub defaults: Behavior,
     /// The keys `[defaults]` sets.
@@ -45,6 +62,7 @@ impl Snapshot {
     #[must_use]
     pub fn any_running(&self) -> bool {
         self.pairs.iter().any(|pair| pair.running)
+            || self.backups.iter().any(|backup| backup.running.is_some())
     }
 }
 
@@ -65,9 +83,14 @@ pub async fn load(paths: &Paths) -> Snapshot {
         let realtime_off = limited.contains(&pair.id);
         pairs.push(load_pair(paths, &config, pair, realtime_off).await);
     }
+    let mut backups = Vec::with_capacity(config.backups().len());
+    for backup in config.backups() {
+        backups.push(load_backup(paths, backup).await);
+    }
     Snapshot {
         config_error: None,
         pairs,
+        backups,
         defaults: config.defaults(),
         defaults_overrides: config.defaults_overrides().clone(),
     }
@@ -108,6 +131,25 @@ async fn load_pair(
     }
 }
 
+async fn load_backup(paths: &Paths, backup: &BackupConfig) -> BackupSnapshot {
+    let state = match BackupState::load(paths, &backup.id).await {
+        Ok(state) => state,
+        Err(err) => {
+            log::warn!("{}: {err}", backup.id);
+            unreadable_backup_state(&err.to_string())
+        }
+    };
+    let running = running_step(paths, &backup.id);
+    let progress = running.and_then(|_| BackupProgressFile::read(paths, &backup.id));
+    BackupSnapshot {
+        status: display_backup_status(backup, &state, running),
+        config: backup.clone(),
+        state,
+        running,
+        progress,
+    }
+}
+
 /// A state file that cannot be read shows as a configuration error rather
 /// than as a healthy sync.
 fn unreadable_state(detail: &str) -> State {
@@ -122,6 +164,13 @@ fn unreadable_state(detail: &str) -> State {
             auto_checked: None,
         }),
         ..State::default()
+    }
+}
+
+fn unreadable_backup_state(detail: &str) -> BackupState {
+    BackupState {
+        gate: unreadable_state(detail).gate,
+        ..BackupState::default()
     }
 }
 
@@ -317,5 +366,68 @@ mod tests {
         let text = tail(&file, 8).await.unwrap();
 
         assert_eq!(text, "third\n");
+    }
+
+    const DOCS: &str = "version = 3\n\n[[backup]]\nid = \"docs\"\nname = \"Documents\"\npaths = [\"/work/docs\"]\ndest = \"/backups/docs\"\n";
+
+    async fn backup_status(state: syncfast_core::backup::state::BackupState) -> BackupStatus {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        write_config(&paths, DOCS);
+        state.save(&paths, "docs").await.unwrap();
+
+        load(&paths).await.backups[0].status
+    }
+
+    #[tokio::test]
+    async fn a_backup_with_a_clean_state_shows_up_to_date() {
+        let state = syncfast_core::backup::state::BackupState::default();
+
+        assert_eq!(backup_status(state).await, BackupStatus::UpToDate);
+    }
+
+    #[tokio::test]
+    async fn an_unsaved_key_outranks_every_state_below_a_gate() {
+        let state = syncfast_core::backup::state::BackupState {
+            key_unsaved: true,
+            offline: true,
+            destination_unavailable: true,
+            last_outcome: Some(LastOutcome::Error),
+            consecutive_failures: 5,
+            ..Default::default()
+        };
+
+        assert_eq!(backup_status(state).await, BackupStatus::SaveKey);
+    }
+
+    #[tokio::test]
+    async fn a_gate_outranks_an_unsaved_key() {
+        let state = syncfast_core::backup::state::BackupState {
+            key_unsaved: true,
+            gate: Some(Gate {
+                kind: GateKind::NeedsAttention,
+                since: Timestamp::UNIX_EPOCH,
+                detail: String::new(),
+                fault: None,
+                auto_checked: None,
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(backup_status(state).await, BackupStatus::Error);
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_backup_state_shows_as_needing_attention() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        write_config(&paths, DOCS);
+        let file = paths.backup_state_file("docs");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, "{ broken").unwrap();
+
+        let snapshot = load(&paths).await;
+
+        assert_eq!(snapshot.backups[0].status, BackupStatus::Error);
     }
 }

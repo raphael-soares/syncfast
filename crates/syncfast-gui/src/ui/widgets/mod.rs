@@ -39,7 +39,7 @@ pub use segmented::segmented;
 pub use setting_row::setting_row;
 pub use sheet::{PrimaryKind, SheetAction, SheetButtons, sheet, sheet_with_header};
 pub use sidebar_row::{SidebarRow, sidebar_row};
-pub use status_badge::{BadgeSize, status_badge};
+pub use status_badge::{AnyStatus, BadgeSize, status_badge};
 pub use switch::{switch, toggle};
 pub use text_area::text_area;
 pub use text_field::{inline_field, secret_field, text_field};

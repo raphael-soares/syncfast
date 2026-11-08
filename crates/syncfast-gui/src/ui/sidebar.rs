@@ -4,8 +4,8 @@ use egui::{Frame, Margin, RichText};
 use syncfast_core::behavior::SyncMode;
 
 use super::menu;
-use super::relative::synced;
-use super::widgets::{SidebarRow, icon_button, sidebar_row};
+use super::relative::{backed_up, synced};
+use super::widgets::{SidebarRow, icon_button, secondary_button, sidebar_row};
 use super::{Action, ViewModel, options};
 use crate::gui_state::{SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
 use crate::icons::Icon;
@@ -58,13 +58,15 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel) -> Vec<Action> {
                     icon: Icon::Folder,
                     title: &pair.name,
                     subtitle: Some(&subtitle),
-                    selected: vm.selected.as_deref() == Some(pair.id.as_str()),
-                    status: Some(pair.status),
+                    selected: vm.selected_backup.is_none()
+                        && vm.selected.as_deref() == Some(pair.id.as_str()),
+                    status: Some(pair.status.into()),
                 };
                 if sidebar_row(ui, &row).clicked() {
                     actions.push(Action::SelectPair(pair.id.clone()));
                 }
             }
+            backups(ui, vm, &mut actions);
         });
     });
     let width = response.response.rect.width();
@@ -72,4 +74,67 @@ pub fn show(ui: &mut egui::Ui, vm: &ViewModel) -> Vec<Action> {
         actions.push(Action::ResizeSidebar(width));
     }
     actions
+}
+
+/// The Backups section: its header with the two ways in, then a row per
+/// backup or the empty state.
+fn backups(ui: &mut egui::Ui, vm: &ViewModel, actions: &mut Vec<Action>) {
+    let palette = theme::palette(ui.ctx());
+    ui.add_space(space::M);
+    ui.horizontal(|ui| {
+        ui.add_space(space::S);
+        ui.label(
+            RichText::new("Backups")
+                .font(theme::subheadline())
+                .color(palette.secondary),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if icon_button(ui, Icon::Plus, "New Backup…").clicked() {
+                actions.push(Action::NewBackup);
+            }
+            let more = icon_button(ui, Icon::Ellipsis, "Backup Actions");
+            menu::popup(&more, &palette, |ui| {
+                if menu::item(
+                    ui,
+                    &palette,
+                    Icon::Archive,
+                    "Add Existing Backup…",
+                    menu::Tone::Normal,
+                ) {
+                    actions.push(Action::AddExistingBackup);
+                }
+            });
+        });
+    });
+    if vm.backups.is_empty() {
+        ui.horizontal(|ui| {
+            ui.add_space(space::S);
+            ui.label(
+                RichText::new("No backups yet")
+                    .font(theme::callout())
+                    .color(palette.dim),
+            );
+        });
+        ui.add_space(space::S);
+        ui.horizontal(|ui| {
+            ui.add_space(space::S);
+            if secondary_button(ui, "New Backup…").clicked() {
+                actions.push(Action::NewBackup);
+            }
+        });
+        return;
+    }
+    for backup in &vm.backups {
+        let subtitle = backed_up(vm.now, backup.state.last_success);
+        let row = SidebarRow {
+            icon: Icon::Archive,
+            title: &backup.config.name,
+            subtitle: Some(&subtitle),
+            selected: vm.selected_backup.as_deref() == Some(backup.config.id.as_str()),
+            status: Some(backup.status.into()),
+        };
+        if sidebar_row(ui, &row).clicked() {
+            actions.push(Action::SelectBackup(backup.config.id.clone()));
+        }
+    }
 }

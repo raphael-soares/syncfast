@@ -5,6 +5,10 @@
 pub mod account_sheet;
 pub mod activity;
 pub mod add_sync;
+pub mod backup_detail;
+pub mod backup_keys;
+pub mod backup_settings;
+pub mod backup_wizard;
 pub mod conflicts;
 pub mod detail;
 pub mod filters;
@@ -33,7 +37,10 @@ use syncfast_core::settings::{Effective, Overrides, lowered_safety};
 use syncfast_core::state::{DisplayStatus, GateKind};
 
 use crate::gui_state::SettingsPane;
+use crate::snapshot::BackupSnapshot;
 use crate::snapshot::PairSnapshot;
+use syncfast_core::backup::config::BackupConfig;
+use syncfast_core::backup::state::CheckKind;
 use syncfast_core::runs::RunEntry;
 
 pub use detail::DetailTab;
@@ -184,6 +191,17 @@ pub struct ViewModel {
     pub defaults: Behavior,
     /// The keys `[defaults]` sets.
     pub defaults_overrides: Overrides,
+    /// Every backup, in config order.
+    pub backups: Vec<BackupSnapshot>,
+    /// The selected backup; then no sync is selected.
+    pub selected_backup: Option<String>,
+    /// What the screens of the selected backup remember.
+    pub backup: backup_detail::BackupDetailData,
+    /// Where the backup keys are kept, for Settings > Backups.
+    pub key_storage: settings::KeyStorageView,
+    /// The version of the restic that runs the backups; `None` when it is
+    /// not found.
+    pub restic_version: Option<String>,
 }
 
 impl ViewModel {
@@ -193,9 +211,19 @@ impl ViewModel {
         self.pairs.iter().find(|pair| pair.id == id)
     }
 
-    /// The name of the selected sync, or `Syncs`. Never the app's name.
+    #[must_use]
+    pub fn selected_backup(&self) -> Option<&BackupSnapshot> {
+        let id = self.selected_backup.as_deref()?;
+        self.backups.iter().find(|backup| backup.config.id == id)
+    }
+
+    /// The name of the selected sync or backup, or `Syncs`. Never the app's
+    /// name.
     #[must_use]
     pub fn title(&self) -> String {
+        if let Some(backup) = self.selected_backup() {
+            return backup.config.name.clone();
+        }
         self.selected_pair()
             .map_or_else(|| TITLE.to_owned(), |pair| pair.name.clone())
     }
@@ -219,9 +247,53 @@ impl ViewModel {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     SelectPair(String),
+    /// Selects a backup; a sync is selected again with `SelectPair`.
+    SelectBackup(String),
+    SelectBackupTab(backup_detail::BackupTab),
+    /// Starts a backup round now.
+    BackUpNow(String),
+    BackUpAll,
+    /// Pause (`false`) or resume (`true`) one backup.
+    SetBackupEnabled(String, bool),
+    CheckBackup {
+        id: String,
+        kind: CheckKind,
+    },
+    /// Opens the local folder a backup writes to.
+    OpenBackupDestination(String),
+    /// Asks the repository for its snapshots again.
+    RefreshBackupSnapshots(String),
+    /// Counts what the rules of the draft leave out of its folders.
+    TestBackupFilters {
+        backup: Box<BackupConfig>,
+    },
+    /// Writes the settings of a backup; `filters_changed` adds the note that
+    /// older snapshots keep what the new filters leave out.
+    SaveBackupSettings {
+        backup: Box<BackupConfig>,
+        filters_changed: bool,
+    },
+    DismissBackupSaved(String),
+    /// Opens the folder chooser for the Folders list of the Settings tab.
+    PickBackupFolder,
+    /// The Settings tab took the folder the chooser answered.
+    TakeBackupFolder,
+    /// Writes and reads back a test item in the key storage.
+    TestKeyStorage,
     ResizeSidebar(f32),
     /// Opens the Add Sync sheet.
     AddSync,
+    /// Opens the New Backup sheet.
+    NewBackup,
+    /// Opens the Add Existing Backup sheet.
+    AddExistingBackup,
+    /// Asks to show the key of a backup (the alert decides; a backup whose
+    /// key was never saved opens the key sheet at once).
+    ShowBackupKey(String),
+    /// Opens the sheet that takes the key of a backup back.
+    EnterBackupKey(String),
+    /// Asks to remove a backup (the alert decides).
+    RemoveBackup(String),
     /// Leaves the welcome screen for the empty main window, for good.
     SkipWelcome,
     /// Opens the Settings dialog over the main window.
@@ -262,6 +334,7 @@ pub enum Action {
     RenameAccount(String),
     Review(review::ReviewAction),
     AddSyncSheet(add_sync::AddSyncAction),
+    BackupSheet(backup_wizard::BackupSheetAction),
     Account(account_sheet::AccountAction),
     SetSettingsPane(SettingsPane),
     CloseSettings,

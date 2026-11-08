@@ -35,6 +35,15 @@ pub fn synced(now: Timestamp, last_success: Option<Timestamp>) -> String {
     }
 }
 
+/// The line under a backup's name: `Backed up <time>` or `Never backed up`.
+#[must_use]
+pub fn backed_up(now: Timestamp, last_success: Option<Timestamp>) -> String {
+    match last_success {
+        Some(at) => format!("Backed up {}", ago(now, at)),
+        None => "Never backed up".to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

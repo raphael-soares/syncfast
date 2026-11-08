@@ -32,7 +32,11 @@ impl Request {
             "reload-themes" => Some(Self::ReloadThemes),
             _ => {
                 let notice: Notice = serde_json::from_str(text.strip_prefix("notify ")?).ok()?;
-                valid_id(&notice.pair_id).then_some(Self::Notify(notice))
+                let id = notice
+                    .pair_id
+                    .strip_prefix("backup:")
+                    .unwrap_or(&notice.pair_id);
+                valid_id(id).then_some(Self::Notify(notice))
             }
         }
     }
@@ -114,6 +118,18 @@ mod tests {
             Request::parse(&request("drive")),
             Some(Request::Notify(notice("drive")))
         );
+    }
+
+    #[test]
+    fn a_backup_notice_is_accepted_under_its_backup_id() {
+        let parsed = Request::parse(&request("backup:docs"));
+
+        assert_eq!(parsed, Some(Request::Notify(notice("backup:docs"))));
+    }
+
+    #[test]
+    fn a_backup_notice_with_an_invalid_id_is_refused() {
+        assert_eq!(Request::parse(&request("backup:../x")), None);
     }
 
     #[test]
