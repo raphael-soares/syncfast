@@ -1,5 +1,6 @@
 //! Starting rounds and waiting for them.
 
+use std::future::Future;
 use std::time::Duration;
 
 use serde::Serialize;
@@ -200,19 +201,31 @@ async fn trigger_round(
 /// changing the state; one that does neither within [`GRACE`] had
 /// nothing to do (paused, held for review).
 async fn await_round(paths: &Paths, id: &str, before: Option<&Signs>, deadline: Instant) -> bool {
+    await_run(
+        || is_running(paths, id),
+        || async { Signs::read(paths, id).await.as_ref() != before },
+        deadline,
+    )
+    .await
+}
+
+/// [`await_round`] for any run: `running` says whether it holds its lock
+/// and `changed` whether its state is no longer the one it started from.
+pub(crate) async fn await_run<Changed: Future<Output = bool>>(
+    running: impl Fn() -> bool,
+    changed: impl Fn() -> Changed,
+    deadline: Instant,
+) -> bool {
     if Instant::now() >= deadline {
         return false;
     }
     let grace = (Instant::now() + GRACE).min(deadline);
     let mut seen_running = false;
     loop {
-        let running = is_running(paths, id);
+        let running = running();
         seen_running |= running;
-        if !running {
-            let changed = Signs::read(paths, id).await.as_ref() != before;
-            if seen_running || changed || Instant::now() >= grace {
-                return true;
-            }
+        if !running && (seen_running || changed().await || Instant::now() >= grace) {
+            return true;
         }
         if Instant::now() >= deadline {
             return false;

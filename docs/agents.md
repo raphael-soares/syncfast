@@ -29,6 +29,20 @@ Every command takes `--json` and then prints one JSON value (errors too: `{"erro
 
 Other commands: `remove <id> [--delete-versions]`, `pause <id>|--all`, `resume <id>|--all`, `filters set <id> [--preset N]... [--no-presets] [--rule R]... [--clear-rules]`, `mkdir remote:folder`, `theme [name]`, `apply`, `agent-guide`.
 
+## Backups
+
+syncfast also backs folders up with restic: encrypted snapshots to a folder or a cloud account, on a schedule. You can read what a backup holds, run it, create one and tune it. You never see the key: syncfast makes it, keeps it in the key storage and no command or tool shows, accepts or returns it.
+
+1. **Look.** `syncfast backups` lists every backup with its status, gate and last success. `syncfast backup show docs` gives folders, destination, schedule, keep, presets, filters, limits and the last run and check. `syncfast backup snapshots docs [--limit N]` lists snapshots, newest first (the newest N with `--limit`). `syncfast backup files docs latest [<folder>] [--max-entries N]` lists one folder of a snapshot, 200 entries at most unless you raise it, and says when it left some out (names, kinds, sizes and dates, never content; start at the top and go down with the `path` of an entry). A snapshot is `latest`, an id or the start of one.
+2. **Run.** `syncfast backup run docs` backs up now and waits up to `--wait` seconds (default 60; it goes on by itself afterwards, so read `backups` later). `syncfast backup check docs [--sample|--full]` checks the repository and leaves the result in `backup show` under `last_check`. `syncfast backup pause <id>|--all` and `resume <id>|--all` stop and start the schedule.
+3. **Create.** `syncfast backup add --name Docs --path ~/Docs [--path ...] --dest gdrive:Backups/Docs [--every daily] [--keep daily=7,weekly=4] [--preset N]... [--no-presets] [--filter '- *.bak']... [--limit-upload 2M]`. The destination must be empty or new, and a folder on this computer works too. The first run starts at once. The backup stays at `Save the key` until the user opens syncfast and confirms they saved the key: tell them to. Without that copy, losing this computer loses the backup.
+4. **Tune.** `syncfast backup set docs <key> <value>...`. Put `--json` before the key: a value that starts with `--` is refused (exit 2) so that a flag is never saved as a folder or a filter. Keys: `name`, `paths` (all folders; none empties the list, which is refused), `every`, `keep.daily`, `keep.weekly`, `keep.monthly`, `keep.yearly`, `presets`, `filters`, `limit_upload`, `limit_download`, `one_file_system`, `dest`.
+5. **Restore.** `syncfast backup restore docs latest --to ~/restored [--path <file or folder of the snapshot>]... [--dry-run]`. Run with `--dry-run` first and show the user the files and bytes. `--to` must be a folder that does not exist: a restore never overwrites and never goes into a folder that exists (exit 2), and exits 3 when the folder is inside a sync whose round is running. The restore is laid out relative to the deepest folder that all the backed up paths share: a backup of one folder restores its contents straight into `--to`, several folders keep the part of their paths below it. When the restore outlasts `--wait`, the answer has `finished: false` and an `id`: `syncfast backup job <id> [--wait N]` waits for it and reads it. A restore that fails exits 1 with the reason, and leaves no folder. Tell the user where the files went.
+
+Only the user lowers what a backup protects: `keep.*` to a smaller number (`keep.yearly` back to 0 once it was raised), removing a folder from `paths`, turning `one_file_system` off, changing `dest` and `backup remove`. Each is refused with exit 4 (`This setting lowers safety (<key>). Change it in syncfast.`), nothing is written, and `backup remove` and a changed `dest` are refused whatever the value. Raising `keep`, adding a folder, changing the schedule, presets, filters and limits are allowed. An unknown backup exits 2.
+
+MCP: `list_backups`, `show_backup`, `list_snapshots`, `list_snapshot_files`, `backup_now`, `check_backup`, `pause_backup`, `resume_backup`, `create_backup`, `edit_backup`, `remove_backup` (always refused), `restore_snapshot`, `show_backup_job`. They take the same fields as the commands (`wait_seconds` for the waiting ones, `keep` as an object of numbers) and answer with the same JSON.
+
 ## Safety rules
 
 - A confirmation needs the `filters_hash` of the review you showed. It is refused (exit 5) when no review was shown, when the hash is not the one shown, or when the filters changed since. Show the review again.
@@ -38,7 +52,8 @@ Other commands: `remove <id> [--delete-versions]`, `pause <id>|--all`, `resume <
 - There is no flag to confirm a review that deletes files. Do not work around the refusal by editing files in syncfast's state folder.
 - Removing a sync leaves the files on both sides; `--delete-versions` also deletes the saved copies of replaced local files.
 - `copy` and `move` never overwrite or merge, and never touch a folder a running round is working on. Do not work around a refusal with `rclone` or shell commands: they skip these checks.
-- Never ask for, print or store credentials. `accounts` shows none.
+- Never ask for, print or store credentials or a backup key. `accounts` shows none, and no backup command shows a key.
+- Do not restore a backup over files, and do not restore into a folder a sync keeps without asking the user. Do not work around a refused edit by editing the backup's config or running `restic` yourself.
 
 ## Exit codes
 
@@ -48,12 +63,12 @@ Other commands: `remove <id> [--delete-versions]`, `pause <id>|--all`, `resume <
 | 1 | the operation failed (rclone, files, systemd) |
 | 2 | wrong request or config; the message says what to fix |
 | 3 | a round of this sync is running (also for `copy` and `move` inside its folders); try again when it finishes |
-| 4 | only the user can do this: confirm a review that deletes files, or lower a safety setting |
-| 5 | no matching review was shown; run `review show` again |
+| 4 | only the user can do this: confirm a review that deletes files, lower a safety setting, or lower what a backup protects (including removing a backup) |
+| 5 | no matching review was shown; run `review show` again (never for backups) |
 
 ## MCP
 
-`syncfast mcp` speaks MCP over stdio. Tools: `status`, `show_sync`, `add_sync`, `remove_sync`, `pause_sync`, `resume_sync`, `set_filters`, `test_filters`, `list_accounts`, `list_remote_folders`, `create_remote_folder`, `explore`, `copy`, `move`, `show_transfer`, `sync_now`, `show_review`, `confirm_review`, `list_conflicts`, `resolve_conflict`, `list_activity`, `show_round_log`, `theme`, `get_settings`, `set_setting`, `reset_setting`. Errors come back as tool results with `isError` set and the message of the CLI. `copy` and `move` take `source`, `destination`, `dry_run` and `wait_seconds` and answer like the commands; `show_transfer` takes the `id`. `get_settings` takes an optional `sync`; `set_setting` takes an optional `sync`, `key` and `value` (a JSON boolean, number or string); `reset_setting` takes an optional `sync` and `key`.
+`syncfast mcp` speaks MCP over stdio. Tools: `status`, `show_sync`, `add_sync`, `remove_sync`, `pause_sync`, `resume_sync`, `set_filters`, `test_filters`, `list_accounts`, `list_remote_folders`, `create_remote_folder`, `explore`, `copy`, `move`, `show_transfer`, `sync_now`, `show_review`, `confirm_review`, `list_conflicts`, `resolve_conflict`, `list_activity`, `show_round_log`, `theme`, `get_settings`, `set_setting`, `reset_setting`, and the backup tools listed under Backups. Errors come back as tool results with `isError` set and the message of the CLI. `copy` and `move` take `source`, `destination`, `dry_run` and `wait_seconds` and answer like the commands; `show_transfer` takes the `id`. `get_settings` takes an optional `sync`; `set_setting` takes an optional `sync`, `key` and `value` (a JSON boolean, number or string); `reset_setting` takes an optional `sync` and `key`.
 
 Claude Code:
 

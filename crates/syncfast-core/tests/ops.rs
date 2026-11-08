@@ -10,6 +10,8 @@ use std::time::Duration;
 
 use jiff::Zoned;
 use serde_json::json;
+use syncfast_core::backup::keystore::MemoryKeyStore;
+use syncfast_core::backup::restore_job::DetachedRestoreStarter;
 use syncfast_core::behavior::{ReviewLevel, SyncMode};
 use syncfast_core::config::{Config, SettingScope};
 use syncfast_core::network::{BoxFuture, Network};
@@ -147,6 +149,9 @@ fn bed_with(rclone_conf: &str) -> Option<Bed> {
         systemd: SystemdMode::Off,
         bin: PathBuf::from("/bin/true"),
         flatpak_id: None,
+        restic: None,
+        keys: Arc::new(MemoryKeyStore::default()),
+        restores: Arc::new(DetachedRestoreStarter::new(PathBuf::from("/bin/true"))),
     };
     Some(Bed {
         _dir: dir,

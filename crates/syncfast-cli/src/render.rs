@@ -3,11 +3,14 @@
 use std::fmt::Write as _;
 
 use jiff::Timestamp;
+use syncfast_core::backup::restore_job::RestoreReport;
+use syncfast_core::backup::snapshots::SnapshotView;
 use syncfast_core::bisync_log::ChangeKind;
 use syncfast_core::ops::{
-    AccountView, AddedSync, ConfirmedReview, ConflictView, Exploration, FilterTestView,
-    FiltersSaved, FolderList, FolderMade, PairDetail, PairView, RemovedSync, Resolved, ReviewView,
-    RoundLog, RoundView, SettingChanged, SettingView, SettingsView, SyncRounds, ThemeInfo,
+    AccountView, AddedSync, BackupCreated, BackupDetail, BackupRun, BackupSaved, BackupView,
+    BackupsToggled, ConfirmedReview, ConflictView, Exploration, FilterTestView, FiltersSaved,
+    FolderList, FolderMade, PairDetail, PairView, RemovedSync, Resolved, ReviewView, RoundLog,
+    RoundView, SettingChanged, SettingView, SettingsView, SnapshotFiles, SyncRounds, ThemeInfo,
     ThemeSet, Toggled, TransferReport,
 };
 
@@ -474,5 +477,196 @@ pub fn settings(view: &SettingsView) -> String {
 pub fn setting_changed(changed: &SettingChanged) -> String {
     let mut out = format!("{}\n", setting_line(&changed.setting));
     warnings(&mut out, &changed.warnings);
+    out
+}
+
+fn backup_line(backup: &BackupView) -> String {
+    let mut line = format!(
+        "{}\t{}\t{}",
+        backup.id,
+        backup.status_text,
+        backup.last_success.map_or_else(
+            || "never backed up".to_owned(),
+            |at| format!("backed up {at}")
+        )
+    );
+    if let Some(gate) = &backup.gate {
+        let _ = write!(line, "\t{}", gate.detail);
+    }
+    line
+}
+
+pub fn backups(found: &[BackupView]) -> String {
+    if found.is_empty() {
+        return "No backups.\n".to_owned();
+    }
+    found.iter().fold(String::new(), |mut out, backup| {
+        let _ = writeln!(out, "{}", backup_line(backup));
+        out
+    })
+}
+
+fn backup_block(out: &mut String, backup: &BackupView) {
+    let _ = writeln!(out, "{} ({})", backup.name, backup.id);
+    let folders: Vec<String> = backup
+        .paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect();
+    let _ = writeln!(out, "  folders:  {}", folders.join(", "));
+    let _ = writeln!(out, "  to:       {}", backup.dest);
+    let _ = writeln!(
+        out,
+        "  status:   {}{}",
+        backup.status_text,
+        if backup.enabled { "" } else { " (paused)" }
+    );
+    let _ = writeln!(out, "  every:    {}", backup.every);
+    let _ = writeln!(
+        out,
+        "  keep:     daily={} weekly={} monthly={} yearly={}",
+        backup.keep.daily, backup.keep.weekly, backup.keep.monthly, backup.keep.yearly
+    );
+    let _ = writeln!(out, "  key:      {}", backup.key);
+    if backup.key_unsaved {
+        out.push_str("  The user has not saved the key yet: ask them to open syncfast.\n");
+    }
+    if let Some(snapshot) = &backup.last_snapshot {
+        let _ = writeln!(out, "  snapshot: {} at {}", snapshot.id, snapshot.time);
+    }
+    if let Some(gate) = &backup.gate {
+        let _ = writeln!(out, "  gate:     {}: {}", gate.kind.as_str(), gate.detail);
+    }
+    if let Some(error) = &backup.config_error {
+        let _ = writeln!(out, "  config:   {error}");
+    }
+}
+
+pub fn backup_show(detail: &BackupDetail) -> String {
+    let mut out = String::new();
+    backup_block(&mut out, &detail.backup);
+    if let Some(run) = &detail.last_run {
+        let _ = writeln!(
+            out,
+            "  last run: {} files new, {} changed, {} added; exit {}",
+            run.summary.files_new,
+            run.summary.files_changed,
+            bytes(run.summary.data_added),
+            run.exit_code
+        );
+    }
+    if let Some(check) = &detail.last_check {
+        let _ = writeln!(
+            out,
+            "  last check: {} {}: {}",
+            check.kind.as_str(),
+            if check.ok { "ok" } else { "failed" },
+            check.detail
+        );
+    }
+    if let Some(error) = &detail.prune_error {
+        let _ = writeln!(out, "  prune error: {error}");
+    }
+    out
+}
+
+pub fn snapshots(found: &[SnapshotView]) -> String {
+    if found.is_empty() {
+        return "No snapshots yet.\n".to_owned();
+    }
+    found.iter().fold(String::new(), |mut out, snapshot| {
+        let _ = writeln!(
+            out,
+            "{}\t{}\t{}\t{}",
+            snapshot.short_id,
+            snapshot.time,
+            snapshot.host,
+            snapshot
+                .files
+                .map_or_else(|| "?".to_owned(), |files| format!("{files} files")),
+        );
+        out
+    })
+}
+
+pub fn snapshot_files(found: &SnapshotFiles) -> String {
+    let mut out = String::new();
+    for node in &found.files {
+        let _ = writeln!(
+            out,
+            "{:?}\t{}\t{}\t{}",
+            node.kind,
+            node.size.map_or_else(String::new, bytes),
+            node.mtime.map_or_else(String::new, day),
+            node.path
+        );
+    }
+    if found.truncated {
+        out.push_str("There are more entries; raise --max-entries or list a folder inside.\n");
+    }
+    if found.files.is_empty() {
+        out.push_str("Nothing here.\n");
+    }
+    out
+}
+
+pub fn backup_run(run: &BackupRun) -> String {
+    let mut out = backup_line(&run.backup);
+    if !run.finished {
+        out.push_str("\t(still running; check backups later)");
+    }
+    out.push('\n');
+    out
+}
+
+pub fn backups_toggled(toggled: &BackupsToggled) -> String {
+    let mut out = backups(&toggled.backups);
+    warnings(&mut out, &toggled.warnings);
+    out
+}
+
+pub fn backup_created(created: &BackupCreated) -> String {
+    let mut out = format!(
+        "Created backup {}. Its key is in the key storage.\n",
+        created.id
+    );
+    if created.key_unsaved {
+        out.push_str(
+            "The key is not saved yet: tell the user to open syncfast and confirm that they saved it.\n",
+        );
+    }
+    warnings(&mut out, &created.warnings);
+    out
+}
+
+pub fn backup_saved(saved: &BackupSaved) -> String {
+    let mut out = format!("Saved {}.\n", saved.backup.id);
+    warnings(&mut out, &saved.warnings);
+    out
+}
+
+pub fn restore_report(report: &RestoreReport) -> String {
+    let verb = match report.status {
+        "dry_run" => "Would restore",
+        "running" => "Restoring",
+        "done" => "Restored",
+        _ => "Failed to restore",
+    };
+    let (files, size) = if report.status == "dry_run" {
+        (report.total_files, report.total_bytes)
+    } else {
+        (report.files_restored, report.bytes_restored)
+    };
+    let mut out = format!(
+        "{verb} {files} files, {} into {}\n",
+        bytes(size),
+        report.destination
+    );
+    if let Some(error) = &report.error {
+        let _ = writeln!(out, "{error}");
+    }
+    if let Some(id) = report.id.as_deref().filter(|_| !report.finished) {
+        let _ = writeln!(out, "Still running; read it with: backup job {id}");
+    }
     out
 }

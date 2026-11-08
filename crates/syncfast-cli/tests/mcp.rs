@@ -10,7 +10,7 @@ use std::process::{Child, ChildStdin, Stdio};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
 
-use common::{Bed, bed, write};
+use common::{Bed, backup_bed, bed, write};
 use serde_json::{Value, json};
 
 const TIMEOUT: Duration = Duration::from_secs(120);
@@ -101,7 +101,7 @@ impl Drop for Client {
     }
 }
 
-const TOOLS: [&str; 26] = [
+const TOOLS: [&str; 39] = [
     "status",
     "show_sync",
     "add_sync",
@@ -128,6 +128,19 @@ const TOOLS: [&str; 26] = [
     "get_settings",
     "set_setting",
     "reset_setting",
+    "list_backups",
+    "show_backup",
+    "list_snapshots",
+    "list_snapshot_files",
+    "backup_now",
+    "check_backup",
+    "pause_backup",
+    "resume_backup",
+    "create_backup",
+    "edit_backup",
+    "remove_backup",
+    "restore_snapshot",
+    "show_backup_job",
 ];
 
 #[test]
@@ -147,6 +160,9 @@ fn initialize_names_the_server_and_carries_the_recommended_flow() {
         "confirm_review",
         "Organize",
         "show_transfer",
+        "Backups",
+        "create_backup",
+        "restore_snapshot",
     ] {
         assert!(
             instructions.contains(step),
@@ -429,4 +445,162 @@ fn copy_and_move_answer_over_mcp_as_the_commands_do_and_show_transfer_reads_them
     assert!(bed.local().join("docs/a.txt").exists());
     assert!(refused);
     assert!(message.contains("already exists"), "{message}");
+}
+
+fn parsed(call: &(bool, String)) -> Value {
+    assert!(!call.0, "{}", call.1);
+    serde_json::from_str(&call.1).unwrap()
+}
+
+#[test]
+fn the_backup_tools_create_run_read_and_restore_without_ever_returning_the_key() {
+    let Some(bed) = backup_bed() else { return };
+    let docs = bed.root.join("docs");
+    write(&docs.join("a.txt"), "content of a");
+    write(&docs.join("sub/b.txt"), "content of b");
+    let dest = bed.root.join("repo");
+    let to = bed.root.join("restored");
+    let mut client = Client::start(&bed);
+    client.initialize();
+    let mut transcript = String::new();
+    let mut call = |client: &mut Client, tool: &str, arguments: Value| {
+        let answer = client.call(tool, &arguments);
+        transcript.push_str(&answer.1);
+        answer
+    };
+
+    let created = parsed(&call(
+        &mut client,
+        "create_backup",
+        json!({"name": "Docs", "paths": [docs], "dest": dest}),
+    ));
+    let listed = parsed(&call(&mut client, "list_backups", json!({})));
+    let run = parsed(&call(&mut client, "backup_now", json!({"id": "docs"})));
+    let snapshots = parsed(&call(&mut client, "list_snapshots", json!({"id": "docs"})));
+    let top = parsed(&call(
+        &mut client,
+        "list_snapshot_files",
+        json!({"id": "docs", "snapshot": "latest"}),
+    ));
+    let shown = parsed(&call(&mut client, "show_backup", json!({"id": "docs"})));
+    let dry = parsed(&call(
+        &mut client,
+        "restore_snapshot",
+        json!({"id": "docs", "snapshot": "latest", "to": to, "dry_run": true}),
+    ));
+    let dry_created = to.exists();
+    let restored = parsed(&call(
+        &mut client,
+        "restore_snapshot",
+        json!({"id": "docs", "snapshot": "latest", "to": to}),
+    ));
+    let again = call(
+        &mut client,
+        "restore_snapshot",
+        json!({"id": "docs", "snapshot": "latest", "to": to}),
+    );
+    let job = parsed(&call(
+        &mut client,
+        "show_backup_job",
+        json!({"id": restored["id"]}),
+    ));
+    let missing = docs.join("missing.txt");
+    let failed_to = bed.root.join("failed");
+    let failed = call(
+        &mut client,
+        "restore_snapshot",
+        json!({"id": "docs", "snapshot": "latest", "to": failed_to, "paths": [missing]}),
+    );
+
+    assert_eq!(created["id"], "docs");
+    assert_eq!(created["key_unsaved"], true);
+    assert_eq!(listed[0]["key"], "stored");
+    assert_eq!(run["finished"], true, "{run}");
+    assert_eq!(snapshots.as_array().unwrap().len(), 1);
+    assert_eq!(top["files"][0]["path"], docs.to_str().unwrap());
+    assert_eq!(shown["last_run"]["summary"]["files_new"], 2, "{shown}");
+    assert_eq!(dry["status"], "dry_run");
+    assert!(!dry_created);
+    assert_eq!(restored["status"], "done", "{restored}");
+    assert_eq!(
+        std::fs::read_to_string(to.join("a.txt")).unwrap(),
+        "content of a"
+    );
+    assert!(again.0, "a second restore into the folder is refused");
+    assert!(
+        again.1.contains("Restore destination already exists."),
+        "{}",
+        again.1
+    );
+    assert_eq!(job["status"], "done", "{job}");
+    assert!(failed.0, "a restore that fails is an error: {}", failed.1);
+    assert!(
+        failed.1.contains("Nothing in the snapshot matches"),
+        "{}",
+        failed.1
+    );
+    assert!(!failed_to.exists());
+    let key = std::fs::read_to_string(bed.root.join("data/syncfast/dev-keys/docs.key")).unwrap();
+    assert!(key.trim().len() >= 40);
+    assert!(!transcript.contains(key.trim()), "a tool returned the key");
+}
+
+#[test]
+fn the_backup_tools_refuse_what_lowers_safety_and_change_nothing() {
+    let Some(bed) = backup_bed() else { return };
+    let docs = bed.root.join("docs");
+    write(&docs.join("a.txt"), "content of a");
+    let dest = bed.root.join("repo");
+    let mut client = Client::start(&bed);
+    client.initialize();
+    parsed(&client.call(
+        "create_backup",
+        &json!({"name": "Docs", "paths": [docs], "dest": dest}),
+    ));
+    let before = parsed(&client.call("show_backup", &json!({"id": "docs"})));
+
+    for (args, key) in [
+        (json!({"id": "docs", "keep": {"daily": 1}}), "keep.daily"),
+        (
+            json!({"id": "docs", "one_file_system": false}),
+            "one_file_system",
+        ),
+        (json!({"id": "docs", "paths": []}), "paths"),
+    ] {
+        let (is_error, text) = client.call("edit_backup", &args);
+
+        assert!(is_error, "{args}: {text}");
+        assert!(
+            text.contains(&format!("This setting lowers safety ({key})")),
+            "{args}: {text}"
+        );
+    }
+    let (moved, moved_text) = client.call(
+        "edit_backup",
+        &json!({"id": "docs", "dest": bed.root.join("elsewhere")}),
+    );
+    let (removed, removed_text) = client.call("remove_backup", &json!({"id": "docs"}));
+    let allowed = client.call("edit_backup", &json!({"id": "docs", "keep": {"daily": 30}}));
+    let after = parsed(&client.call("show_backup", &json!({"id": "docs"})));
+
+    assert!(moved, "{moved_text}");
+    assert!(removed, "{removed_text}");
+    assert!(!allowed.0, "{}", allowed.1);
+    assert_eq!(after["keep"]["daily"], 30);
+    assert_eq!(after["paths"], before["paths"]);
+    assert_eq!(after["dest"], before["dest"]);
+}
+
+#[test]
+fn pausing_a_backup_needs_an_id_or_all_but_not_both() {
+    let Some(bed) = backup_bed() else { return };
+    let mut client = Client::start(&bed);
+    client.initialize();
+
+    let (neither, _) = client.call("pause_backup", &json!({}));
+    let (both, _) = client.call("pause_backup", &json!({"id": "x", "all": true}));
+    let (all, text) = client.call("pause_backup", &json!({"all": true}));
+
+    assert!(neither && both);
+    assert!(!all, "{text}");
 }

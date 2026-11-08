@@ -1,3 +1,4 @@
+use crate::backup::restore_job::RestoreError;
 use crate::config::{
     ConfigEditError, ConfigSaveError, ConfigUpdateError, GlobalConfigError, SettingError,
 };
@@ -16,6 +17,8 @@ pub enum OpError {
     Invalid(String),
     #[error("no sync has the id \"{0}\"")]
     NotFound(String),
+    #[error("no backup has the id \"{0}\"")]
+    NoBackup(String),
     /// A round of the sync is running.
     #[error("this sync is running; try again when it finishes")]
     Busy,
@@ -27,6 +30,10 @@ pub enum OpError {
     /// Holds the keys, comma separated.
     #[error("This setting lowers safety ({0}). Change it in syncfast.")]
     NeedsUser(String),
+    /// Only the user can do it, whatever the arguments are. Holds the whole
+    /// message.
+    #[error("{0}")]
+    UserOnly(String),
     /// There is no review shown to the agent that matches the current
     /// state of the sync.
     #[error("{0}")]
@@ -42,9 +49,9 @@ impl OpError {
     #[must_use]
     pub fn exit_code(&self) -> u8 {
         match self {
-            Self::Invalid(_) | Self::NotFound(_) => 2,
+            Self::Invalid(_) | Self::NotFound(_) | Self::NoBackup(_) => 2,
             Self::Busy => 3,
-            Self::DeletesNeedUser | Self::NeedsUser(_) => 4,
+            Self::DeletesNeedUser | Self::NeedsUser(_) | Self::UserOnly(_) => 4,
             Self::ReviewNotShown(_) => 5,
             Self::Failed(_) => 1,
         }
@@ -55,10 +62,10 @@ impl OpError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Invalid(_) => "invalid",
-            Self::NotFound(_) => "not_found",
+            Self::NotFound(_) | Self::NoBackup(_) => "not_found",
             Self::Busy => "busy",
             Self::DeletesNeedUser => "deletes_need_user",
-            Self::NeedsUser(_) => "needs_user",
+            Self::NeedsUser(_) | Self::UserOnly(_) => "needs_user",
             Self::ReviewNotShown(_) => "review_not_shown",
             Self::Failed(_) => "failed",
         }
@@ -130,6 +137,17 @@ impl From<PreviewError> for OpError {
             PreviewError::InvalidPair(message) => Self::Invalid(message),
             PreviewError::Failed { message, .. } => Self::Failed(message),
             PreviewError::Run(err) => err.into(),
+        }
+    }
+}
+
+impl From<RestoreError> for OpError {
+    fn from(err: RestoreError) -> Self {
+        match err {
+            RestoreError::Invalid(message) => Self::Invalid(message),
+            RestoreError::NotFound(_) => Self::Invalid(err.to_string()),
+            RestoreError::Busy => Self::Busy,
+            RestoreError::Failed(message) => Self::Failed(message),
         }
     }
 }

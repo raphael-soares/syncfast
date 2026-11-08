@@ -24,7 +24,7 @@ use super::restore::{
     check_snapshot_ref, classify_restore, parse_restore_line, restore_args, restore_form,
 };
 use super::run::{KEY_ABSENT, PROGRESS_EVERY};
-use super::snapshots::{SnapshotView, parse_snapshots};
+use super::snapshots::{SnapshotView, parse_snapshots, pick_snapshot};
 use crate::config::{Config, resolve};
 use crate::ops::start_detached;
 use crate::paths::Paths;
@@ -41,7 +41,6 @@ const LONGEST_ID: usize = 40;
 const UNIT_PREFIX: &str = "syncfast-restore-";
 const STDERR_KEPT: usize = 64 * 1024;
 const STOPPED: &str = "The restore stopped before it finished.";
-const NO_SNAPSHOTS: &str = "This backup has no snapshots yet.";
 
 #[derive(Debug, thiserror::Error)]
 pub enum RestoreError {
@@ -66,17 +65,6 @@ impl RestoreError {
             Self::Invalid(_) | Self::NotFound(_) => 2,
             Self::Busy => 3,
             Self::Failed(_) => 1,
-        }
-    }
-
-    /// A stable name for the error, for JSON output.
-    #[must_use]
-    pub fn code(&self) -> &'static str {
-        match self {
-            Self::Invalid(_) => "invalid",
-            Self::NotFound(_) => "not_found",
-            Self::Busy => "busy",
-            Self::Failed(_) => "failed",
         }
     }
 }
@@ -396,16 +384,9 @@ async fn resolve_snapshot(
             .collect()
     };
     found.sort_unstable_by_key(|snapshot| std::cmp::Reverse(snapshot.time));
-    match (wanted, found.len()) {
-        ("latest", 0) => Err(RestoreError::Invalid(NO_SNAPSHOTS.to_owned())),
-        (_, 0) => Err(RestoreError::Invalid(format!(
-            "this backup has no snapshot \"{wanted}\""
-        ))),
-        ("latest", _) | (_, 1) => Ok(found.swap_remove(0)),
-        _ => Err(RestoreError::Invalid(format!(
-            "\"{wanted}\" matches more than one snapshot; use more of the id"
-        ))),
-    }
+    pick_snapshot(&found, wanted)
+        .cloned()
+        .map_err(RestoreError::Invalid)
 }
 
 /// Checks the request and, unless it is a dry run, makes the new folder,
@@ -833,10 +814,6 @@ mod tests {
         assert_eq!(RestoreError::NotFound(String::new()).exit_code(), 2);
         assert_eq!(RestoreError::Busy.exit_code(), 3);
         assert_eq!(RestoreError::Failed(String::new()).exit_code(), 1);
-        assert_eq!(RestoreError::Invalid(String::new()).code(), "invalid");
-        assert_eq!(RestoreError::NotFound(String::new()).code(), "not_found");
-        assert_eq!(RestoreError::Busy.code(), "busy");
-        assert_eq!(RestoreError::Failed(String::new()).code(), "failed");
     }
 
     #[test]

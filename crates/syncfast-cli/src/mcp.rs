@@ -11,9 +11,11 @@ use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabiliti
 use rmcp::{ServerHandler, ServiceExt as _, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use syncfast_core::backup::state::CheckKind;
 use syncfast_core::ops::{
-    DEFAULT_DEPTH, DEFAULT_MAX_FOLDERS, DEFAULT_WAIT_SECONDS, ExploreOptions, Keep, NewSync,
-    OpError, Ops, TransferOptions,
+    BackupEdit, BackupOptions, DEFAULT_DEPTH, DEFAULT_FILE_LIMIT, DEFAULT_MAX_FOLDERS,
+    DEFAULT_WAIT_SECONDS, ExploreOptions, Keep, KeepPartial, NewBackupRequest, NewSync, OpError,
+    Ops, RestoreArgs, TransferOptions,
 };
 
 const INSTRUCTIONS: &str = "\
@@ -46,7 +48,21 @@ files would be deleted is for the user to confirm. A first sync of a large folde
 longer than the wait: the round goes on by itself, read status later. get_settings shows how a \
 sync behaves and where each value comes from; set_setting and reset_setting change it, except \
 what lowers safety (a larger max_delete, versions off, conflict_loser delete, a switch to a mirror mode, \
-review moving towards automatic): that is for the user.";
+review moving towards automatic): that is for the user.
+
+Backups (restic, encrypted, to a folder or a cloud account). list_backups and show_backup \
+say how each stands; list_snapshots and list_snapshot_files read what a backup holds \
+(names, sizes and dates only, never content); backup_now and check_backup run now and wait \
+like sync_now. To protect a folder, create_backup with the folders and a destination the user \
+agreed to; it makes the key itself and keeps it in the key storage. You never see or enter \
+a key. A new backup stays \"Save the key\" until the user opens syncfast and confirms they \
+saved it: tell them to. edit_backup changes name, folders, every, keep, presets, filters and \
+limits, but not what lowers safety: keeping fewer snapshots, removing a folder, turning \
+one_file_system off and changing the destination are refused with exit 4 for the user to do. \
+remove_backup always refuses: only the user removes a backup. restore_snapshot restores into \
+a folder that does not exist yet, never over files: call it with dry_run first, then tell the \
+user where the files went. A restore that outlasts the wait goes on by itself: read it with \
+show_backup_job.";
 
 /// The MCP server: one tool per operation.
 #[derive(Clone)]
@@ -69,13 +85,17 @@ fn wait(seconds: Option<u64>) -> Duration {
 }
 
 /// One sync, or all of them: exactly one of the two must be asked for.
-fn one_or_all(id: Option<String>, all: Option<bool>) -> Result<Option<String>, OpError> {
+fn one_or_all(
+    id: Option<String>,
+    all: Option<bool>,
+    noun: &str,
+) -> Result<Option<String>, OpError> {
     match (id, all.unwrap_or(false)) {
         (Some(id), false) => Ok(Some(id)),
         (None, true) => Ok(None),
-        _ => Err(OpError::Invalid(
-            "give either id (one sync) or all = true (every sync)".to_owned(),
-        )),
+        _ => Err(OpError::Invalid(format!(
+            "give either id (one {noun}) or all = true (every {noun})"
+        ))),
     }
 }
 
@@ -267,6 +287,174 @@ struct ResetSettingArgs {
     key: String,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+struct BackupTargetArgs {
+    /// The backup id, as `list_backups` shows it.
+    id: Option<String>,
+    /// Every backup, instead of one. Give `id` or `all`, not both.
+    all: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct BackupIdArgs {
+    /// The backup id, as `list_backups` shows it.
+    id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct RestoreJobArgs {
+    /// The restore id that `restore_snapshot` returned.
+    id: String,
+    /// Seconds to wait for the restore to end. Default 60; 0 answers at once.
+    wait_seconds: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct SnapshotsArgs {
+    /// The backup id, as `list_backups` shows it.
+    id: String,
+    /// The most snapshots to list (the newest). All when absent.
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct SnapshotFilesArgs {
+    /// The backup id.
+    id: String,
+    /// `latest`, or a snapshot id (or the start of one) from `list_snapshots`.
+    snapshot: String,
+    /// A folder of the snapshot, as an earlier answer listed it. Absent: the top.
+    dir: Option<String>,
+    /// The most entries to list; more are left out and `truncated` says so. Default 200.
+    max_entries: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct BackupNowArgs {
+    /// The backup id.
+    id: String,
+    /// Seconds to wait for the run to end (default 60; 0 returns at once). The run goes on by itself.
+    wait_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum CheckArg {
+    /// Check the structure of the repository.
+    Quick,
+    /// Also read a sample of the data.
+    Sample,
+    /// Read all the data.
+    Full,
+}
+
+impl From<CheckArg> for CheckKind {
+    fn from(kind: CheckArg) -> Self {
+        match kind {
+            CheckArg::Quick => Self::Quick,
+            CheckArg::Sample => Self::Sample,
+            CheckArg::Full => Self::Full,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct CheckBackupArgs {
+    /// The backup id.
+    id: String,
+    /// How thorough. Default `quick`.
+    kind: Option<CheckArg>,
+    /// Seconds to wait for the check to end (default 60; 0 returns at once). The check goes on by itself.
+    wait_seconds: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+struct KeepArgs {
+    /// Daily snapshots to keep.
+    daily: Option<i64>,
+    /// Weekly snapshots to keep.
+    weekly: Option<i64>,
+    /// Monthly snapshots to keep.
+    monthly: Option<i64>,
+    /// Yearly snapshots to keep (0 keeps none).
+    yearly: Option<i64>,
+}
+
+impl From<KeepArgs> for KeepPartial {
+    fn from(keep: KeepArgs) -> Self {
+        Self {
+            daily: keep.daily,
+            weekly: keep.weekly,
+            monthly: keep.monthly,
+            yearly: keep.yearly,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct CreateBackupArgs {
+    /// Name shown for the backup.
+    name: String,
+    /// Folders on this computer to back up; `~` is the home folder.
+    paths: Vec<String>,
+    /// A folder on this computer or `account:folder`. It must be empty or new.
+    dest: String,
+    /// How often: `hourly`, `daily` or `weekly`. Default daily.
+    every: Option<String>,
+    /// How many snapshots to keep; what is absent has the default.
+    keep: Option<KeepArgs>,
+    /// Presets to turn on (`system_junk`, `build_artifacts`, ...); the defaults when absent, `[]` turns them off.
+    presets: Option<Vec<String>>,
+    /// Custom filter rules, each `- pattern` or `+ pattern`.
+    filters: Option<Vec<String>>,
+    /// Upload limit such as `1M`, or `off`.
+    limit_upload: Option<String>,
+    /// Download limit such as `1M`, or `off`.
+    limit_download: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct EditBackupArgs {
+    /// The backup id.
+    id: String,
+    /// A new name.
+    name: Option<String>,
+    /// The folders to back up, all of them (not only the new one). Removing one is refused.
+    paths: Option<Vec<String>>,
+    /// The destination is fixed: any change is refused.
+    dest: Option<String>,
+    /// `true` only; turning it off is refused.
+    one_file_system: Option<bool>,
+    /// How often: `hourly`, `daily` or `weekly`.
+    every: Option<String>,
+    /// The snapshots to keep; raising is allowed, lowering is refused.
+    keep: Option<KeepArgs>,
+    /// The presets to turn on; replaces the current ones.
+    presets: Option<Vec<String>>,
+    /// Custom filter rules; replaces the current ones.
+    filters: Option<Vec<String>>,
+    /// Upload limit such as `1M`, or `off`.
+    limit_upload: Option<String>,
+    /// Download limit such as `1M`, or `off`.
+    limit_download: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct RestoreSnapshotArgs {
+    /// The backup id.
+    id: String,
+    /// `latest`, or a snapshot id (or the start of one).
+    snapshot: String,
+    /// The folder to create. It must not exist.
+    to: String,
+    /// Folders or files of the snapshot to restore. Absent: everything.
+    paths: Option<Vec<String>>,
+    /// Only report the files and bytes that would be restored and change nothing.
+    dry_run: Option<bool>,
+    /// Seconds to wait for the restore to end (default 60; 0 returns at once). It goes on by itself.
+    wait_seconds: Option<u64>,
+}
+
 /// The text `Ops::set_setting` reads for a JSON value.
 fn setting_text(value: &serde_json::Value) -> Result<String, OpError> {
     match value {
@@ -343,7 +531,7 @@ impl SyncfastMcp {
         )
     )]
     async fn pause_sync(&self, Parameters(args): Parameters<OneOrAllArgs>) -> CallToolResult {
-        match one_or_all(args.id, args.all) {
+        match one_or_all(args.id, args.all, "sync") {
             Ok(id) => reply(self.ops.set_enabled(id.as_deref(), false).await),
             Err(err) => reply::<()>(Err(err)),
         }
@@ -358,7 +546,7 @@ impl SyncfastMcp {
         )
     )]
     async fn resume_sync(&self, Parameters(args): Parameters<OneOrAllArgs>) -> CallToolResult {
-        match one_or_all(args.id, args.all) {
+        match one_or_all(args.id, args.all, "sync") {
             Ok(id) => reply(self.ops.set_enabled(id.as_deref(), true).await),
             Err(err) => reply::<()>(Err(err)),
         }
@@ -448,7 +636,7 @@ impl SyncfastMcp {
         annotations(read_only_hint = false, destructive_hint = false)
     )]
     async fn sync_now(&self, Parameters(args): Parameters<SyncNowArgs>) -> CallToolResult {
-        match one_or_all(args.id, args.all) {
+        match one_or_all(args.id, args.all, "sync") {
             Ok(id) => reply(
                 self.ops
                     .sync_now(id.as_deref(), wait(args.wait_seconds))
@@ -626,6 +814,208 @@ impl SyncfastMcp {
         reply(
             self.ops
                 .reset_setting(args.sync.as_deref(), &args.key)
+                .await,
+        )
+    }
+
+    #[tool(
+        description = "Every backup with its status (up to date, backing up, save the key, ...), gate, last snapshot and whether its key is stored. The key itself is never shown.",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_backups(&self) -> CallToolResult {
+        reply(self.ops.backups().await)
+    }
+
+    #[tool(
+        description = "One backup: folders, destination, schedule, keep, presets, filters, limits, status, gate, and the details of the last run and check.",
+        annotations(read_only_hint = true)
+    )]
+    async fn show_backup(&self, Parameters(args): Parameters<BackupIdArgs>) -> CallToolResult {
+        reply(self.ops.show_backup(&args.id).await)
+    }
+
+    #[tool(
+        description = "The snapshots of a backup, newest first.",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_snapshots(&self, Parameters(args): Parameters<SnapshotsArgs>) -> CallToolResult {
+        reply(self.ops.snapshots(&args.id, args.limit).await)
+    }
+
+    #[tool(
+        description = "The files of one folder of a snapshot: names, kinds, sizes and dates, never content. Without dir, the top of the snapshot.",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_snapshot_files(
+        &self,
+        Parameters(args): Parameters<SnapshotFilesArgs>,
+    ) -> CallToolResult {
+        reply(
+            self.ops
+                .snapshot_files(
+                    &args.id,
+                    &args.snapshot,
+                    args.dir.as_deref().unwrap_or(""),
+                    args.max_entries.unwrap_or(DEFAULT_FILE_LIMIT),
+                )
+                .await,
+        )
+    }
+
+    #[tool(
+        description = "Back up now and wait for it. A run that outlasts the wait goes on by itself: read list_backups later.",
+        annotations(read_only_hint = false, destructive_hint = false)
+    )]
+    async fn backup_now(&self, Parameters(args): Parameters<BackupNowArgs>) -> CallToolResult {
+        reply(self.ops.backup_now(&args.id, wait(args.wait_seconds)).await)
+    }
+
+    #[tool(
+        description = "Check the repository of a backup (quick, sample or full) and wait for it. The result is in show_backup under last_check.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    async fn check_backup(&self, Parameters(args): Parameters<CheckBackupArgs>) -> CallToolResult {
+        let kind = args.kind.map_or(CheckKind::Quick, CheckKind::from);
+        reply(
+            self.ops
+                .check_backup(&args.id, kind, wait(args.wait_seconds))
+                .await,
+        )
+    }
+
+    #[tool(
+        description = "Pause the schedule of one backup, or of all (all = true). Nothing is deleted.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    async fn pause_backup(&self, Parameters(args): Parameters<BackupTargetArgs>) -> CallToolResult {
+        match one_or_all(args.id, args.all, "backup") {
+            Ok(id) => reply(self.ops.pause_backup(id.as_deref()).await),
+            Err(err) => reply::<()>(Err(err)),
+        }
+    }
+
+    #[tool(
+        description = "Resume the schedule of one paused backup, or of all (all = true).",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    async fn resume_backup(
+        &self,
+        Parameters(args): Parameters<BackupTargetArgs>,
+    ) -> CallToolResult {
+        match one_or_all(args.id, args.all, "backup") {
+            Ok(id) => reply(self.ops.resume_backup(id.as_deref()).await),
+            Err(err) => reply::<()>(Err(err)),
+        }
+    }
+
+    #[tool(
+        description = "Create a backup of folders on this computer into an empty or new destination, with a key made and kept by syncfast; you never see it. It starts its first run at once and stays `Save the key` until the user confirms in syncfast that they saved the key: tell them to open syncfast.",
+        annotations(read_only_hint = false, destructive_hint = false)
+    )]
+    async fn create_backup(
+        &self,
+        Parameters(args): Parameters<CreateBackupArgs>,
+    ) -> CallToolResult {
+        reply(
+            self.ops
+                .create_backup(NewBackupRequest {
+                    name: args.name,
+                    paths: args.paths,
+                    dest: args.dest,
+                    options: BackupOptions {
+                        every: args.every,
+                        keep: args.keep.map(KeepPartial::from).unwrap_or_default(),
+                        presets: args.presets,
+                        filters: args.filters,
+                        limit_upload: args.limit_upload,
+                        limit_download: args.limit_download,
+                    },
+                })
+                .await,
+        )
+    }
+
+    #[tool(
+        description = "Change settings of a backup: name, folders (all of them), every, keep, presets, filters, limit_upload, limit_download, one_file_system on. Refused with `This setting lowers safety (...). Change it in syncfast.` when it keeps fewer snapshots, removes a folder or turns one_file_system off, and refused for good when it changes the destination: those are for the user. Nothing changes when it is refused.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    async fn edit_backup(&self, Parameters(args): Parameters<EditBackupArgs>) -> CallToolResult {
+        let edit = BackupEdit {
+            name: args.name,
+            paths: args.paths,
+            dest: args.dest,
+            one_file_system: args.one_file_system,
+            options: BackupOptions {
+                every: args.every,
+                keep: args.keep.map(KeepPartial::from).unwrap_or_default(),
+                presets: args.presets,
+                filters: args.filters,
+                limit_upload: args.limit_upload,
+                limit_download: args.limit_download,
+            },
+        };
+        reply(self.ops.edit_backup(&args.id, &edit).await)
+    }
+
+    #[tool(
+        description = "Always refused: only the user removes a backup, in syncfast.",
+        annotations(read_only_hint = false, destructive_hint = true)
+    )]
+    async fn remove_backup(&self, Parameters(args): Parameters<BackupIdArgs>) -> CallToolResult {
+        reply(Ops::remove_backup(&args.id))
+    }
+
+    #[tool(
+        description = "Restore a snapshot into a folder that does not exist yet (never over existing files), all of it or the given paths. Use dry_run first to show the user the files and bytes. A restore that outlasts the wait goes on by itself: read it with show_backup_job. Returns the folder and the counts, never contents.",
+        annotations(read_only_hint = false, destructive_hint = false)
+    )]
+    async fn restore_snapshot(
+        &self,
+        Parameters(args): Parameters<RestoreSnapshotArgs>,
+    ) -> CallToolResult {
+        reply(
+            self.ops
+                .restore(
+                    RestoreArgs {
+                        backup: args.id,
+                        snapshot: args.snapshot,
+                        to: args.to,
+                        paths: args.paths.unwrap_or_default(),
+                        dry_run: args.dry_run.unwrap_or(false),
+                    },
+                    wait(args.wait_seconds),
+                )
+                .await,
+        )
+    }
+
+    #[tool(
+        description = "How a restore stands: running or done, with the counts; a restore that failed is an error with the reason. Waits up to wait_seconds for it to end. The id is the one restore_snapshot returned.",
+        annotations(read_only_hint = true)
+    )]
+    async fn show_backup_job(
+        &self,
+        Parameters(args): Parameters<RestoreJobArgs>,
+    ) -> CallToolResult {
+        reply(
+            self.ops
+                .restore_job(&args.id, wait(args.wait_seconds))
                 .await,
         )
     }

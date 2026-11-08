@@ -4,10 +4,13 @@
 
 mod accounts;
 mod activity;
+mod backup_edit;
+mod backups;
 mod conflicts;
 mod error;
 mod explore;
 mod pairs;
+mod restore;
 mod review;
 mod rules;
 mod settings;
@@ -20,6 +23,9 @@ pub(crate) mod views;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::backup::keystore::{DefaultKeyStore, KeyStore};
+use crate::backup::lifecycle::LifecycleEnv;
+use crate::backup::restore_job::{DetachedRestoreStarter, RestoreStarter};
 use crate::behavior::Behavior;
 use crate::config::{Config, Pair};
 use crate::flatpak;
@@ -27,11 +33,19 @@ use crate::network::{Network, NetworkManager};
 use crate::notify::{DesktopNotifier, Notifier};
 use crate::paths::Paths;
 use crate::rclone::Rclone;
+use crate::restic::{self, Restic};
 use crate::units::{ApplyEnv, Systemctl, SystemdMode, UserSystemctl, apply, current_binary};
 use crate::watch::{Trigger, trigger_for};
 
 pub use accounts::AccountView;
 pub use activity::{RoundLog, RoundView};
+pub use backup_edit::{
+    BackupCreated, BackupEdit, BackupOptions, BackupSaved, KeepPartial, NewBackupRequest,
+};
+pub use backups::{
+    BackupDetail, BackupGateView, BackupRun, BackupView, BackupsToggled, DEFAULT_FILE_LIMIT,
+    KeepView, SnapshotFiles,
+};
 pub use conflicts::{ConflictView, FileView, Keep, Resolved};
 pub use error::OpError;
 pub use explore::{
@@ -42,6 +56,7 @@ pub use pairs::{
     AddedSync, ApplyFailureView, ApplyView, FIRST_ROUND_WAIT, FirstRound, InvalidBackup,
     InvalidSync, NewSync, RemovedSync, Toggled, first_round_confirmed,
 };
+pub use restore::RestoreArgs;
 pub use review::{ConfirmedReview, ReviewView};
 pub use rules::{FilterTestView, FiltersSaved, FolderCount, after_filters_saved};
 pub use settings::{SettingChanged, SettingView, SettingsView};
@@ -73,6 +88,12 @@ pub struct Ops {
     pub trigger: Arc<dyn Trigger>,
     /// Starts a `copy` or `move` without waiting for it.
     pub transfers: Arc<dyn TransferStarter>,
+    /// `None` when restic is not installed.
+    pub restic: Option<Restic>,
+    /// Where backup keys live. Operations read it; none returns a key.
+    pub keys: Arc<dyn KeyStore>,
+    /// Starts a restore without waiting for it.
+    pub restores: Arc<dyn RestoreStarter>,
 }
 
 impl std::fmt::Debug for Ops {
@@ -99,9 +120,13 @@ impl Ops {
             .map_err(|err| OpError::Failed(format!("cannot locate the syncfast binary: {err}")))?;
         let systemctl: Arc<dyn Systemctl> = Arc::new(UserSystemctl::detect());
         let systemd = SystemdMode::from_env();
+        let rclone = Rclone::from_env()?;
         Ok(Self {
+            restic: restic::locate_binary().map(|bin| Restic::new(bin, rclone.clone(), &paths)),
+            keys: Arc::new(DefaultKeyStore::from_env(&paths)),
+            restores: Arc::new(DetachedRestoreStarter::new(bin.clone())),
             paths,
-            rclone: Rclone::from_env()?,
+            rclone,
             network: Box::new(NetworkManager),
             notifier: Box::new(DesktopNotifier::new()),
             trigger: trigger_for(systemd, bin.clone(), Arc::clone(&systemctl)),
@@ -154,14 +179,36 @@ impl Ops {
     }
 
     async fn apply_report(&self, delete_versions: &[String]) -> crate::units::ApplyReport {
-        let env = ApplyEnv::new(
+        apply(&self.apply_env(), delete_versions).await
+    }
+
+    fn apply_env(&self) -> ApplyEnv<'_> {
+        ApplyEnv::new(
             &self.paths,
             &self.rclone,
             &self.bin,
             self.systemd,
             self.systemctl.as_ref(),
         )
-        .with_flatpak_id(self.flatpak_id.as_deref());
-        apply(&env, delete_versions).await
+        .with_flatpak_id(self.flatpak_id.as_deref())
+    }
+
+    fn lifecycle_env<'a>(&'a self, restic: &'a Restic) -> LifecycleEnv<'a> {
+        LifecycleEnv::new(self.apply_env(), restic, &*self.keys, &*self.trigger)
+    }
+
+    /// restic, checked once it is going to be used. The Flatpak ships the
+    /// version it was built for, so only a host restic is looked at.
+    async fn restic(&self) -> Result<&Restic, OpError> {
+        let restic = self.restic.as_ref().ok_or_else(|| {
+            OpError::Failed("restic was not found; install it or reinstall syncfast".to_owned())
+        })?;
+        if self.flatpak_id.is_none() {
+            restic
+                .ensure_supported()
+                .await
+                .map_err(|err| OpError::Failed(err.to_string()))?;
+        }
+        Ok(restic)
     }
 }
