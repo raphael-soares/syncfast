@@ -22,6 +22,8 @@ pub enum KeyError {
     Unavailable(String),
     #[error("Cannot create a key: {0}")]
     Random(String),
+    #[error("\"{0}\" is not a valid backup id.")]
+    BadId(String),
 }
 
 /// 52 characters `A-Z2-7`: 256 bits in RFC 4648 base32 without padding.

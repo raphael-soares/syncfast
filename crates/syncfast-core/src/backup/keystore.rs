@@ -15,6 +15,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::OnceCell;
 
 use super::key::{Key, KeyError};
+use crate::config::valid_id;
 use crate::flatpak;
 use crate::paths::Paths;
 
@@ -321,8 +322,12 @@ impl PlainKeyStore {
         Self { dir }
     }
 
-    fn file(&self, backup_id: &str) -> PathBuf {
-        self.dir.join(format!("{backup_id}.key"))
+    fn file(&self, backup_id: &str) -> Result<PathBuf, KeyError> {
+        if valid_id(backup_id) {
+            Ok(self.dir.join(format!("{backup_id}.key")))
+        } else {
+            Err(KeyError::BadId(backup_id.to_owned()))
+        }
     }
 }
 
@@ -333,7 +338,7 @@ fn io_error(err: &std::io::Error) -> KeyError {
 impl KeyStore for PlainKeyStore {
     fn get<'a>(&'a self, backup_id: &'a str) -> BoxFuture<'a, Result<Option<Key>, KeyError>> {
         Box::pin(async move {
-            match tokio::fs::read_to_string(self.file(backup_id)).await {
+            match tokio::fs::read_to_string(self.file(backup_id)?).await {
                 Ok(text) => Key::parse(&text).map(Some),
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
                 Err(err) => Err(io_error(&err)),
@@ -348,10 +353,10 @@ impl KeyStore for PlainKeyStore {
         key: &'a Key,
     ) -> BoxFuture<'a, Result<(), KeyError>> {
         Box::pin(async move {
+            let path = self.file(backup_id)?;
             tokio::fs::create_dir_all(&self.dir)
                 .await
                 .map_err(|err| io_error(&err))?;
-            let path = self.file(backup_id);
             let mut file = tokio::fs::OpenOptions::new()
                 .write(true)
                 .create(true)
@@ -372,7 +377,7 @@ impl KeyStore for PlainKeyStore {
 
     fn delete<'a>(&'a self, backup_id: &'a str) -> BoxFuture<'a, Result<(), KeyError>> {
         Box::pin(async move {
-            match tokio::fs::remove_file(self.file(backup_id)).await {
+            match tokio::fs::remove_file(self.file(backup_id)?).await {
                 Ok(()) => Ok(()),
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
                 Err(err) => Err(io_error(&err)),
@@ -792,6 +797,34 @@ mod tests {
         let store = PlainKeyStore::new(dir.path().to_owned());
 
         assert_eq!(store.get("docs").await, Err(KeyError::Malformed));
+    }
+
+    #[tokio::test]
+    async fn the_plain_store_refuses_an_id_that_could_leave_its_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = PlainKeyStore::new(dir.path().join("keys"));
+
+        for id in [
+            "",
+            "../escape",
+            "a/b",
+            "/abs",
+            "..",
+            "UPPER",
+            "a.b",
+            &"x".repeat(33),
+        ] {
+            let bad = KeyError::BadId(id.to_owned());
+            assert_eq!(store.get(id).await, Err(bad.clone()), "get {id:?}");
+            assert_eq!(
+                store.put(id, "n", &key()).await,
+                Err(bad.clone()),
+                "put {id:?}"
+            );
+            assert_eq!(store.delete(id).await, Err(bad), "delete {id:?}");
+        }
+        assert!(!dir.path().join("keys").exists());
+        assert!(!dir.path().join("escape.key").exists());
     }
 
     #[tokio::test]

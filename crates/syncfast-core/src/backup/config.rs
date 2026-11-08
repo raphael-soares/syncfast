@@ -8,7 +8,9 @@ use serde::{Deserialize, Deserializer};
 
 use super::destination::{Destination, DestinationError};
 use crate::behavior::{Bandwidth, Behavior};
-use crate::config::{Pair, lexical_clean, occupied_remotes, remotes_overlap, resolve, valid_id};
+use crate::config::{
+    Pair, expand_tilde, lexical_clean, occupied_remotes, remotes_overlap, resolve, valid_id,
+};
 use crate::filters;
 use crate::paths::Paths;
 
@@ -328,9 +330,15 @@ impl BackupConfig {
 /// The settings a backup change lowers safety on, which only the user may
 /// change (spec phase 3, step 15): each `keep` value that went down, a
 /// folder that is no longer backed up, a new destination and
-/// `one_file_system` turned off. Empty when the change is safe.
+/// `one_file_system` turned off. Empty when the change is safe. Folders and
+/// the destination compare after `~` and lexical normalization, never
+/// touching the disk.
 #[must_use]
-pub fn backup_lowers_safety(before: &BackupConfig, after: &BackupConfig) -> Vec<&'static str> {
+pub fn backup_lowers_safety(
+    before: &BackupConfig,
+    after: &BackupConfig,
+    home: &Path,
+) -> Vec<&'static str> {
     let mut lowered = Vec::new();
     let keeps = [
         ("keep.daily", before.keep.daily, after.keep.daily),
@@ -344,16 +352,32 @@ pub fn backup_lowers_safety(before: &BackupConfig, after: &BackupConfig) -> Vec<
             .filter(|(_, before, after)| after < before)
             .map(|(name, _, _)| name),
     );
-    if before.paths.iter().any(|path| !after.paths.contains(path)) {
+    let place = |path: &PathBuf| lexical_clean(&expand_tilde(path, home));
+    let after_places: Vec<PathBuf> = after.paths.iter().map(place).collect();
+    if before
+        .paths
+        .iter()
+        .any(|path| !after_places.contains(&place(path)))
+    {
         lowered.push("paths");
     }
-    if before.dest != after.dest {
+    if comparable_dest(&before.dest, home) != comparable_dest(&after.dest, home) {
         lowered.push("dest");
     }
     if before.one_file_system && !after.one_file_system {
         lowered.push("one_file_system");
     }
     lowered
+}
+
+fn comparable_dest(dest: &str, home: &Path) -> String {
+    if dest.starts_with('/') || dest.starts_with('~') {
+        lexical_clean(&expand_tilde(Path::new(dest), home))
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        dest.trim_end_matches('/').to_owned()
+    }
 }
 
 fn folder_problem(backup: &BackupConfig) -> Option<String> {
@@ -1119,7 +1143,11 @@ mod tests {
     fn lowers(before: &str, after: &str) -> Vec<&'static str> {
         let before = parse(&[backup_block(before)]).backups()[0].clone();
         let after = parse(&[backup_block(after)]).backups()[0].clone();
-        backup_lowers_safety(&before, &after)
+        guard(&before, &after)
+    }
+
+    fn guard(before: &BackupConfig, after: &BackupConfig) -> Vec<&'static str> {
+        backup_lowers_safety(before, after, Path::new(HOME))
     }
 
     #[test]
@@ -1163,9 +1191,9 @@ mod tests {
         let mut added = before.clone();
         added.paths.push(PathBuf::from("/other"));
 
-        assert_eq!(backup_lowers_safety(&before, &removed), ["paths"]);
-        assert_eq!(backup_lowers_safety(&before, &swapped), ["paths"]);
-        assert!(backup_lowers_safety(&before, &added).is_empty());
+        assert_eq!(guard(&before, &removed), ["paths"]);
+        assert_eq!(guard(&before, &swapped), ["paths"]);
+        assert!(guard(&before, &added).is_empty());
     }
 
     #[test]
@@ -1174,8 +1202,40 @@ mod tests {
         let mut after = before.clone();
         after.dest = "gdrive:Elsewhere".to_owned();
 
-        assert_eq!(backup_lowers_safety(&before, &after), ["dest"]);
-        assert!(backup_lowers_safety(&before, &before).is_empty());
+        assert_eq!(guard(&before, &after), ["dest"]);
+        assert!(guard(&before, &before).is_empty());
+    }
+
+    #[test]
+    fn the_same_folders_written_another_way_are_not_removed() {
+        let mut before = parse(&[backup_block("")]).backups()[0].clone();
+        before.paths = vec![PathBuf::from("/home/ada/Documents"), PathBuf::from("/etc")];
+        before.dest = "/home/ada/Backups/docs".to_owned();
+        let mut after = before.clone();
+        after.paths = vec![
+            PathBuf::from("~/Documents/"),
+            PathBuf::from("/etc/./"),
+            PathBuf::from("/home//ada/Documents/../Documents"),
+        ];
+        after.dest = "~/Backups//docs/".to_owned();
+
+        assert!(guard(&before, &after).is_empty());
+
+        after.paths = vec![PathBuf::from("~/Docs"), PathBuf::from("/etc")];
+        assert_eq!(guard(&before, &after), ["paths"]);
+    }
+
+    #[test]
+    fn an_account_folder_with_a_trailing_slash_is_the_same_destination() {
+        let mut before = parse(&[backup_block("")]).backups()[0].clone();
+        before.dest = "gdrive:Backups/docs".to_owned();
+        let mut after = before.clone();
+        after.dest = "gdrive:Backups/docs/".to_owned();
+
+        assert!(guard(&before, &after).is_empty());
+
+        after.dest = "gdrive:Backups/other".to_owned();
+        assert_eq!(guard(&before, &after), ["dest"]);
     }
 
     #[test]
@@ -1195,7 +1255,7 @@ mod tests {
         after.one_file_system = false;
 
         assert_eq!(
-            backup_lowers_safety(&before, &after),
+            guard(&before, &after),
             ["keep.daily", "paths", "dest", "one_file_system"]
         );
     }
