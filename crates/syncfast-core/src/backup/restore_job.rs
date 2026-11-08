@@ -20,19 +20,18 @@ use super::key::Key;
 use super::keystore::KeyStore;
 use super::lifecycle::repository_of;
 use super::restore::{
-    BACKUP_BUSY, DESTINATION_EXISTS, RestoreForm, RestoreLine, RestoreProgress,
-    RestoreSummary, check_snapshot_ref, classify_restore, parse_restore_line, restore_args,
-    restore_form,
+    BACKUP_BUSY, DESTINATION_EXISTS, RestoreForm, RestoreLine, RestoreProgress, RestoreSummary,
+    check_snapshot_ref, classify_restore, parse_restore_line, restore_args, restore_form,
 };
 use super::run::KEY_ABSENT;
 use super::snapshots::{SnapshotView, parse_snapshots};
 use crate::config::{Config, resolve};
-use futures_core::future::BoxFuture;
 use crate::ops::start_detached;
 use crate::paths::Paths;
 use crate::restic::{Repository, Restic, ResticError};
 use crate::run::{Interrupts, forward_interrupt};
 use crate::state::{is_locked, is_running, try_lock, write_json};
+use futures_core::future::BoxFuture;
 
 /// How long a job may go without its lock before it counts as one that
 /// never started or died.
@@ -116,7 +115,12 @@ impl DetachedRestoreStarter {
 
 impl RestoreStarter for DetachedRestoreStarter {
     fn start<'a>(&'a self, job_id: &'a str) -> BoxFuture<'a, Result<(), String>> {
-        Box::pin(start_detached(&self.bin, "restore-run", UNIT_PREFIX, job_id))
+        Box::pin(start_detached(
+            &self.bin,
+            "restore-run",
+            UNIT_PREFIX,
+            job_id,
+        ))
     }
 }
 
@@ -227,7 +231,9 @@ fn effective(paths: &Paths, stored: &Stored) -> (Phase, Option<String>) {
 }
 
 async fn read_progress(paths: &Paths, id: &str) -> Option<RestoreProgress> {
-    let bytes = tokio::fs::read(paths.restore_progress_file(id)).await.ok()?;
+    let bytes = tokio::fs::read(paths.restore_progress_file(id))
+        .await
+        .ok()?;
     serde_json::from_slice(&bytes).ok()
 }
 
@@ -369,11 +375,17 @@ async fn resolve_snapshot(
     let mut found = if wanted == "latest" {
         let output = env
             .restic
-            .run(repository, key, &["snapshots", "--json", "--latest", "1"], false)
+            .run(
+                repository,
+                key,
+                &["snapshots", "--json", "--latest", "1"],
+                false,
+            )
             .await
             .map_err(|err| from_restic(&err))?;
-        parse_snapshots(&output.stdout)
-            .map_err(|_| RestoreError::Failed("restic gave output syncfast cannot read".to_owned()))?
+        parse_snapshots(&output.stdout).map_err(|_| {
+            RestoreError::Failed("restic gave output syncfast cannot read".to_owned())
+        })?
     } else {
         let wanted = wanted.to_ascii_lowercase();
         env.restic
@@ -418,7 +430,10 @@ pub async fn start_restore(
         .ok_or_else(|| {
             RestoreError::Invalid("The destination must be an absolute path.".to_owned())
         })?;
-    if tokio::fs::symlink_metadata(&request.destination).await.is_ok() {
+    if tokio::fs::symlink_metadata(&request.destination)
+        .await
+        .is_ok()
+    {
         return Err(RestoreError::Invalid(DESTINATION_EXISTS.to_owned()));
     }
     let backup = find_backup(env.paths, &request.backup).await?;
@@ -429,8 +444,8 @@ pub async fn start_restore(
         .await
         .map_err(|err| RestoreError::Failed(err.to_string()))?
         .ok_or_else(|| RestoreError::Failed(KEY_ABSENT.to_owned()))?;
-    let repository = repository_of(env.paths, &backup)
-        .map_err(|err| RestoreError::Invalid(err.to_string()))?;
+    let repository =
+        repository_of(env.paths, &backup).map_err(|err| RestoreError::Invalid(err.to_string()))?;
     let snapshot = resolve_snapshot(env, &repository, &key, &request.snapshot).await?;
     let form = restore_form(&snapshot.paths, &request.paths).map_err(RestoreError::Invalid)?;
 
@@ -470,10 +485,12 @@ async fn create_destination(destination: &Path) -> Result<(), RestoreError> {
     tokio::fs::create_dir(destination)
         .await
         .map_err(|err| match err.kind() {
-            std::io::ErrorKind::AlreadyExists => RestoreError::Invalid(DESTINATION_EXISTS.to_owned()),
-            std::io::ErrorKind::NotFound => RestoreError::Invalid(
-                "The folder to restore into does not exist.".to_owned(),
-            ),
+            std::io::ErrorKind::AlreadyExists => {
+                RestoreError::Invalid(DESTINATION_EXISTS.to_owned())
+            }
+            std::io::ErrorKind::NotFound => {
+                RestoreError::Invalid("The folder to restore into does not exist.".to_owned())
+            }
             std::io::ErrorKind::PermissionDenied => RestoreError::Invalid(format!(
                 "syncfast cannot write in {}.",
                 destination.parent().unwrap_or(destination).display()
@@ -504,8 +521,9 @@ async fn dry_run(
             RestoreLine::Summary(summary) => Some(summary),
             _ => None,
         })
-        .last();
-    let summary = classify_restore(Some(0), summary.as_ref(), b"").map_err(RestoreError::Invalid)?;
+        .next_back();
+    let summary =
+        classify_restore(Some(0), summary.as_ref(), b"").map_err(RestoreError::Invalid)?;
     Ok(RestoreReport {
         id: None,
         backup: backup.id.clone(),
@@ -568,14 +586,12 @@ fn host_kill_command(app_unit: &str) -> (&'static str, Vec<String>) {
 ///
 /// # Errors
 /// No such job, it is not running, or the signal cannot be sent.
-pub async fn cancel_restore(
-    paths: &Paths,
-    id: &str,
-    in_flatpak: bool,
-) -> Result<(), RestoreError> {
+pub async fn cancel_restore(paths: &Paths, id: &str, in_flatpak: bool) -> Result<(), RestoreError> {
     let stored = load(paths, id).await?;
     if !is_locked(&paths.restore_lock_file(&stored.id)) {
-        return Err(RestoreError::Invalid("That restore is not running.".to_owned()));
+        return Err(RestoreError::Invalid(
+            "That restore is not running.".to_owned(),
+        ));
     }
     if in_flatpak {
         let unit = format!("{UNIT_PREFIX}{}.service", stored.id);
@@ -591,7 +607,9 @@ pub async fn cancel_restore(
         return if status.success() {
             Ok(())
         } else {
-            Err(RestoreError::Failed(format!("cannot stop the restore: {status}")))
+            Err(RestoreError::Failed(format!(
+                "cannot stop the restore: {status}"
+            )))
         };
     }
     let pid = tokio::fs::read_to_string(paths.restore_lock_file(&stored.id))
@@ -599,7 +617,9 @@ pub async fn cancel_restore(
         .ok()
         .and_then(|text| text.trim().parse::<i32>().ok())
         .and_then(rustix::process::Pid::from_raw)
-        .ok_or_else(|| RestoreError::Failed("cannot tell which process runs the restore".to_owned()))?;
+        .ok_or_else(|| {
+            RestoreError::Failed("cannot tell which process runs the restore".to_owned())
+        })?;
     rustix::process::kill_process(pid, rustix::process::Signal::INT)
         .map_err(|err| failed("cannot stop the restore", err))
 }
@@ -630,17 +650,20 @@ async fn stream_restore(
         .spawn(repository, key, &args)
         .await
         .map_err(|err| err.to_string())?;
-    let mut lines = child.stdout.take().map(|pipe| BufReader::new(pipe).lines());
-    let mut stderr_pipe = child.stderr.take();
+    let (Some(stdout_pipe), Some(mut stderr_pipe)) = (child.stdout.take(), child.stderr.take())
+    else {
+        return Err("cannot read the output of restic".to_owned());
+    };
+    let mut lines = BufReader::new(stdout_pipe).lines();
     let mut stderr = Vec::new();
     let mut summary = None;
     let mut last_progress: Option<Instant> = None;
-    let mut stdout_open = lines.is_some();
-    let mut stderr_open = stderr_pipe.is_some();
+    let mut stdout_open = true;
+    let mut stderr_open = true;
     let mut chunk = vec![0_u8; 4096];
     while stdout_open || stderr_open {
         tokio::select! {
-            line = async { lines.as_mut().expect("open").next_line().await }, if stdout_open => {
+            line = async { lines.next_line().await }, if stdout_open => {
                 match line {
                     Ok(Some(line)) => match parse_restore_line(&line) {
                         RestoreLine::Status(progress) => {
@@ -655,7 +678,7 @@ async fn stream_restore(
                     _ => stdout_open = false,
                 }
             }
-            read = async { stderr_pipe.as_mut().expect("open").read(&mut chunk).await }, if stderr_open => {
+            read = async { stderr_pipe.read(&mut chunk).await }, if stderr_open => {
                 match read {
                     Ok(0) | Err(_) => stderr_open = false,
                     Ok(count) => {
@@ -712,7 +735,11 @@ async fn execute(
         .ok_or_else(|| KEY_ABSENT.to_owned())?;
     let repository = repository_of(env.paths, &backup).map_err(|err| err.to_string())?;
     let streamed = stream_restore(env, stored, &repository, &key, forward_signals).await?;
-    classify_restore(streamed.exit_code, streamed.summary.as_ref(), &streamed.stderr)
+    classify_restore(
+        streamed.exit_code,
+        streamed.summary.as_ref(),
+        &streamed.stderr,
+    )
 }
 
 /// What the detached `syncfast restore-run <id>` does: runs the restore
@@ -738,7 +765,10 @@ pub async fn run_restore(
     if stored.phase != Phase::Running {
         return Ok(());
     }
-    if let Err(err) = lock.set_len(0).and_then(|()| write!(lock, "{}", std::process::id())) {
+    if let Err(err) = lock
+        .set_len(0)
+        .and_then(|()| write!(lock, "{}", std::process::id()))
+    {
         log::warn!("cannot record the process of restore {id}: {err}");
     }
     match execute(env, &stored, forward_signals).await {
@@ -844,7 +874,9 @@ mod tests {
     async fn a_running_job_with_its_lock_keeps_running() {
         let dir = tempfile::tempdir().unwrap();
         let paths = paths(dir.path());
-        let _lock = try_lock(&paths, paths.restore_lock_file("3")).unwrap().unwrap();
+        let _lock = try_lock(&paths, paths.restore_lock_file("3"))
+            .unwrap()
+            .unwrap();
 
         let report = stored("3", Phase::Running, ago(600)).report(&paths).await;
 
@@ -872,7 +904,9 @@ mod tests {
     async fn a_running_job_shows_the_progress_file() {
         let dir = tempfile::tempdir().unwrap();
         let paths = paths(dir.path());
-        tokio::fs::create_dir_all(paths.restores_dir()).await.unwrap();
+        tokio::fs::create_dir_all(paths.restores_dir())
+            .await
+            .unwrap();
         write_progress(
             &paths,
             "5",
@@ -903,15 +937,24 @@ mod tests {
     async fn only_running_jobs_are_listed_as_running() {
         let dir = tempfile::tempdir().unwrap();
         let paths = paths(dir.path());
-        save(&paths, &stored("20260101-000000-000", Phase::Done, ago(600)))
-            .await
-            .unwrap();
-        save(&paths, &stored("20260101-000001-000", Phase::Running, ago(2)))
-            .await
-            .unwrap();
-        save(&paths, &stored("20260101-000002-000", Phase::Running, ago(600)))
-            .await
-            .unwrap();
+        save(
+            &paths,
+            &stored("20260101-000000-000", Phase::Done, ago(600)),
+        )
+        .await
+        .unwrap();
+        save(
+            &paths,
+            &stored("20260101-000001-000", Phase::Running, ago(2)),
+        )
+        .await
+        .unwrap();
+        save(
+            &paths,
+            &stored("20260101-000002-000", Phase::Running, ago(600)),
+        )
+        .await
+        .unwrap();
         write_progress(
             &paths,
             "20260101-000001-000",
@@ -928,7 +971,10 @@ mod tests {
         let running = running_restores(&paths).await;
 
         assert_eq!(
-            running.iter().filter_map(|r| r.id.as_deref()).collect::<Vec<_>>(),
+            running
+                .iter()
+                .filter_map(|r| r.id.as_deref())
+                .collect::<Vec<_>>(),
             ["20260101-000001-000"]
         );
     }
@@ -953,7 +999,9 @@ mod tests {
         let paths = paths(dir.path());
         for number in 0..=JOBS_KEPT {
             let id = format!("20260101-0000{number:02}-000");
-            save(&paths, &stored(&id, Phase::Done, ago(600))).await.unwrap();
+            save(&paths, &stored(&id, Phase::Done, ago(600)))
+                .await
+                .unwrap();
         }
 
         prune(&paths).await;
@@ -968,7 +1016,9 @@ mod tests {
         let paths = paths(dir.path());
         for number in 0..=JOBS_KEPT {
             let id = format!("20260101-0000{number:02}-000");
-            save(&paths, &stored(&id, Phase::Done, ago(600))).await.unwrap();
+            save(&paths, &stored(&id, Phase::Done, ago(600)))
+                .await
+                .unwrap();
         }
         let _lock = try_lock(&paths, paths.restore_lock_file("20260101-000000-000"))
             .unwrap()

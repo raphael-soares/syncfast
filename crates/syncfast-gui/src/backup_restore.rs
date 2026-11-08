@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use syncfast_core::backup::restore_job::RestoreReport;
 use syncfast_core::backup::snapshots::SnapshotView;
 
-use crate::backend::backup_sheets::{BackupCommand, BackupReply};
 use crate::backend::Command;
+use crate::backend::backup_sheets::{BackupCommand, BackupReply};
 use crate::backup_sheets::Outcome;
 use crate::ui::Action;
 use crate::ui::backup_restore::{self, Browse, RestoreAction};
@@ -155,13 +155,14 @@ impl RestoreSession {
                 };
                 Outcome::commands(vec![start])
             }
-            (RestoreAction::TryAgain, Phase::Failed(_)) => match self.parent.clone() {
-                Some(parent) => Outcome::commands(vec![self.plan(parent)]),
-                None => {
+            (RestoreAction::TryAgain, Phase::Failed(_)) => {
+                if let Some(parent) = self.parent.clone() {
+                    Outcome::commands(vec![self.plan(parent)])
+                } else {
                     self.phase = Phase::Choosing;
                     Outcome::commands(vec![Command::PickFolder])
                 }
-            },
+            }
             (RestoreAction::OpenFolder, Phase::Done { destination, .. }) => {
                 Outcome::commands(vec![Command::OpenLocalFolder(destination.clone())])
             }
@@ -177,9 +178,9 @@ impl RestoreSession {
                 report: Some(report),
                 ..
             } => match &report.id {
-                Some(id) => Outcome::commands(vec![command(BackupCommand::CancelRestore(
-                    id.clone(),
-                ))]),
+                Some(id) => {
+                    Outcome::commands(vec![command(BackupCommand::CancelRestore(id.clone()))])
+                }
                 None => Outcome::default(),
             },
             Phase::Running { report: None, .. } => Outcome::default(),
@@ -280,10 +281,7 @@ impl RestoreSession {
             return (Vec::new(), Some(due - now));
         }
         self.next_poll = Some(now + POLL);
-        (
-            vec![command(BackupCommand::RestoreStatus(id))],
-            Some(POLL),
-        )
+        (vec![command(BackupCommand::RestoreStatus(id))], Some(POLL))
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> Vec<Action> {

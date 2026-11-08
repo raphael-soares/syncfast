@@ -45,7 +45,9 @@ pub fn check_snapshot_ref(snapshot: &str) -> Result<(), String> {
     if snapshot == "latest" || hex {
         Ok(())
     } else {
-        Err(format!("\"{snapshot}\" is not a snapshot id or \"latest\"."))
+        Err(format!(
+            "\"{snapshot}\" is not a snapshot id or \"latest\"."
+        ))
     }
 }
 
@@ -79,7 +81,10 @@ fn escape_pattern(path: &str) -> String {
 ///
 /// # Errors
 /// A path is not an absolute path of the snapshot, or it is the root `/`.
-pub fn restore_form(snapshot_paths: &[String], requested: &[String]) -> Result<RestoreForm, String> {
+pub fn restore_form(
+    snapshot_paths: &[String],
+    requested: &[String],
+) -> Result<RestoreForm, String> {
     if requested.is_empty() {
         return Ok(RestoreForm::Whole {
             root: match snapshot_paths {
@@ -126,7 +131,12 @@ pub fn restore_args(
         RestoreForm::Items { parent, .. } => format!("{snapshot}:{parent}"),
         RestoreForm::Whole { root: None } => snapshot.to_owned(),
     };
-    let mut args = vec!["restore".to_owned(), from, "--target".to_owned(), target.to_owned()];
+    let mut args = vec![
+        "restore".to_owned(),
+        from,
+        "--target".to_owned(),
+        target.to_owned(),
+    ];
     args.push(if dry_run { "--dry-run" } else { "--verify" }.to_owned());
     args.push("--json".to_owned());
     if let RestoreForm::Items { includes, .. } = form {
@@ -141,7 +151,13 @@ pub fn restore_args(
 fn clean_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
-        .map(|ch| if matches!(ch, '/' | '\0') || ch.is_control() { '-' } else { ch })
+        .map(|ch| {
+            if matches!(ch, '/' | '\0') || ch.is_control() {
+                '-'
+            } else {
+                ch
+            }
+        })
         .collect();
     cleaned.trim().to_owned()
 }
@@ -182,7 +198,10 @@ pub async fn new_restore_folder(
             return Ok(candidate);
         }
     }
-    Err(format!("Every name for the new folder in {} is taken.", parent.display()))
+    Err(format!(
+        "Every name for the new folder in {} is taken.",
+        parent.display()
+    ))
 }
 
 /// restic's `status` line while a restore runs, and the progress file the
@@ -305,7 +324,9 @@ mod tests {
 
         assert_eq!(
             restore_args("latest", &form, "/tmp/out", false),
-            ["restore", "latest", "--target", "/tmp/out", "--verify", "--json"]
+            [
+                "restore", "latest", "--target", "/tmp/out", "--verify", "--json"
+            ]
         );
     }
 
@@ -375,10 +396,7 @@ mod tests {
         let form = restore_form(&strings(&["/a", "/b"]), &strings(&["/a/1", "/b/2"])).unwrap();
 
         assert_eq!(form, items("/", &["/a/1", "/b/2"]));
-        assert_eq!(
-            restore_args("latest", &form, "/t", false)[1],
-            "latest:/"
-        );
+        assert_eq!(restore_args("latest", &form, "/t", false)[1], "latest:/");
     }
 
     #[test]
@@ -428,7 +446,9 @@ mod tests {
     }
 
     fn moment() -> Zoned {
-        "2026-11-08T14:30:59-03:00[America/Sao_Paulo]".parse().unwrap()
+        "2026-11-08T14:30:59-03:00[America/Sao_Paulo]"
+            .parse()
+            .unwrap()
     }
 
     #[test]
@@ -450,15 +470,21 @@ mod tests {
     #[tokio::test]
     async fn a_taken_name_gets_a_number() {
         let dir = tempfile::tempdir().unwrap();
-        let first = new_restore_folder(dir.path(), "Docs", &moment()).await.unwrap();
+        let first = new_restore_folder(dir.path(), "Docs", &moment())
+            .await
+            .unwrap();
         assert_eq!(first, dir.path().join("Docs 2026-11-08 1430"));
 
         tokio::fs::create_dir(&first).await.unwrap();
-        let second = new_restore_folder(dir.path(), "Docs", &moment()).await.unwrap();
+        let second = new_restore_folder(dir.path(), "Docs", &moment())
+            .await
+            .unwrap();
         assert_eq!(second, dir.path().join("Docs 2026-11-08 1430 2"));
 
         tokio::fs::create_dir(&second).await.unwrap();
-        let third = new_restore_folder(dir.path(), "Docs", &moment()).await.unwrap();
+        let third = new_restore_folder(dir.path(), "Docs", &moment())
+            .await
+            .unwrap();
         assert_eq!(third, dir.path().join("Docs 2026-11-08 1430 3"));
     }
 
@@ -566,7 +592,9 @@ mod tests {
         };
 
         assert_eq!(
-            classify_restore(Some(0), Some(&wide), b"").unwrap().bytes_restored,
+            classify_restore(Some(0), Some(&wide), b"")
+                .unwrap()
+                .bytes_restored,
             10
         );
     }

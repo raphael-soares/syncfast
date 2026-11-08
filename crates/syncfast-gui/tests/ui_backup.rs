@@ -780,8 +780,7 @@ fn snapshots_show_the_host_only_when_it_is_not_this_computer() {
 #[test]
 fn a_snapshot_row_offers_to_browse_its_files_and_to_restore_all_of_it() {
     let mut vm = view(backup(BackupStatus::UpToDate));
-    vm.backup.snapshots =
-        SnapshotsView::Loaded(vec![snapshot_view("aaaa", "laptop-ada")].into());
+    vm.backup.snapshots = SnapshotsView::Loaded(vec![snapshot_view("aaaa", "laptop-ada")].into());
     let mut harness = screen(vm);
 
     harness.get_by_label("Browse Files\u{2026}").click();

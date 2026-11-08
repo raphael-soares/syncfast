@@ -589,7 +589,10 @@ async fn surroundings(env: &LifecycleEnv<'_>) -> Result<(Config, Vec<String>), S
     Ok((config, accounts))
 }
 
-pub(crate) fn repository_of(paths: &Paths, backup: &BackupConfig) -> Result<Repository, DestinationError> {
+pub(crate) fn repository_of(
+    paths: &Paths,
+    backup: &BackupConfig,
+) -> Result<Repository, DestinationError> {
     let destination = Destination::parse(&backup.dest)?;
     let (upload, download) = backup
         .behavior()

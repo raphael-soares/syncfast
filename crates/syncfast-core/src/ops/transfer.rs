@@ -215,7 +215,12 @@ pub(crate) async fn start_detached(
         .stderr(Stdio::null())
         .process_group(0)
         .spawn()
-        .map_err(|err| format!("cannot start {} {subcommand} {job_id}: {err}", bin.display()))?;
+        .map_err(|err| {
+            format!(
+                "cannot start {} {subcommand} {job_id}: {err}",
+                bin.display()
+            )
+        })?;
     // Reaps the child; its outcome is in the job file.
     let subcommand = subcommand.to_owned();
     tokio::spawn(async move {

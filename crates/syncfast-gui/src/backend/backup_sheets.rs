@@ -7,13 +7,13 @@ use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use jiff::Zoned;
+use syncfast_core::backup::files::Listing;
 use syncfast_core::backup::key::Key;
 use syncfast_core::backup::keystore::DefaultKeyStore;
 use syncfast_core::backup::lifecycle::{
     self, AddExistingError, DestinationTarget, ExistingBackup, NewBackup,
 };
-use jiff::Zoned;
-use syncfast_core::backup::files::Listing;
 use syncfast_core::backup::restore::new_restore_folder;
 use syncfast_core::backup::restore_job::{
     RestoreError, RestoreReport, RestoreRequest, cancel_restore, restore_status,
@@ -199,10 +199,7 @@ fn restore_text(err: &RestoreError) -> String {
 
 async fn list_files(context: &Context, backup: &str, snapshot: &SnapshotView, dir: String) {
     let result = match load_tools(context).await {
-        Ok(tools) => tools
-            .list_files(backup, snapshot, &dir)
-            .await
-            .map_err(|err| err.to_string()),
+        Ok(tools) => tools.list_files(backup, snapshot, &dir).await,
         Err(text) => Err(text),
     };
     let snapshot = snapshot.id.clone();

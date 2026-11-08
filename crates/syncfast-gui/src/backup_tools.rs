@@ -8,11 +8,11 @@ use std::sync::Arc;
 use syncfast_core::backup::config::BackupConfig;
 use syncfast_core::backup::destination::Destination;
 use syncfast_core::backup::excludes::render_excludes_live;
+use syncfast_core::backup::files::{self, Listing};
 use syncfast_core::backup::key::Key;
 use syncfast_core::backup::keystore::{DefaultKeyStore, KeyBackend, KeyStore as _};
 use syncfast_core::backup::lifecycle::{self, LifecycleEnv};
 use syncfast_core::backup::run_decision::{BackupRequest, save_request};
-use syncfast_core::backup::files::{self, Listing};
 use syncfast_core::backup::restore_job::{
     self, DetachedRestoreStarter, RestoreEnv, RestoreError, RestoreReport, RestoreRequest,
 };

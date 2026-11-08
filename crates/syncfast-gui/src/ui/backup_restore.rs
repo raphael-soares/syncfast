@@ -371,7 +371,12 @@ fn listing_body(ui: &mut Ui, browse: &Browse, actions: &mut Vec<Action>) {
 
 /// The files of one snapshot, to mark what to restore.
 #[must_use]
-pub fn browse(ctx: &egui::Context, taken: Timestamp, roots: &[String], state: &Browse) -> Vec<Action> {
+pub fn browse(
+    ctx: &egui::Context,
+    taken: Timestamp,
+    roots: &[String],
+    state: &Browse,
+) -> Vec<Action> {
     let palette = theme::palette(ctx);
     let mut buttons = SheetButtons::new("Restore To\u{2026}");
     buttons.primary_enabled = state.count() > 0;
@@ -469,7 +474,11 @@ pub fn restore_line(report: &RestoreReport) -> String {
 
 /// The progress of the restore that runs; `Cancel` interrupts it.
 #[must_use]
-pub fn progress(ctx: &egui::Context, destination: &Path, report: Option<&RestoreReport>) -> Vec<Action> {
+pub fn progress(
+    ctx: &egui::Context,
+    destination: &Path,
+    report: Option<&RestoreReport>,
+) -> Vec<Action> {
     let palette = theme::palette(ctx);
     let cancel = AlertButton {
         label: "Cancel",
@@ -510,7 +519,11 @@ pub fn done(ctx: &egui::Context, destination: &Path, report: &RestoreReport) -> 
     let mut actions = Vec::new();
     let chosen = sheet(ctx, "restore-done", "Restore Complete", &buttons, |ui| {
         wrap_labels(ui);
-        let noun = if report.files_restored == 1 { "file" } else { "files" };
+        let noun = if report.files_restored == 1 {
+            "file"
+        } else {
+            "files"
+        };
         ui.label(
             RichText::new(format!(
                 "Restored {} {noun} to {}.",
@@ -618,7 +631,10 @@ mod tests {
 
     #[test]
     fn a_snapshot_of_one_folder_starts_inside_it() {
-        assert_eq!(Browse::starting_in(&roots(&["/home/ana/docs"])).dir(), "/home/ana/docs");
+        assert_eq!(
+            Browse::starting_in(&roots(&["/home/ana/docs"])).dir(),
+            "/home/ana/docs"
+        );
         assert_eq!(Browse::starting_in(&roots(&["/a", "/b"])).dir(), "");
         assert_eq!(Browse::starting_in(&[]).dir(), "");
     }

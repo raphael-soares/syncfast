@@ -121,6 +121,19 @@ fn preset_choice(presets: Vec<String>, none: bool) -> Option<Vec<String>> {
     }
 }
 
+async fn restore_run(id: &str) -> anyhow::Result<ExitCode> {
+    let paths = paths()?;
+    let restic = Restic::from_env(Rclone::from_env()?, &paths).await?;
+    let keys = DefaultKeyStore::from_env(&paths);
+    let env = RestoreEnv {
+        paths: &paths,
+        restic: &restic,
+        keys: &keys,
+    };
+    run_restore(&env, id, true).await?;
+    Ok(ExitCode::SUCCESS)
+}
+
 async fn dispatch(command: Command, json: bool) -> anyhow::Result<ExitCode> {
     match command {
         Command::Apply { delete_versions } => {
@@ -216,18 +229,7 @@ async fn dispatch(command: Command, json: bool) -> anyhow::Result<ExitCode> {
             let report = run_backup(&env, &id).await?;
             Ok(ExitCode::from(report.exit_code()))
         }
-        Command::RestoreRun { id } => {
-            let paths = paths()?;
-            let restic = Restic::from_env(Rclone::from_env()?, &paths).await?;
-            let keys = DefaultKeyStore::from_env(&paths);
-            let env = RestoreEnv {
-                paths: &paths,
-                restic: &restic,
-                keys: &keys,
-            };
-            run_restore(&env, &id, true).await?;
-            Ok(ExitCode::SUCCESS)
-        }
+        Command::RestoreRun { id } => restore_run(&id).await,
         Command::Operation(operation) => operate(operation, json).await,
     }
 }

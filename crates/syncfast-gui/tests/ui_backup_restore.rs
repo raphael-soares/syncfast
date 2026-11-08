@@ -266,7 +266,11 @@ fn the_sheet_says_it_is_reading_until_the_folder_arrives() {
 
     rig.harness.get_by_label("readme.txt");
     rig.harness.get_by_label("src");
-    assert!(rig.harness.query_by_label("Reading the snapshot\u{2026}").is_none());
+    assert!(
+        rig.harness
+            .query_by_label("Reading the snapshot\u{2026}")
+            .is_none()
+    );
 }
 
 #[test]
@@ -371,12 +375,14 @@ fn confirming_starts_the_restore_of_the_chosen_items_in_the_new_folder() {
 
     rig.click("Restore");
 
-    assert!(backup_commands(&rig).contains(&BackupCommand::StartRestore {
-        backup: "docs".to_owned(),
-        snapshot: SNAPSHOT.to_owned(),
-        paths: vec!["/work/docs/readme.txt".to_owned()],
-        destination: PathBuf::from(DESTINATION),
-    }));
+    assert!(
+        backup_commands(&rig).contains(&BackupCommand::StartRestore {
+            backup: "docs".to_owned(),
+            snapshot: SNAPSHOT.to_owned(),
+            paths: vec!["/work/docs/readme.txt".to_owned()],
+            destination: PathBuf::from(DESTINATION),
+        })
+    );
 }
 
 #[test]
@@ -397,7 +403,8 @@ fn cancelling_the_confirmation_closes_without_starting() {
 fn progress_counts_the_files_and_cancel_interrupts_the_job() {
     let mut rig = running();
 
-    rig.harness.get_by_label("Restoring to Docs 2026-11-03 1200");
+    rig.harness
+        .get_by_label("Restoring to Docs 2026-11-03 1200");
     rig.harness.get_by_label("3 of 10 files \u{b7} 300 B");
 
     rig.click("Cancel");
@@ -523,8 +530,14 @@ fn a_running_restore_asks_for_its_status_twice_a_second() {
     let start = Instant::now();
 
     let (first, wait) = rig.sheet.borrow_mut().tick(start);
-    let (early, soon) = rig.sheet.borrow_mut().tick(start + Duration::from_millis(100));
-    let (due, again) = rig.sheet.borrow_mut().tick(start + Duration::from_millis(600));
+    let (early, soon) = rig
+        .sheet
+        .borrow_mut()
+        .tick(start + Duration::from_millis(100));
+    let (due, again) = rig
+        .sheet
+        .borrow_mut()
+        .tick(start + Duration::from_millis(600));
 
     assert!(first.is_empty());
     assert_eq!(wait, Some(Duration::from_millis(500)));
@@ -532,7 +545,9 @@ fn a_running_restore_asks_for_its_status_twice_a_second() {
     assert_eq!(soon, Some(Duration::from_millis(400)));
     assert_eq!(
         due,
-        [Command::Backup(BackupCommand::RestoreStatus("r1".to_owned()))]
+        [Command::Backup(BackupCommand::RestoreStatus(
+            "r1".to_owned()
+        ))]
     );
     assert_eq!(again, Some(Duration::from_millis(500)));
 }

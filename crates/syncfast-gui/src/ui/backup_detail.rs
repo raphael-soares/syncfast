@@ -662,9 +662,7 @@ fn snapshots_tab(ui: &mut Ui, vm: &ViewModel, backup: &BackupSnapshot) -> Vec<Ac
         SnapshotsView::Loaded(list) => {
             let own_host = backup_host().ok();
             for snapshot in list.iter() {
-                actions.extend(snapshot_row(
-                    ui, vm.now, &id, snapshot, own_host, &palette,
-                ));
+                actions.extend(snapshot_row(ui, vm.now, &id, snapshot, own_host, &palette));
             }
         }
     }
@@ -726,12 +724,7 @@ fn snapshot_row(
     actions
 }
 
-fn snapshot_facts(
-    ui: &mut Ui,
-    snapshot: &SnapshotView,
-    own_host: Option<&str>,
-    palette: &Palette,
-) {
+fn snapshot_facts(ui: &mut Ui, snapshot: &SnapshotView, own_host: Option<&str>, palette: &Palette) {
     let text = match (snapshot.files, snapshot.bytes) {
         (Some(files), Some(total)) => format!("{} \u{b7} {}", plural_files(files), bytes(total)),
         (Some(files), None) => plural_files(files),

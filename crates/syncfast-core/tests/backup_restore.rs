@@ -23,10 +23,10 @@ use syncfast_core::backup::restore_job::{
 };
 use syncfast_core::backup::snapshots::SnapshotView;
 use syncfast_core::config::{Config, Pair};
-use syncfast_core::settings::Overrides;
 use syncfast_core::paths::Paths;
 use syncfast_core::rclone::{Rclone, RcloneError};
 use syncfast_core::restic::{Repository, Restic, ResticError};
+use syncfast_core::settings::Overrides;
 use syncfast_core::state::try_lock_pair;
 use tokio::process::Command;
 
@@ -159,7 +159,11 @@ fn tree_of(folder: &Path) -> BTreeMap<String, String> {
             if path.is_dir() {
                 walk(base, &path, into);
             } else {
-                let name = path.strip_prefix(base).unwrap().to_string_lossy().into_owned();
+                let name = path
+                    .strip_prefix(base)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
                 into.insert(name, fs::read_to_string(&path).unwrap());
             }
         }
@@ -200,7 +204,11 @@ impl Rig {
     /// Backs up `folders` as a snapshot of this machine.
     async fn snapshot(&self, folders: &[&Path]) {
         let mut args = vec!["backup".to_owned()];
-        args.extend(folders.iter().map(|folder| folder.to_string_lossy().into_owned()));
+        args.extend(
+            folders
+                .iter()
+                .map(|folder| folder.to_string_lossy().into_owned()),
+        );
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         self.restic
             .run(&self.repository(), &self.key, &args, false)
@@ -240,7 +248,11 @@ impl Rig {
     }
 
     fn src(&self, name: &str) -> String {
-        self.root.join("src").join(name).to_string_lossy().into_owned()
+        self.root
+            .join("src")
+            .join(name)
+            .to_string_lossy()
+            .into_owned()
     }
 }
 

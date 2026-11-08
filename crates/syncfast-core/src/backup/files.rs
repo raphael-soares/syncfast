@@ -86,8 +86,7 @@ pub fn parse_listing(stdout: &[u8], dir: &str) -> Result<Listing, ResticError> {
         if line.trim().is_empty() {
             continue;
         }
-        let line: Line =
-            serde_json::from_str(line).map_err(|_| ResticError::BadOutput("ls"))?;
+        let line: Line = serde_json::from_str(line).map_err(|_| ResticError::BadOutput("ls"))?;
         if line.struct_type.as_deref() != Some("node") || line.path.trim_end_matches('/') == dir {
             continue;
         }
@@ -110,8 +109,7 @@ pub fn parse_listing(stdout: &[u8], dir: &str) -> Result<Listing, ResticError> {
 /// The folder or file a backup root is, by its own line of `ls`.
 fn root_of(stdout: &[u8], root: &str) -> Result<Option<NodeView>, ResticError> {
     for line in String::from_utf8_lossy(stdout).lines() {
-        let line: Line =
-            serde_json::from_str(line).map_err(|_| ResticError::BadOutput("ls"))?;
+        let line: Line = serde_json::from_str(line).map_err(|_| ResticError::BadOutput("ls"))?;
         if line.struct_type.as_deref() == Some("node") && line.path == root {
             return Ok(Some(NodeView {
                 name: line.path,
@@ -151,7 +149,12 @@ pub async fn list_files(
         let mut nodes = Vec::new();
         for root in &snapshot.paths {
             let output = restic
-                .run(repository, key, &["ls", "--json", &snapshot.id, root], false)
+                .run(
+                    repository,
+                    key,
+                    &["ls", "--json", &snapshot.id, root],
+                    false,
+                )
                 .await?;
             nodes.extend(root_of(&output.stdout, root)?);
         }
@@ -169,6 +172,8 @@ pub async fn list_files(
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
     use super::*;
 
     fn fixture(name: &str) -> Vec<u8> {
@@ -181,7 +186,11 @@ mod tests {
     }
 
     fn names(listing: &Listing) -> Vec<&str> {
-        listing.nodes.iter().map(|node| node.name.as_str()).collect()
+        listing
+            .nodes
+            .iter()
+            .map(|node| node.name.as_str())
+            .collect()
     }
 
     #[test]
@@ -224,10 +233,14 @@ mod tests {
 
     #[test]
     fn a_recursive_listing_keeps_every_level_it_is_given() {
-        let listing =
-            parse_listing(&fixture("ls_recursive.out"), "/tmp/fixture/src/docs").unwrap();
+        let listing = parse_listing(&fixture("ls_recursive.out"), "/tmp/fixture/src/docs").unwrap();
 
-        assert!(listing.nodes.iter().any(|node| node.path.ends_with("/sub/b.txt")));
+        assert!(
+            listing
+                .nodes
+                .iter()
+                .any(|node| node.path.ends_with("/sub/b.txt"))
+        );
         assert!(
             listing
                 .nodes
@@ -239,9 +252,11 @@ mod tests {
     fn many(count: usize) -> Vec<u8> {
         let mut text = String::from("{\"struct_type\":\"snapshot\"}\n");
         for index in 0..count {
-            text.push_str(&format!(
-                "{{\"name\":\"f{index}\",\"type\":\"file\",\"path\":\"/d/f{index}\",\"size\":1,\"struct_type\":\"node\"}}\n"
-            ));
+            writeln!(
+                text,
+                "{{\"name\":\"f{index}\",\"type\":\"file\",\"path\":\"/d/f{index}\",\"size\":1,\"struct_type\":\"node\"}}"
+            )
+            .unwrap();
         }
         text.into_bytes()
     }
