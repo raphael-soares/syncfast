@@ -284,6 +284,12 @@ impl Paths {
         self.runtime_subdir().join(format!("restore-{job}.lock"))
     }
 
+    /// What a running restore writes for the windows that follow it.
+    #[must_use]
+    pub fn restore_progress_file(&self, job: &str) -> PathBuf {
+        self.restores_dir().join(format!("{job}.progress.json"))
+    }
+
     /// Backup keys of dev mode, where there is no Secret Service to ask.
     #[must_use]
     pub fn dev_keys_dir(&self) -> PathBuf {
@@ -435,6 +441,10 @@ mod tests {
         assert_eq!(
             paths.restore_lock_file("j1"),
             Path::new("/r/syncfast/restore-j1.lock")
+        );
+        assert_eq!(
+            paths.restore_progress_file("j1"),
+            Path::new("/s/syncfast/restores/j1.progress.json")
         );
         assert_eq!(paths.dev_keys_dir(), Path::new("/d/syncfast/dev-keys"));
     }

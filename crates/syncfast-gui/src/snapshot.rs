@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use jiff::Timestamp;
 use syncfast_core::backup::config::BackupConfig;
+use syncfast_core::backup::restore_job::{RestoreReport, running_restores};
 use syncfast_core::backup::state::BackupState;
 use syncfast_core::backup::status::{
     BackupProgressFile, BackupStatus, RunningStep, display_backup_status, running_step,
@@ -54,6 +55,8 @@ pub struct Snapshot {
     pub config_error: Option<String>,
     pub pairs: Vec<PairSnapshot>,
     pub backups: Vec<BackupSnapshot>,
+    /// The restores that are running, whichever window started them.
+    pub restores: Vec<RestoreReport>,
     /// The built-in values with `[defaults]` on top.
     pub defaults: Behavior,
     /// The keys `[defaults]` sets.
@@ -65,6 +68,7 @@ impl Snapshot {
     pub fn any_running(&self) -> bool {
         self.pairs.iter().any(|pair| pair.running)
             || self.backups.iter().any(|backup| backup.running.is_some())
+            || !self.restores.is_empty()
     }
 }
 
@@ -93,6 +97,7 @@ pub async fn load(paths: &Paths) -> Snapshot {
         config_error: None,
         pairs,
         backups,
+        restores: running_restores(paths).await,
         defaults: config.defaults(),
         defaults_overrides: config.defaults_overrides().clone(),
     }

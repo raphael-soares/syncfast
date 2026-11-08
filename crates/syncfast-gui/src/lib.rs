@@ -3,6 +3,7 @@ pub mod app_settings;
 pub mod appearance;
 pub mod autostart;
 pub mod backend;
+pub mod backup_restore;
 pub mod backup_runs;
 pub mod backup_screens;
 pub mod backup_sheets;

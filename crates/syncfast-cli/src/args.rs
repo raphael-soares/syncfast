@@ -62,6 +62,12 @@ pub enum Command {
         /// The backup id from config.toml
         id: String,
     },
+    /// Run a restore that was asked for (what a restore starts on its own)
+    #[command(hide = true)]
+    RestoreRun {
+        /// The restore id
+        id: String,
+    },
     #[command(flatten)]
     Operation(Operation),
 }

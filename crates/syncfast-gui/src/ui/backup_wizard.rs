@@ -72,6 +72,7 @@ pub enum BackupSheetAction {
     ConfirmRemove {
         delete_key: bool,
     },
+    Restore(super::backup_restore::RestoreAction),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

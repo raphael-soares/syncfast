@@ -101,6 +101,7 @@ impl BackupScreens {
                 .filter(|(saved, _)| saved == id)
                 .map(|(_, filters_changed)| *filters_changed),
             picked: self.picked.clone(),
+            restoring: None,
         };
     }
 

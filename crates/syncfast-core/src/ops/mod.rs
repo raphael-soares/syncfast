@@ -14,6 +14,7 @@ mod settings;
 mod sync;
 mod theme;
 mod transfer;
+pub(crate) use transfer::start_detached;
 pub(crate) mod views;
 
 use std::path::PathBuf;
