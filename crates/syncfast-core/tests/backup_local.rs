@@ -12,7 +12,7 @@ use syncfast_core::backup::destination::{
 };
 use syncfast_core::backup::key::Key;
 use syncfast_core::paths::Paths;
-use syncfast_core::rclone::Rclone;
+use syncfast_core::rclone::{Rclone, RcloneError};
 use syncfast_core::restic::{Repository, Restic, ResticError};
 
 struct Bed {
@@ -23,9 +23,13 @@ struct Bed {
 
 #[allow(clippy::print_stderr)]
 async fn bed() -> Option<Bed> {
-    let Ok(found) = Rclone::from_env() else {
-        eprintln!("skipping: rclone is not installed");
-        return None;
+    let found = match Rclone::from_env() {
+        Ok(found) => found,
+        Err(RcloneError::RcloneNotFound) => {
+            eprintln!("skipping: rclone is not installed");
+            return None;
+        }
+        Err(err) => panic!("rclone is installed but unusable: {err}"),
     };
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
@@ -39,9 +43,13 @@ async fn bed() -> Option<Bed> {
         root.join("run"),
     );
     let rclone = Rclone::new(found.bin().to_owned()).with_config(conf);
-    let Ok(restic) = Restic::from_env(rclone, &paths).await else {
-        eprintln!("skipping: restic is not installed");
-        return None;
+    let restic = match Restic::from_env(rclone, &paths).await {
+        Ok(restic) => restic,
+        Err(ResticError::NotFound) => {
+            eprintln!("skipping: restic is not installed");
+            return None;
+        }
+        Err(err) => panic!("restic is installed but unusable: {err}"),
     };
     Some(Bed {
         _dir: dir,

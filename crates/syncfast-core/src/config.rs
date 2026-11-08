@@ -2197,6 +2197,85 @@ mod tests {
         );
     }
 
+    const BACKUP_TABLE: &str = "[[backup]]\nid = \"docs\"\nname = \"Documents\"\npaths = [\"/work/docs\"]\ndest = \"gdrive:Backups/docs\"\n";
+
+    fn v2_file() -> String {
+        V1_FILE.replace("version = 1", "version = 2")
+    }
+
+    async fn saved(paths: &Paths) -> String {
+        tokio::fs::read_to_string(paths.config_file())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_first_backup_on_a_v2_config_makes_the_file_version_3() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths_in(root.path());
+        write_config_file(&paths, &v2_file());
+
+        Config::edit(&paths, |config| {
+            let backup: DocumentMut = BACKUP_TABLE.parse().unwrap();
+            config
+                .document
+                .as_table_mut()
+                .insert("backup", backup["backup"].clone());
+        })
+        .await
+        .unwrap();
+
+        let text = saved(&paths).await;
+        assert!(text.starts_with("# mine\nversion = 3\n"), "{text}");
+        assert_eq!(Config::load(&paths).await.unwrap().backups().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_v3_config_stays_version_3_even_after_its_backups_are_gone() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths_in(root.path());
+        write_config_file(
+            &paths,
+            &format!(
+                "{}\n{BACKUP_TABLE}",
+                v2_file().replace("version = 2", "version = 3")
+            ),
+        );
+
+        Config::edit(&paths, |config| config.set_enabled("a", false))
+            .await
+            .unwrap();
+        assert!(saved(&paths).await.starts_with("# mine\nversion = 3\n"));
+
+        Config::edit(&paths, |config| {
+            config.document.as_table_mut().remove("backup");
+        })
+        .await
+        .unwrap();
+
+        let text = saved(&paths).await;
+        assert!(text.starts_with("# mine\nversion = 3\n"), "{text}");
+        assert!(!text.contains("[[backup]]"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_v2_config_without_backups_stays_version_2() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths_in(root.path());
+        write_config_file(&paths, &v2_file());
+
+        Config::edit(&paths, |_| ()).await.unwrap();
+        assert_eq!(saved(&paths).await, v2_file());
+
+        Config::edit(&paths, |config| config.set_enabled("a", false))
+            .await
+            .unwrap();
+
+        let text = saved(&paths).await;
+        assert!(text.starts_with("# mine\nversion = 2\n"), "{text}");
+        assert!(text.contains("enabled = false"), "{text}");
+    }
+
     #[tokio::test]
     async fn an_edit_of_a_v1_file_keeps_the_original_as_config_toml_v1_and_never_overwrites_it() {
         let root = tempfile::tempdir().unwrap();
