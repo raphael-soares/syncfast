@@ -172,16 +172,17 @@ fn layout(harness: &Harness<'_, Sheet>) -> Vec<Option<egui::accesskit::Rect>> {
 fn settle(harness: &mut Harness<'_, Sheet>, at_least: usize) {
     let mut before = layout(harness);
     let mut still = 0;
-    for frames in 1..=SETTLE_CEILING {
+    let settled = (1..=SETTLE_CEILING).any(|frames| {
         harness.step();
         let after = layout(harness);
         still = if after == before { still + 1 } else { 0 };
-        if still >= 2 && frames >= at_least {
-            return;
-        }
         before = after;
-    }
-    panic!("the layout still moves after {SETTLE_CEILING} frames");
+        still >= 2 && frames >= at_least
+    });
+    assert!(
+        settled,
+        "the layout still moves after {SETTLE_CEILING} frames"
+    );
 }
 
 fn harness_at(step: Step) -> Harness<'static, Sheet> {

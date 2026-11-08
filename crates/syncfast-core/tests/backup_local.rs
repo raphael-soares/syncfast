@@ -24,12 +24,11 @@ struct Bed {
 #[allow(clippy::print_stderr)]
 async fn bed() -> Option<Bed> {
     let found = match Rclone::from_env() {
-        Ok(found) => found,
         Err(RcloneError::RcloneNotFound) => {
             eprintln!("skipping: rclone is not installed");
             return None;
         }
-        Err(err) => panic!("rclone is installed but unusable: {err}"),
+        other => other.unwrap(),
     };
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
@@ -44,12 +43,11 @@ async fn bed() -> Option<Bed> {
     );
     let rclone = Rclone::new(found.bin().to_owned()).with_config(conf);
     let restic = match Restic::from_env(rclone, &paths).await {
-        Ok(restic) => restic,
         Err(ResticError::NotFound) => {
             eprintln!("skipping: restic is not installed");
             return None;
         }
-        Err(err) => panic!("restic is installed but unusable: {err}"),
+        other => other.unwrap(),
     };
     Some(Bed {
         _dir: dir,
