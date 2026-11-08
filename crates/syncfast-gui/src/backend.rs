@@ -607,6 +607,7 @@ async fn apply_deleting_versions(paths: &Paths, delete_versions: &[String]) -> R
         .with_flatpak_id(flatpak_id.as_deref());
     let mut report = apply(&env, delete_versions).await;
     report.invalid_pairs.clear();
+    report.invalid_backups.clear();
     if report.is_empty() {
         Ok(())
     } else {

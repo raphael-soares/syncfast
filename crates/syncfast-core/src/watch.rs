@@ -24,7 +24,7 @@ use crate::network::BoxFuture;
 use crate::paths::Paths;
 use crate::rclone::{Rclone, RcloneError};
 use crate::state::is_running;
-use crate::units::{Systemctl, SystemdMode, command_text, service_name};
+use crate::units::{Systemctl, SystemdMode, backup_service_name, command_text, service_name};
 
 /// How often a trigger blocked by a running round looks at the lock again.
 pub const LOCK_RECHECK: Duration = Duration::from_secs(5);
@@ -74,10 +74,14 @@ impl WatchError {
     }
 }
 
-/// Starts a round of a sync. Never waits for the round to end.
+/// Starts a round of a sync or a run of a backup. Never waits for it to end.
 pub trait Trigger: Send + Sync {
     /// `Err` says why the round could not be started.
     fn start<'a>(&'a self, pair_id: &'a str) -> BoxFuture<'a, Result<(), String>>;
+
+    /// `Err` says why the backup could not be started. A check request is
+    /// written to `request.json` before this call.
+    fn start_backup<'a>(&'a self, backup_id: &'a str) -> BoxFuture<'a, Result<(), String>>;
 }
 
 /// `systemctl --user start --no-block syncfast-<id>.service`.
@@ -98,16 +102,23 @@ impl std::fmt::Debug for SystemdTrigger {
     }
 }
 
+impl SystemdTrigger {
+    async fn start_unit(&self, service: &str) -> Result<(), String> {
+        let args = ["start", "--no-block", service];
+        self.systemctl
+            .run(&args)
+            .await
+            .map_err(|stderr| format!("{}: {stderr}", command_text(&args)))
+    }
+}
+
 impl Trigger for SystemdTrigger {
     fn start<'a>(&'a self, pair_id: &'a str) -> BoxFuture<'a, Result<(), String>> {
-        Box::pin(async move {
-            let service = service_name(pair_id);
-            let args = ["start", "--no-block", service.as_str()];
-            self.systemctl
-                .run(&args)
-                .await
-                .map_err(|stderr| format!("{}: {stderr}", command_text(&args)))
-        })
+        Box::pin(async move { self.start_unit(&service_name(pair_id)).await })
+    }
+
+    fn start_backup<'a>(&'a self, backup_id: &'a str) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move { self.start_unit(&backup_service_name(backup_id)).await })
     }
 }
 
@@ -124,26 +135,38 @@ impl ChildTrigger {
     }
 }
 
+impl ChildTrigger {
+    /// `syncfast <subcommand> <id>` as a detached child.
+    fn spawn(&self, subcommand: &str, id: &str) -> Result<(), String> {
+        let mut child = Command::new(&self.bin)
+            .arg(subcommand)
+            .arg(id)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .spawn()
+            .map_err(|err| {
+                format!(
+                    "cannot start {} {subcommand} {id}: {err}",
+                    self.bin.display()
+                )
+            })?;
+        // Reaps the child; its outcome is in the sync's or backup's state.
+        tokio::spawn(async move {
+            if let Err(err) = child.wait().await {
+                log::warn!("cannot wait for a child: {err}");
+            }
+        });
+        Ok(())
+    }
+}
+
 impl Trigger for ChildTrigger {
     fn start<'a>(&'a self, pair_id: &'a str) -> BoxFuture<'a, Result<(), String>> {
-        Box::pin(async move {
-            let mut child = Command::new(&self.bin)
-                .arg("run")
-                .arg(pair_id)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .spawn()
-                .map_err(|err| {
-                    format!("cannot start {} run {pair_id}: {err}", self.bin.display())
-                })?;
-            // Reaps the child; its outcome is in the sync's state.
-            tokio::spawn(async move {
-                if let Err(err) = child.wait().await {
-                    log::warn!("cannot wait for a round: {err}");
-                }
-            });
-            Ok(())
-        })
+        Box::pin(async move { self.spawn("run", pair_id) })
+    }
+
+    fn start_backup<'a>(&'a self, backup_id: &'a str) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move { self.spawn("backup-run", backup_id) })
     }
 }
 

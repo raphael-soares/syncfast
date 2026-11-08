@@ -1,11 +1,17 @@
 //! Backups of local folders into a restic repository (ADR 0009).
 
+pub mod classify;
 pub mod config;
 pub mod destination;
+pub mod effects;
+pub mod excludes;
 pub mod key;
 pub mod keystore;
+pub mod run_decision;
 pub mod snapshots;
 pub mod state;
+pub mod status;
+pub mod test_filters;
 
 use std::time::Duration;
 

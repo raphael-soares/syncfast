@@ -6,7 +6,7 @@ use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
 use serde::Deserialize;
-use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, TableLike, Value};
+use toml_edit::{Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table, TableLike, Value};
 
 use crate::backup::config::{
     BACKUP_KEYS, BackupConfig, BackupValidation, Surroundings, validate_backups,
@@ -466,14 +466,7 @@ impl Config {
         table["enabled"] = toml_edit::value(pair.enabled);
         table["presets"] = Item::Value(string_array(&pair.presets));
         table["filters"] = Item::Value(string_array(&pair.filters));
-        let item = self.document.entry("pair").or_insert(Item::None);
-        if let Item::ArrayOfTables(tables) = item {
-            tables.push(table);
-        } else {
-            let mut tables = ArrayOfTables::new();
-            tables.push(table);
-            *item = Item::ArrayOfTables(tables);
-        }
+        self.push_table("pair", table);
         self.pairs.push(pair);
         Ok(())
     }
@@ -516,6 +509,114 @@ impl Config {
                 replace_value(table, "filters", string_array(filters));
             },
         )
+    }
+
+    /// Appends a `[[backup]]` table with every key of `backup`. [`Config::save`]
+    /// writes the file as version 3 once it holds one.
+    ///
+    /// # Errors
+    /// A folder path is not valid UTF-8, so TOML cannot hold it.
+    pub fn add_backup(&mut self, backup: &BackupConfig) -> Result<(), ConfigEditError> {
+        let mut table = Table::new();
+        table.decor_mut().set_prefix("\n");
+        for (key, value) in backup_values(backup)? {
+            table.insert(key, Item::Value(value));
+        }
+        self.push_table("backup", table);
+        self.backups.push(backup.clone());
+        Ok(())
+    }
+
+    pub fn remove_backup(&mut self, id: &str) -> bool {
+        let before = self.backups.len();
+        self.backups.retain(|backup| backup.id != id);
+        if let Some(tables) = self
+            .document
+            .get_mut("backup")
+            .and_then(Item::as_array_of_tables_mut)
+        {
+            tables.retain(|table| table_id(table) != Some(id));
+            if tables.is_empty() {
+                self.document.remove("backup");
+            }
+        }
+        self.backups.len() != before
+    }
+
+    pub fn set_backup_enabled(&mut self, id: &str, enabled: bool) -> bool {
+        self.edit_backup(
+            id,
+            |backup| backup.enabled = enabled,
+            |table| {
+                replace_value(table, "enabled", Value::from(enabled));
+            },
+        )
+    }
+
+    /// Rewrites every key of the backup `backup.id` except `id` and `dest`,
+    /// which never change, keeping the comments around them. False when no
+    /// backup has that id, or a folder path is not valid UTF-8 (nothing
+    /// changes then).
+    pub fn replace_backup(&mut self, backup: &BackupConfig) -> bool {
+        let Ok(values) = backup_values(backup) else {
+            return false;
+        };
+        self.edit_backup(
+            &backup.id,
+            |stored| {
+                stored.name.clone_from(&backup.name);
+                stored.paths.clone_from(&backup.paths);
+                stored.every.clone_from(&backup.every);
+                stored.keep = backup.keep.clone();
+                stored.presets.clone_from(&backup.presets);
+                stored.filters.clone_from(&backup.filters);
+                stored.one_file_system = backup.one_file_system;
+                stored.limit_upload.clone_from(&backup.limit_upload);
+                stored.limit_download.clone_from(&backup.limit_download);
+                stored.enabled = backup.enabled;
+            },
+            |table| {
+                for (key, value) in &values {
+                    if !matches!(*key, "id" | "dest") {
+                        replace_value(table, key, value.clone());
+                    }
+                }
+            },
+        )
+    }
+
+    fn push_table(&mut self, key: &str, table: Table) {
+        let item = self.document.entry(key).or_insert(Item::None);
+        if let Item::ArrayOfTables(tables) = item {
+            tables.push(table);
+        } else {
+            let mut tables = ArrayOfTables::new();
+            tables.push(table);
+            *item = Item::ArrayOfTables(tables);
+        }
+    }
+
+    fn edit_backup(
+        &mut self,
+        id: &str,
+        on_backup: impl Fn(&mut BackupConfig),
+        on_table: impl Fn(&mut Table),
+    ) -> bool {
+        let mut found = false;
+        for backup in self.backups.iter_mut().filter(|backup| backup.id == id) {
+            on_backup(backup);
+            found = true;
+        }
+        if let Some(tables) = self
+            .document
+            .get_mut("backup")
+            .and_then(Item::as_array_of_tables_mut)
+        {
+            for table in tables.iter_mut().filter(|t| table_id(t) == Some(id)) {
+                on_table(table);
+            }
+        }
+        found
     }
 
     /// Points every sync on the account `from` at `to`, keeping the folder
@@ -824,6 +925,45 @@ fn table_id(table: &Table) -> Option<&str> {
 
 fn string_array(items: &[String]) -> Value {
     Value::Array(items.iter().map(String::as_str).collect::<Array>())
+}
+
+/// Every key of a `[[backup]]` table, in the order the spec lists them.
+fn backup_values(backup: &BackupConfig) -> Result<Vec<(&'static str, Value)>, ConfigEditError> {
+    let paths = backup
+        .paths
+        .iter()
+        .map(|path| {
+            path.to_str()
+                .map(str::to_owned)
+                .ok_or(ConfigEditError::NonUtf8Path)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut keep = InlineTable::new();
+    for (key, value) in [
+        ("daily", backup.keep.daily),
+        ("weekly", backup.keep.weekly),
+        ("monthly", backup.keep.monthly),
+        ("yearly", backup.keep.yearly),
+    ] {
+        keep.insert(key, Value::from(value));
+    }
+    Ok(vec![
+        ("id", Value::from(backup.id.as_str())),
+        ("name", Value::from(backup.name.as_str())),
+        ("paths", string_array(&paths)),
+        ("dest", Value::from(backup.dest.as_str())),
+        ("every", Value::from(backup.every.as_str())),
+        ("keep", Value::InlineTable(keep)),
+        ("presets", string_array(&backup.presets)),
+        ("filters", string_array(&backup.filters)),
+        ("one_file_system", Value::from(backup.one_file_system)),
+        ("limit_upload", Value::from(backup.limit_upload.as_str())),
+        (
+            "limit_download",
+            Value::from(backup.limit_download.as_str()),
+        ),
+        ("enabled", Value::from(backup.enabled)),
+    ])
 }
 
 /// Swaps a value in place, keeping the key's comments and the value's
@@ -1225,6 +1365,7 @@ pub(crate) fn lexical_clean(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backup::config::KeepSetting;
     use std::time::Duration;
 
     const HOME: &str = "/home/ada";
@@ -2700,5 +2841,249 @@ mod tests {
             error.to_string(),
             "config.toml: [notifications]: failures_after must be between 0 and 100"
         );
+    }
+
+    fn sample_backup(id: &str) -> BackupConfig {
+        BackupConfig {
+            id: id.into(),
+            name: "Documents".into(),
+            paths: vec![PathBuf::from("/work/docs"), PathBuf::from("/work/pics")],
+            dest: "gdrive:Backups/docs".into(),
+            every: "hourly".into(),
+            keep: KeepSetting::new(7, 4, 6, 1),
+            presets: vec!["system_junk".into()],
+            filters: vec!["- *.bak".into()],
+            one_file_system: false,
+            limit_upload: "2M".into(),
+            limit_download: "500K".into(),
+            enabled: false,
+        }
+    }
+
+    fn reloaded(config: &Config) -> Config {
+        Config::parse(&config.saved_text(), Path::new(HOME)).unwrap()
+    }
+
+    const COMMENTED_V3: &str = "# top\nversion = 3\n\n# first one\n[[backup]]\nid = \"docs\"\nname = \"Documents\"\npaths = [\"/work/docs\"]\ndest = \"gdrive:Backups/docs\"\n# how often\nevery = \"daily\" # nightly\nkeep = { daily = 7, weekly = 4, monthly = 6, yearly = 0 }\n\n# keep me\n[[backup]]\nid = \"other\"\nname = \"Other\"\npaths = [\"/work/other\"]\ndest = \"gdrive:Backups/other\"\nenabled = true\n";
+
+    #[test]
+    fn add_backup_appends_a_table_that_reloads_identically() {
+        let mut config = parse(&v2_file());
+        let added = sample_backup("docs");
+
+        config.add_backup(&added).unwrap();
+
+        let reparsed = reloaded(&config);
+        assert_eq!(config.backups(), std::slice::from_ref(&added));
+        assert_eq!(reparsed.backups(), [added]);
+        assert_eq!(reparsed.pairs(), config.pairs());
+    }
+
+    #[test]
+    fn add_backup_writes_every_key_in_spec_order_with_keep_inline() {
+        let mut config = Config::empty();
+
+        config.add_backup(&sample_backup("docs")).unwrap();
+
+        let text = config.to_toml();
+        let table = text.split("[[backup]]\n").nth(1).unwrap();
+        let keys: Vec<&str> = table
+            .lines()
+            .filter_map(|line| line.split(" = ").next())
+            .collect();
+        assert_eq!(keys, BACKUP_KEYS);
+        assert!(
+            table.contains("keep = { daily = 7, weekly = 4, monthly = 6, yearly = 1 }\n"),
+            "{table}"
+        );
+        assert!(
+            table.contains("paths = [\"/work/docs\", \"/work/pics\"]\n"),
+            "{table}"
+        );
+        assert!(table.contains("one_file_system = false\n"), "{table}");
+        assert!(table.contains("limit_upload = \"2M\"\n"), "{table}");
+    }
+
+    #[test]
+    fn add_backup_to_an_empty_config_creates_the_first_table() {
+        let mut config = Config::empty();
+
+        config.add_backup(&sample_backup("docs")).unwrap();
+
+        assert_eq!(reloaded(&config).backups().len(), 1);
+    }
+
+    #[test]
+    fn add_backup_refuses_a_folder_that_is_not_utf8_and_changes_nothing() {
+        use std::os::unix::ffi::OsStringExt as _;
+        let mut config = parse(&v2_file());
+        let before = config.to_toml();
+        let mut backup = sample_backup("docs");
+        backup.paths = vec![PathBuf::from(std::ffi::OsString::from_vec(vec![
+            b'/', 0xff,
+        ]))];
+
+        assert!(matches!(
+            config.add_backup(&backup),
+            Err(ConfigEditError::NonUtf8Path)
+        ));
+
+        assert_eq!(config.to_toml(), before);
+        assert!(config.backups().is_empty());
+    }
+
+    #[test]
+    fn the_first_backup_makes_a_v2_file_version_3_and_keeps_its_comments() {
+        let text = "# top\nversion = 2\n\n# the main one\n[[pair]]\nid = \"a\" # short id\nname = \"A\"\nlocal = \"/a\"\nremote = \"gdrive:a\"\n";
+        let mut config = parse(text);
+
+        config.add_backup(&sample_backup("docs")).unwrap();
+
+        let written = config.saved_text();
+        assert!(written.starts_with("# top\nversion = 3\n"), "{written}");
+        assert!(written.contains("# the main one\n[[pair]]"), "{written}");
+        assert!(written.contains("id = \"a\" # short id"), "{written}");
+        assert_eq!(reloaded(&config).pairs().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_edit_that_adds_a_backup_saves_a_version_3_file_that_loads() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths_in(root.path());
+        write_config_file(&paths, &v2_file());
+
+        Config::edit(&paths, |config| {
+            config.add_backup(&sample_backup("docs")).unwrap();
+        })
+        .await
+        .unwrap();
+
+        let text = saved(&paths).await;
+        assert!(text.starts_with("# mine\nversion = 3\n"), "{text}");
+        assert_eq!(
+            Config::load(&paths).await.unwrap().backups(),
+            [sample_backup("docs")]
+        );
+    }
+
+    #[test]
+    fn remove_backup_drops_only_that_table() {
+        let mut config = parse(COMMENTED_V3);
+
+        assert!(config.remove_backup("docs"));
+
+        let text = config.to_toml();
+        assert!(
+            text.contains("# keep me\n[[backup]]\nid = \"other\""),
+            "{text}"
+        );
+        assert!(!text.contains("id = \"docs\""), "{text}");
+        assert_eq!(config.backups().len(), 1);
+        assert_eq!(config.backups()[0].id, "other");
+        assert!(!config.remove_backup("docs"));
+        assert_eq!(reloaded(&config).backups(), config.backups());
+    }
+
+    #[test]
+    fn removing_the_last_backup_leaves_a_loadable_config_and_the_pairs() {
+        let mut config = parse(&v2_file());
+        config.add_backup(&sample_backup("docs")).unwrap();
+
+        assert!(config.remove_backup("docs"));
+
+        let text = config.to_toml();
+        assert!(!text.contains("[[backup]]"), "{text}");
+        let reparsed = Config::parse(&text, Path::new(HOME)).unwrap();
+        assert!(reparsed.backups().is_empty());
+        assert_eq!(reparsed.pairs().len(), 1);
+    }
+
+    #[test]
+    fn set_backup_enabled_toggles_the_table_and_the_list() {
+        let mut config = parse(COMMENTED_V3);
+
+        assert!(config.set_backup_enabled("other", false));
+        assert!(config.set_backup_enabled("docs", false));
+
+        let reparsed = reloaded(&config);
+        assert!(reparsed.backups().iter().all(|backup| !backup.enabled));
+        assert!(!config.backups()[0].enabled);
+        assert!(config.to_toml().contains("enabled = false"));
+
+        assert!(config.set_backup_enabled("docs", true));
+        let reparsed = reloaded(&config);
+        assert!(reparsed.backups()[0].enabled);
+        assert!(!reparsed.backups()[1].enabled);
+    }
+
+    #[test]
+    fn set_backup_enabled_and_remove_report_whether_the_backup_exists() {
+        let mut config = parse(COMMENTED_V3);
+
+        assert!(!config.set_backup_enabled("ghost", false));
+        assert!(!config.replace_backup(&sample_backup("ghost")));
+        assert!(!config.remove_backup("ghost"));
+        assert_eq!(config.to_toml(), COMMENTED_V3);
+    }
+
+    #[test]
+    fn replace_backup_rewrites_the_editable_keys_and_keeps_dest() {
+        let mut config = parse(COMMENTED_V3);
+        let mut changed = sample_backup("docs");
+        changed.dest = "gdrive:Elsewhere/never".into();
+
+        assert!(config.replace_backup(&changed));
+
+        let mut expected = changed.clone();
+        expected.dest = "gdrive:Backups/docs".into();
+        assert_eq!(config.backups()[0], expected);
+        let reparsed = reloaded(&config);
+        assert_eq!(reparsed.backups()[0], expected);
+        let text = config.to_toml();
+        assert!(
+            text.contains("keep = { daily = 7, weekly = 4, monthly = 6, yearly = 1 }"),
+            "{text}"
+        );
+        assert!(text.contains("filters = [\"- *.bak\"]"), "{text}");
+        assert!(text.contains("presets = [\"system_junk\"]"), "{text}");
+        assert!(text.contains("dest = \"gdrive:Backups/docs\""), "{text}");
+        assert!(!text.contains("Elsewhere"), "{text}");
+    }
+
+    #[test]
+    fn replace_backup_keeps_the_comments_and_the_other_tables() {
+        let mut config = parse(COMMENTED_V3);
+        let other_before = config.backups()[1].clone();
+
+        assert!(config.replace_backup(&sample_backup("docs")));
+
+        let text = config.to_toml();
+        assert!(
+            text.starts_with("# top\nversion = 3\n\n# first one\n[[backup]]"),
+            "{text}"
+        );
+        assert!(
+            text.contains("# how often\nevery = \"hourly\" # nightly\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("# keep me\n[[backup]]\nid = \"other\""),
+            "{text}"
+        );
+        assert_eq!(config.backups()[1], other_before);
+        assert_eq!(reloaded(&config).backups()[1], other_before);
+    }
+
+    #[test]
+    fn replace_backup_adds_the_keys_the_table_omitted() {
+        let mut config = parse(COMMENTED_V3);
+
+        assert!(config.replace_backup(&sample_backup("other")));
+
+        let reparsed = reloaded(&config);
+        let mut expected = sample_backup("other");
+        expected.dest = "gdrive:Backups/other".into();
+        expected.paths = vec![PathBuf::from("/work/docs"), PathBuf::from("/work/pics")];
+        assert_eq!(reparsed.backups()[1], expected);
     }
 }

@@ -38,8 +38,8 @@ pub use explore::{
     FolderMade, FolderStat, Location,
 };
 pub use pairs::{
-    AddedSync, ApplyFailureView, ApplyView, FIRST_ROUND_WAIT, FirstRound, InvalidSync, NewSync,
-    RemovedSync, Toggled, first_round_confirmed,
+    AddedSync, ApplyFailureView, ApplyView, FIRST_ROUND_WAIT, FirstRound, InvalidBackup,
+    InvalidSync, NewSync, RemovedSync, Toggled, first_round_confirmed,
 };
 pub use review::{ConfirmedReview, ReviewView};
 pub use rules::{FilterTestView, FiltersSaved, FolderCount, after_filters_saved};

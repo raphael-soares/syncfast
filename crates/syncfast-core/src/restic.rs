@@ -219,6 +219,17 @@ fn resolve_binary(
         .ok_or(ResticError::NotFound)
 }
 
+/// The restic the units hand to `backup-run`: `SYNCFAST_RESTIC` if set,
+/// otherwise `restic` on `PATH`. Does not run it; `None` when there is none.
+#[must_use]
+pub fn locate_binary() -> Option<PathBuf> {
+    resolve_binary(
+        std::env::var_os(BINARY_OVERRIDE_VAR).as_deref(),
+        std::env::var_os("PATH").as_deref(),
+    )
+    .ok()
+}
+
 fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
     let mut parts = text.trim().split('.');
     let mut next = || parts.next()?.parse().ok();
@@ -279,7 +290,7 @@ fn first_line(text: &str) -> &str {
 /// Turns a restic exit into a typed error. Exit codes 10, 11 and 12 are
 /// restic's own; other failures keep the message and the rclone problem in
 /// its stderr, if any.
-fn classify_failure(code: Option<i32>, stderr: &[u8]) -> ResticError {
+pub(crate) fn classify_failure(code: Option<i32>, stderr: &[u8]) -> ResticError {
     let stderr = String::from_utf8_lossy(stderr);
     let message = failure_message(&stderr);
     match code {
