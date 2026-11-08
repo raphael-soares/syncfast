@@ -2,13 +2,13 @@
 //! table of the spec (step 6), and the two things its input is read from
 //! disk with (the source folders and `request.json`).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 use crate::bisync::Fault;
 use crate::paths::Paths;
-use crate::state::{Gate, GateKind, StateError, write_json};
+use crate::state::{Gate, GateKind, StateError, remove_or_warn, write_json};
 
 use super::state::CheckKind;
 
@@ -195,17 +195,11 @@ pub fn take_request(paths: &Paths, backup_id: &str) -> Option<BackupRequest> {
     }
 }
 
-fn remove_or_warn(path: &Path) {
-    if let Err(err) = std::fs::remove_file(path)
-        && err.kind() != std::io::ErrorKind::NotFound
-    {
-        log::warn!("cannot delete {}: {err}", path.display());
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
     fn input() -> DecisionInput<'static> {

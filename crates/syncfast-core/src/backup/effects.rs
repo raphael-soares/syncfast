@@ -76,7 +76,7 @@ pub struct SkipContext<'a> {
 /// How long a backup may go without a snapshot, or a destination without
 /// being there, before it asks for attention.
 #[must_use]
-pub fn stale_limit(every: Every) -> Duration {
+fn stale_limit(every: Every) -> Duration {
     let period = match every {
         Every::Hourly => Duration::from_hours(1),
         Every::Daily => Duration::from_hours(24),
@@ -165,13 +165,18 @@ pub fn clear_gate(state: &mut BackupState) {
     state.notified.retain(|key| !key.starts_with(GATE_PREFIX));
 }
 
-/// Step 6, item 6: a run starts. Whatever kept the last attempt from
-/// reaching the destination no longer holds.
-pub fn begin_attempt(state: &mut BackupState, now: Timestamp) {
-    state.last_attempt = Some(now);
+/// Whatever kept the last attempt from reaching the destination no longer
+/// holds: the round got past the network and destination rows.
+pub fn clear_unreachable(state: &mut BackupState) {
     state.offline = false;
     state.destination_unavailable = false;
     state.unavailable_since = None;
+}
+
+/// Step 6, item 6: a run starts.
+pub fn begin_attempt(state: &mut BackupState, now: Timestamp) {
+    state.last_attempt = Some(now);
+    clear_unreachable(state);
 }
 
 /// Step 6, item 5: a round that did not run.
@@ -189,21 +194,20 @@ pub fn apply_skip(
         SkipReason::DestinationUnavailable => {
             state.destination_unavailable = true;
             let since = *state.unavailable_since.get_or_insert(ctx.now);
-            if older_than(since, ctx.now, stale_limit(ctx.every)) {
-                apply_gate(
-                    state,
-                    ctx.now,
-                    GateKind::NeedsAttention,
-                    format!(
-                        "{} has not been available since {}",
-                        ctx.dest,
-                        date_text(since, &ctx.zone)
-                    ),
-                    Some(Fault::DestinationMissing),
-                )
-            } else {
-                Vec::new()
+            if is_damaged_gate(state) || !older_than(since, ctx.now, stale_limit(ctx.every)) {
+                return Vec::new();
             }
+            apply_gate(
+                state,
+                ctx.now,
+                GateKind::NeedsAttention,
+                format!(
+                    "{} has not been available since {}",
+                    ctx.dest,
+                    date_text(since, &ctx.zone)
+                ),
+                Some(Fault::DestinationMissing),
+            )
         }
     }
 }
@@ -228,14 +232,19 @@ pub fn apply_key_failure(
     )
 }
 
-/// The configuration of the backup is invalid. A damaged repository keeps
-/// its gate, which only a full check clears; the caller logs the message.
+/// The configuration of the backup is invalid. A gate of another kind stays
+/// (a damaged repository's is lifted only by a full check); the caller logs
+/// the message.
 pub fn apply_config_error(
     state: &mut BackupState,
     now: Timestamp,
     message: String,
 ) -> Vec<BackupEvent> {
-    if is_damaged_gate(state) {
+    if state
+        .gate
+        .as_ref()
+        .is_some_and(|gate| gate.kind != GateKind::ConfigError)
+    {
         return Vec::new();
     }
     apply_gate(state, now, GateKind::ConfigError, message, None)
@@ -494,6 +503,20 @@ pub fn key_created_by_agent(state: &mut BackupState) -> Vec<BackupEvent> {
 pub fn key_saved(state: &mut BackupState) {
     state.key_unsaved = false;
     state.notified.retain(|key| key != NOTIFIED_KEY_UNSAVED);
+}
+
+/// A round never turns `key_unsaved` on, so what the person did while it ran
+/// (`I Saved the Key`) is kept over what the round read when it began.
+pub fn adopt_key_flag(state: &mut BackupState, on_disk: &BackupState) {
+    state.key_unsaved = on_disk.key_unsaved;
+    let noticed = on_disk
+        .notified
+        .iter()
+        .any(|key| key == NOTIFIED_KEY_UNSAVED);
+    state.notified.retain(|key| key != NOTIFIED_KEY_UNSAVED);
+    if noticed {
+        state.notified.push(NOTIFIED_KEY_UNSAVED.to_owned());
+    }
 }
 
 #[cfg(test)]
@@ -1089,6 +1112,42 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_destination_does_not_replace_the_damaged_gate() {
+        let mut state = damaged_state();
+        state.unavailable_since = Some(before(49 * HOUR));
+        let gate = state.gate.clone();
+
+        let events = apply_skip(
+            &mut state,
+            SkipReason::DestinationUnavailable,
+            &skip_ctx("/media/disk"),
+        );
+
+        assert_eq!(events, []);
+        assert_eq!(state.gate, gate);
+        assert!(state.destination_unavailable);
+        assert_eq!(state.notified, ["gate:needs_attention:repo_damaged"]);
+    }
+
+    #[test]
+    fn clear_unreachable_forgets_offline_and_the_missing_destination() {
+        let mut state = BackupState {
+            offline: true,
+            destination_unavailable: true,
+            unavailable_since: Some(before(HOUR)),
+            last_attempt: Some(before(HOUR)),
+            ..BackupState::default()
+        };
+
+        clear_unreachable(&mut state);
+
+        assert!(!state.offline);
+        assert!(!state.destination_unavailable);
+        assert_eq!(state.unavailable_since, None);
+        assert_eq!(state.last_attempt, Some(before(HOUR)));
+    }
+
+    #[test]
     fn begin_attempt_clears_what_kept_the_last_one_away() {
         let mut state = BackupState {
             offline: true,
@@ -1167,6 +1226,35 @@ mod tests {
         assert_eq!(events, []);
         assert_eq!(state.gate, before);
         assert_eq!(state.notified, ["gate:needs_attention:repo_damaged"]);
+    }
+
+    #[test]
+    fn a_config_error_does_not_replace_any_other_gate() {
+        for gate in [
+            attention_gate(before(HOUR), Some(Fault::Quota)),
+            attention_gate(before(HOUR), Some(Fault::KeyMissing)),
+        ] {
+            let mut state = BackupState {
+                gate: Some(gate.clone()),
+                ..BackupState::default()
+            };
+
+            let events = apply_config_error(&mut state, now(), "bad dest".to_owned());
+
+            assert_eq!(events, [], "{gate:?}");
+            assert_eq!(state.gate, Some(gate));
+        }
+    }
+
+    #[test]
+    fn a_config_error_refreshes_its_own_gate_without_a_new_announcement() {
+        let mut state = BackupState::default();
+        apply_config_error(&mut state, before(HOUR), "bad dest".to_owned());
+
+        let events = apply_config_error(&mut state, now(), "bad folder".to_owned());
+
+        assert_eq!(events, []);
+        assert_eq!(state.gate.unwrap().detail, "bad folder");
     }
 
     #[test]
@@ -1397,6 +1485,37 @@ mod tests {
 
         assert!(state.key_unsaved);
         assert_eq!(state.notified, ["key_unsaved"]);
+    }
+
+    #[test]
+    fn what_the_person_did_about_the_key_during_a_round_wins() {
+        let mut state = BackupState::default();
+        key_created_by_agent(&mut state);
+        let mut on_disk = state.clone();
+        key_saved(&mut on_disk);
+
+        adopt_key_flag(&mut state, &on_disk);
+
+        assert!(!state.key_unsaved);
+        assert!(state.notified.is_empty());
+    }
+
+    #[test]
+    fn adopting_the_key_flag_keeps_the_other_notifications() {
+        let mut state = BackupState {
+            notified: vec!["gate:needs_attention".to_owned()],
+            ..BackupState::default()
+        };
+        let on_disk = BackupState {
+            key_unsaved: true,
+            notified: vec!["key_unsaved".to_owned()],
+            ..BackupState::default()
+        };
+
+        adopt_key_flag(&mut state, &on_disk);
+
+        assert!(state.key_unsaved);
+        assert_eq!(state.notified, ["gate:needs_attention", "key_unsaved"]);
     }
 
     #[test]

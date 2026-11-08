@@ -295,6 +295,14 @@ impl Interrupts {
     }
 }
 
+/// Resolves when a signal arrives; never, when there is no handler.
+pub(crate) async fn wait_interrupt(interrupts: &mut Option<Interrupts>) {
+    match interrupts {
+        Some(interrupts) => interrupts.next().await,
+        None => std::future::pending().await,
+    }
+}
+
 /// Runs rclone with `args` and waits for it. rclone's own output is
 /// dropped (its log goes to `--log-file`). With `forward_signals`, SIGINT
 /// and SIGTERM do not stop the round: they are passed to rclone as SIGINT,

@@ -14,7 +14,7 @@ use crate::paths::Paths;
 
 const MAX_LOCK: &str = "2m";
 const STATS_INTERVAL: &str = "2s";
-const STAMP_FORMAT: &str = "%Y%m%d-%H%M%S";
+pub(crate) const STAMP_FORMAT: &str = "%Y%m%d-%H%M%S";
 const AUTH_PATTERNS: [&str; 4] = [
     "invalid_grant",
     "couldn't fetch token",

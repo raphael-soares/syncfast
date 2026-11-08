@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 use jiff::civil::DateTime;
 use jiff::{SignedDuration, Zoned};
 
+use crate::bisync::STAMP_FORMAT;
 use crate::paths::Paths;
 
-const STAMP_FORMAT: &str = "%Y%m%d-%H%M%S";
 const STAMP_LEN: usize = 15;
 const SECS_PER_DAY: i64 = 86_400;
 

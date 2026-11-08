@@ -11,20 +11,21 @@ use jiff::{SignedDuration, Timestamp, Zoned};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 
 use crate::backup::check::{CheckOutcome, parse_check};
-use crate::backup::classify::{
-    BackupLine, BackupOutcome, EXIT_INTERRUPTED, classify_backup, parse_backup_line,
-};
+use crate::backup::classify::{BackupLine, BackupOutcome, classify_backup, parse_backup_line};
 use crate::backup::config::{BackupBehavior, BackupConfig};
 use crate::backup::destination::{Destination, DestinationError};
 use crate::backup::effects::{
-    BackupEvent, LOCKED_DETAIL, RunContext, SkipContext, apply_check, apply_config_error,
-    apply_gate, apply_key_failure, apply_outcome, apply_retention_result, apply_skip,
-    begin_attempt, clear_gate, monthly_check, retention_message, take_post_failure_check,
+    BackupEvent, LOCKED_DETAIL, RunContext, SkipContext, adopt_key_flag, apply_check,
+    apply_config_error, apply_gate, apply_key_failure, apply_outcome, apply_retention_result,
+    apply_skip, begin_attempt, clear_gate, clear_unreachable, monthly_check, retention_message,
+    take_post_failure_check,
 };
 use crate::backup::excludes::{render_excludes_live, write_excludes};
+use crate::backup::key::Key;
 use crate::backup::keystore::KeyStore;
 use crate::backup::run_decision::{
-    BackupDecision, DecisionInput, RunKind, SkipReason, decide_backup, source_check, take_request,
+    BackupDecision, DecisionInput, RunKind, SkipReason, decide_backup, save_request, source_check,
+    take_request,
 };
 use crate::backup::state::{BackupState, BackupSummary, CheckKind};
 use crate::backup::status::{BackupProgressFile, RunningStep};
@@ -35,15 +36,16 @@ use crate::notify::{Notifier, Policy, notify_backup};
 use crate::paths::Paths;
 use crate::rclone::RcloneError;
 use crate::restic::{
-    EXIT_LOCKED, Repository, Restic, ResticError, backup_args, check_args, forget_args,
+    EXIT_INTERRUPTED, EXIT_LOCKED, Repository, Restic, ResticError, backup_args, check_args,
+    classify_failure, forget_args,
 };
-use crate::run::{Interrupts, forward_interrupt};
-use crate::state::{GateKind, RUNS_KEPT, StateError, try_lock, write_json};
+use crate::run::{Interrupts, forward_interrupt, wait_interrupt};
+use crate::state::{GateKind, RUNS_KEPT, StateError, remove_or_warn, try_lock, write_json_or_warn};
 
 /// The exit code that tells the unit to try again soon.
 const EXIT_TEMPFAIL: u8 = 75;
-const PROGRESS_EVERY: Duration = Duration::from_secs(1);
-pub const KEY_ABSENT: &str = "The key for this backup is not saved on this computer.";
+pub(crate) const PROGRESS_EVERY: Duration = Duration::from_secs(1);
+pub const KEY_ABSENT: &str = "The key for this backup is missing on this computer.";
 
 pub struct BackupRunEnv<'a> {
     pub paths: &'a Paths,
@@ -163,10 +165,17 @@ pub async fn run_backup(
     let Some(lock) = try_lock(env.paths, env.paths.backup_lock_file(backup_id))? else {
         return Ok(BackupRunReport::Busy);
     };
+    remove_or_warn(&env.paths.backup_progress_file(backup_id));
     let mut state = load_state(env, backup_id).await?;
-    let request = take_request(env.paths, backup_id);
     let policy = config.defaults().notifications;
-    let accounts = env.restic.rclone().listremotes().await?;
+    let accounts = if matches!(
+        Destination::parse(&backup.dest),
+        Ok(Destination::Account { .. })
+    ) {
+        env.restic.rclone().listremotes().await?
+    } else {
+        Vec::new()
+    };
     let problem = config
         .validate_backups(env.paths, &accounts)
         .errors
@@ -179,7 +188,7 @@ pub async fn run_backup(
             let now = env.now().timestamp();
             log::warn!("the backup {backup_id} has an invalid configuration: {message}");
             let events = apply_config_error(&mut state, now, message);
-            conclude(env, &backup, &policy, &state, lock, &events, true).await?;
+            conclude(env, &backup, &policy, &mut state, lock, &events, true).await?;
             return Ok(BackupRunReport::ConfigInvalid);
         }
     };
@@ -201,6 +210,7 @@ pub async fn run_backup(
         zone: now.time_zone().clone(),
         failures_after: policy.failures_after,
     };
+    let request = take_request(env.paths, backup_id);
     let (dest_is_remote, online, dest_available) = reachability(env, &dest).await;
     let decision = decide_backup(&DecisionInput {
         enabled: backup.enabled,
@@ -213,6 +223,14 @@ pub async fn run_backup(
     });
     let (events, report, save) = match decision {
         BackupDecision::Skip(reason) => {
+            if matches!(
+                reason,
+                SkipReason::Offline | SkipReason::DestinationUnavailable
+            ) && let Some(request) = request
+                && let Err(err) = save_request(env.paths, backup_id, request).await
+            {
+                log::warn!("cannot keep the request of {backup_id} for the next round: {err}");
+            }
             let events = apply_skip(
                 &mut state,
                 reason,
@@ -235,10 +253,12 @@ pub async fn run_backup(
             fault,
             detail,
         } => {
+            clear_unreachable(&mut state);
             let events = apply_gate(&mut state, now.timestamp(), kind, detail, Some(fault));
             (events, BackupRunReport::GateSet(fault), true)
         }
         BackupDecision::Run(kind) => {
+            clear_unreachable(&mut state);
             let (events, report) = match kind {
                 RunKind::Backup => backup_round(env, &round, &now, &mut state).await?,
                 RunKind::Check(kind) => check_round(env, &round, &now, &mut state, kind).await?,
@@ -246,7 +266,7 @@ pub async fn run_backup(
             (events, report, true)
         }
     };
-    conclude(env, &backup, &policy, &state, lock, &events, save).await?;
+    conclude(env, &backup, &policy, &mut state, lock, &events, save).await?;
     Ok(report)
 }
 
@@ -265,17 +285,22 @@ async fn reachability(env: &BackupRunEnv<'_>, dest: &Destination) -> (bool, bool
 }
 
 /// Saves the state, frees the lock so a status read sees the backup idle,
-/// then tells the user.
+/// then tells the user. `I Saved the Key` clicked while the round ran wins
+/// over the state the round read when it began.
 async fn conclude(
     env: &BackupRunEnv<'_>,
     backup: &BackupConfig,
     policy: &Policy,
-    state: &BackupState,
+    state: &mut BackupState,
     lock: std::fs::File,
     events: &[BackupEvent],
     save: bool,
 ) -> Result<(), BackupRunError> {
     if save {
+        match BackupState::load(env.paths, &backup.id).await {
+            Ok(on_disk) => adopt_key_flag(state, &on_disk),
+            Err(err) => log::warn!("cannot reread the state of {}: {err}", backup.id),
+        }
         state.save(env.paths, &backup.id).await?;
     }
     drop(lock);
@@ -305,10 +330,7 @@ async fn load_state(
     }
 }
 
-async fn saved_key(
-    env: &BackupRunEnv<'_>,
-    backup_id: &str,
-) -> Result<crate::backup::key::Key, String> {
+async fn saved_key(env: &BackupRunEnv<'_>, backup_id: &str) -> Result<Key, String> {
     match env.keys.get(backup_id).await {
         Ok(Some(key)) => Ok(key),
         Ok(None) => Err(KEY_ABSENT.to_owned()),
@@ -367,18 +389,25 @@ async fn backup_round(
 
     let streamed =
         stream_backup_unlocking(env, &backup.id, &repository, &key, &args, &mut log).await;
-    let streamed = match streamed {
-        Ok(streamed) => streamed,
+    let (streamed, outcome) = match streamed {
+        Ok(streamed) => {
+            let outcome = classify_backup(
+                streamed.exit_code,
+                streamed.summary.as_ref(),
+                &streamed.stderr,
+            );
+            (streamed, outcome)
+        }
+        Err(BackupRunError::Restic(err @ (ResticError::Spawn(_) | ResticError::Host(_)))) => {
+            let detail = err.to_string();
+            log.line(&detail).await;
+            (Streamed::default(), BackupOutcome::Transient { detail })
+        }
         Err(err) => {
-            remove_progress(env.paths, &backup.id).await;
+            remove_or_warn(&env.paths.backup_progress_file(&backup.id));
             return Err(err);
         }
     };
-    let outcome = classify_backup(
-        streamed.exit_code,
-        streamed.summary.as_ref(),
-        &streamed.stderr,
-    );
     let finished = env.now();
     let ctx = RunContext {
         started: started.timestamp(),
@@ -399,11 +428,23 @@ async fn backup_round(
         .summary
         .as_ref()
         .is_some_and(|summary| summary.total_files_processed > 0);
+    let mut interrupted = false;
     if succeeded && stored {
-        let result = forget(env, round, &repository, &key, &mut log).await;
-        events.extend(apply_retention_result(state, result, env.now().timestamp()));
+        match forget(env, round, &repository, &key, &mut log).await {
+            Forgotten::Done => {
+                events.extend(apply_retention_result(state, Ok(()), env.now().timestamp()));
+            }
+            Forgotten::Failed(message) => events.extend(apply_retention_result(
+                state,
+                Err(message),
+                env.now().timestamp(),
+            )),
+            Forgotten::Interrupted => interrupted = true,
+        }
     }
-    let asked = if succeeded {
+    let asked = if interrupted {
+        None
+    } else if succeeded {
         monthly_check(state, env.now().timestamp())
     } else {
         take_post_failure_check(state, &outcome)
@@ -419,7 +460,7 @@ async fn backup_round(
             Err(err) => log::warn!("cannot run the {} check: {err}", kind.as_str()),
         }
     }
-    remove_progress(env.paths, &backup.id).await;
+    remove_or_warn(&env.paths.backup_progress_file(&backup.id));
     prune_logs_of(env, &backup.id).await;
     Ok((events, BackupRunReport::Ran(outcome)))
 }
@@ -447,7 +488,7 @@ async fn check_round(
     };
     let repository = repository_of(env, round);
     let found = run_check(env, round, &repository, &key, kind).await;
-    remove_progress(env.paths, &backup.id).await;
+    remove_or_warn(&env.paths.backup_progress_file(&backup.id));
     let Some(found) = found? else {
         return Ok((Vec::new(), BackupRunReport::Checked(None)));
     };
@@ -486,7 +527,7 @@ async fn run_check(
     env: &BackupRunEnv<'_>,
     round: &Round<'_>,
     repository: &Repository,
-    key: &crate::backup::key::Key,
+    key: &Key,
     kind: CheckKind,
 ) -> Result<Option<CheckRun>, BackupRunError> {
     let backup_id = &round.backup.id;
@@ -532,12 +573,7 @@ async fn run_check(
 
 /// `restic unlock`, which removes only locks of runs that are gone. When it
 /// fails the command is tried again anyway: the lock may be gone already.
-async fn unlock(
-    env: &BackupRunEnv<'_>,
-    repository: &Repository,
-    key: &crate::backup::key::Key,
-    log: &mut RunLog,
-) {
+async fn unlock(env: &BackupRunEnv<'_>, repository: &Repository, key: &Key, log: &mut RunLog) {
     if let Err(err) = env.restic.unlock(repository, key).await {
         log.line(&format!("restic unlock failed: {err}")).await;
     }
@@ -554,46 +590,56 @@ fn key_unavailable(
     )
 }
 
+/// How `restic forget --prune` ended.
+enum Forgotten {
+    Done,
+    Failed(String),
+    /// A person cancelled or the machine is shutting down: neither counts
+    /// against the retention.
+    Interrupted,
+}
+
 /// `restic forget --prune`. A failure here never changes the backup's own
 /// result: it is counted by [`apply_retention_result`].
 async fn forget(
     env: &BackupRunEnv<'_>,
     round: &Round<'_>,
     repository: &Repository,
-    key: &crate::backup::key::Key,
+    key: &Key,
     log: &mut RunLog,
-) -> Result<(), String> {
+) -> Forgotten {
     let args = forget_args(round.behavior.keep);
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let mut result = env
-        .restic
-        .run(repository, key, &args, env.forward_signals)
-        .await;
-    if matches!(result, Err(ResticError::Locked { .. })) {
+    let run = || {
+        env.restic
+            .run_raw(repository, key, &args, env.forward_signals)
+    };
+    let mut result = run().await;
+    if matches!(&result, Ok(raw) if raw.code == Some(EXIT_LOCKED)) {
         unlock(env, repository, key, log).await;
-        result = env
-            .restic
-            .run(repository, key, &args, env.forward_signals)
-            .await;
+        result = run().await;
     }
-    match result {
-        Ok(output) => {
-            for line in String::from_utf8_lossy(&output.stdout).lines() {
-                log.line(line).await;
+    let message = match result {
+        Ok(raw) => match raw.code {
+            Some(0) => {
+                for line in String::from_utf8_lossy(&raw.stdout).lines() {
+                    log.line(line).await;
+                }
+                return Forgotten::Done;
             }
-            Ok(())
-        }
-        Err(err) => {
-            let message = match err {
+            Some(EXIT_INTERRUPTED) | None => return Forgotten::Interrupted,
+            code => match classify_failure(code, &raw.stderr) {
                 ResticError::Locked { .. } => LOCKED_DETAIL.to_owned(),
                 other => other.to_string(),
-            };
-            log.line(&retention_message(&message)).await;
-            Err(message)
-        }
-    }
+            },
+        },
+        Err(err) => err.to_string(),
+    };
+    log.line(&retention_message(&message)).await;
+    Forgotten::Failed(message)
 }
 
+#[derive(Default)]
 struct Streamed {
     exit_code: Option<i32>,
     summary: Option<BackupSummary>,
@@ -606,7 +652,7 @@ async fn stream_backup_unlocking(
     env: &BackupRunEnv<'_>,
     backup_id: &str,
     repository: &Repository,
-    key: &crate::backup::key::Key,
+    key: &Key,
     args: &[&str],
     log: &mut RunLog,
 ) -> Result<Streamed, BackupRunError> {
@@ -624,7 +670,7 @@ async fn stream_backup(
     env: &BackupRunEnv<'_>,
     backup_id: &str,
     repository: &Repository,
-    key: &crate::backup::key::Key,
+    key: &Key,
     args: &[&str],
     log: &mut RunLog,
 ) -> Result<Streamed, BackupRunError> {
@@ -659,6 +705,7 @@ async fn stream_backup(
                     }
                     _ => log.line(&line).await,
                 },
+                Err(err) if err.kind() == std::io::ErrorKind::InvalidData => {}
                 _ => stdout = None,
             },
             line = next_line(&mut stderr), if stderr.is_some() => match line {
@@ -666,6 +713,7 @@ async fn stream_backup(
                     log.line(&line).await;
                     stderr_lines.push(line);
                 }
+                Err(err) if err.kind() == std::io::ErrorKind::InvalidData => {}
                 _ => stderr = None,
             },
             () = wait_interrupt(&mut interrupts) => forward_interrupt(&child, "restic"),
@@ -693,13 +741,6 @@ async fn next_line<R: AsyncBufRead + Unpin>(
     }
 }
 
-async fn wait_interrupt(interrupts: &mut Option<Interrupts>) {
-    match interrupts {
-        Some(interrupts) => interrupts.next().await,
-        None => std::future::pending().await,
-    }
-}
-
 struct Throttle {
     every: Duration,
     last: Option<Instant>,
@@ -722,18 +763,7 @@ impl Throttle {
 }
 
 async fn write_progress(paths: &Paths, backup_id: &str, progress: &BackupProgressFile) {
-    if let Err(err) = write_json(paths.backup_progress_file(backup_id), progress).await {
-        log::warn!("{err}");
-    }
-}
-
-async fn remove_progress(paths: &Paths, backup_id: &str) {
-    let file = paths.backup_progress_file(backup_id);
-    match tokio::fs::remove_file(&file).await {
-        Ok(()) => {}
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => log::warn!("cannot delete {}: {err}", file.display()),
-    }
+    write_json_or_warn(paths.backup_progress_file(backup_id), progress).await;
 }
 
 /// The first line of every run log: which step wrote it.

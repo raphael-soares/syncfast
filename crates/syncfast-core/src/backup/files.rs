@@ -109,6 +109,9 @@ pub fn parse_listing(stdout: &[u8], dir: &str) -> Result<Listing, ResticError> {
 /// The folder or file a backup root is, by its own line of `ls`.
 fn root_of(stdout: &[u8], root: &str) -> Result<Option<NodeView>, ResticError> {
     for line in String::from_utf8_lossy(stdout).lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
         let line: Line = serde_json::from_str(line).map_err(|_| ResticError::BadOutput("ls"))?;
         if line.struct_type.as_deref() == Some("node") && line.path == root {
             return Ok(Some(NodeView {
@@ -316,5 +319,15 @@ mod tests {
     #[test]
     fn a_root_that_is_not_in_the_output_gives_nothing() {
         assert_eq!(root_of(&fixture("ls_dir.out"), "/elsewhere").unwrap(), None);
+    }
+
+    #[test]
+    fn blank_lines_in_the_output_are_skipped_when_looking_for_the_root() {
+        let mut out = b"\n\n".to_vec();
+        out.extend(fixture("ls_dir.out"));
+
+        let root = root_of(&out, "/tmp/fixture/src/docs").unwrap().unwrap();
+
+        assert_eq!(root.path, "/tmp/fixture/src/docs");
     }
 }

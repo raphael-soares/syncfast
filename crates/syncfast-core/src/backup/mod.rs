@@ -35,5 +35,3 @@ pub const PRUNE_FAILURES_BEFORE_GATE: u32 = 3;
 pub const STALE_MIN: Duration = Duration::from_hours(48);
 /// A backup is stale after this many of its own intervals without a snapshot.
 pub const STALE_FACTOR: u32 = 2;
-/// How long a backup that failed waits before it tries again.
-pub const RETRY_AFTER: Duration = Duration::from_mins(15);

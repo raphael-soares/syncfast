@@ -11,10 +11,9 @@ use serde::{Deserialize, Serialize};
 use super::config::BackupConfig;
 use super::destination::Destination;
 use super::key::{Key, KeyError};
-use crate::restic::{Repository, Restic, ResticError, classify_failure};
+use crate::restic::{EXIT_UNREADABLE, Repository, Restic, ResticError, classify_failure};
 
 const TEST_KEY: &str = "SYNCFASTFILTERTESTSYNCFASTFILTERTESTSYNCFASTFILTERTE";
-const EXIT_PARTIAL: i32 = 3;
 static NEXT_RUN: AtomicU64 = AtomicU64::new(0);
 
 /// What the rules leave out of a backup. The totals are what the folders
@@ -124,7 +123,7 @@ async fn dry_run(
     let child = restic.spawn(repository, key, args).await?;
     let output = child.wait_with_output().await.map_err(ResticError::Spawn)?;
     match output.status.code() {
-        Some(0 | EXIT_PARTIAL) => {}
+        Some(0 | EXIT_UNREADABLE) => {}
         code => return Err(classify_failure(code, &output.stderr).into()),
     }
     parse_summary(&output.stdout).ok_or_else(|| ResticError::BadOutput("backup summary").into())

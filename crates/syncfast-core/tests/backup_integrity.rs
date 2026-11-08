@@ -16,9 +16,10 @@ use syncfast_core::backup::check::CheckOutcome;
 use syncfast_core::backup::classify::BackupOutcome;
 use syncfast_core::backup::config::{BackupConfig, KeepSetting};
 use syncfast_core::backup::destination::{Destination, create_repository};
-use syncfast_core::backup::effects::LOCKED_DETAIL;
-use syncfast_core::backup::key::Key;
-use syncfast_core::backup::keystore::{KeyStore, MemoryKeyStore};
+use syncfast_core::backup::effects::{LOCKED_DETAIL, key_created_by_agent};
+use syncfast_core::backup::key::{Key, KeyError};
+use syncfast_core::backup::keystore::{KeyBackend, KeyStore, MemoryKeyStore};
+use syncfast_core::backup::lifecycle::mark_key_saved;
 use syncfast_core::backup::run::{BackupRunEnv, BackupRunError, BackupRunReport, run_backup};
 use syncfast_core::backup::run_decision::{BackupRequest, SkipReason, save_request};
 use syncfast_core::backup::snapshots::SnapshotView;
@@ -227,11 +228,19 @@ impl Rig {
     }
 
     async fn try_run(&self, id: &str) -> Result<BackupRunReport, BackupRunError> {
+        self.try_run_with(id, &self.keys).await
+    }
+
+    async fn try_run_with(
+        &self,
+        id: &str,
+        keys: &dyn KeyStore,
+    ) -> Result<BackupRunReport, BackupRunError> {
         let clock = || Zoned::now().checked_add(SignedDuration::ZERO).unwrap();
         let env = BackupRunEnv {
             paths: &self.paths,
             restic: &self.restic,
-            keys: &self.keys,
+            keys,
             network: self,
             notifier: self,
             clock: &clock,
@@ -329,6 +338,10 @@ impl Rig {
                     format!("cat '{}' >&2; exit 11", locked.display())
                 }
                 Rule::FailAlways => "echo 'Fatal: simulated failure' >&2; exit 1".to_owned(),
+                Rule::Interrupted => "exit 130".to_owned(),
+                Rule::NotUtf8OnBothStreams => {
+                    "printf 'bad \\377\\n'; printf 'bad \\377\\n' >&2".to_owned()
+                }
             };
             writeln!(arms, "    {subcommand}) {body} ;;").unwrap();
         }
@@ -345,6 +358,12 @@ impl Rig {
         let rclone = self.restic.rclone().clone();
         self.restic = Restic::new(script, rclone, &self.paths);
         calls
+    }
+
+    /// A restic that is not there: every start fails.
+    fn use_missing_restic(&mut self) {
+        let rclone = self.restic.rclone().clone();
+        self.restic = Restic::new(self.dir("no-such-restic"), rclone, &self.paths);
     }
 }
 
@@ -366,6 +385,8 @@ enum Rule {
     LockedOnce,
     LockedAlways,
     FailAlways,
+    Interrupted,
+    NotUtf8OnBothStreams,
 }
 
 struct StopOnDrop(std::sync::Arc<AtomicBool>);
@@ -398,6 +419,73 @@ fn is_checked(report: &BackupRunReport) -> Option<&CheckOutcome> {
         BackupRunReport::Checked(Some(outcome)) => Some(outcome),
         _ => None,
     }
+}
+
+/// A key store that answers like the person clicked `I Saved the Key` while
+/// the round was reading the key.
+struct SavesTheKeyWhenRead {
+    inner: MemoryKeyStore,
+    paths: Paths,
+}
+
+impl KeyStore for SavesTheKeyWhenRead {
+    fn get<'a>(&'a self, backup_id: &'a str) -> BoxFuture<'a, Result<Option<Key>, KeyError>> {
+        Box::pin(async move {
+            mark_key_saved(&self.paths, backup_id).await.unwrap();
+            self.inner.get(backup_id).await
+        })
+    }
+
+    fn put<'a>(
+        &'a self,
+        backup_id: &'a str,
+        backup_name: &'a str,
+        key: &'a Key,
+    ) -> BoxFuture<'a, Result<(), KeyError>> {
+        self.inner.put(backup_id, backup_name, key)
+    }
+
+    fn delete<'a>(&'a self, backup_id: &'a str) -> BoxFuture<'a, Result<(), KeyError>> {
+        self.inner.delete(backup_id)
+    }
+
+    fn backend(&self) -> Option<KeyBackend> {
+        self.inner.backend()
+    }
+
+    fn probe(&self) -> BoxFuture<'_, Result<KeyBackend, KeyError>> {
+        self.inner.probe()
+    }
+}
+
+async fn fix_the_config(rig: &Rig, backup: &BackupConfig) {
+    Config::edit(&rig.paths, |config| {
+        config.remove_backup(&backup.id);
+        config.add_backup(backup).unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// Both flags a skipped round leaves behind, long enough ago to be stale.
+async fn leave_unreachable_flags(rig: &Rig) {
+    let mut state = rig.state("docs").await;
+    state.offline = true;
+    state.destination_unavailable = true;
+    state.unavailable_since = Some(
+        Zoned::now()
+            .checked_sub(SignedDuration::from_hours(1))
+            .unwrap()
+            .timestamp(),
+    );
+    state.save(&rig.paths, "docs").await.unwrap();
+}
+
+async fn assert_reachable(rig: &Rig) {
+    let state = rig.state("docs").await;
+    assert!(!state.offline, "{state:?}");
+    assert!(!state.destination_unavailable, "{state:?}");
+    assert_eq!(state.unavailable_since, None);
 }
 
 deadline_tests! {
@@ -701,6 +789,20 @@ async fn a_check_that_stays_locked_is_locked_and_asks_nothing_more() {
     assert!(rig.state("docs").await.last_check.is_none());
 }
 
+async fn output_that_is_not_utf8_does_not_end_the_backup_or_hide_its_summary() {
+    let Some(mut rig) = Rig::new().await else { return };
+    let source = rig.folder("docs", &[("a.txt", b"hello")]);
+    let b = backup("docs", &[&source], rig.dest("repo"));
+    let key = rig.add(&b).await;
+    rig.use_scripted_restic(&[("backup", Rule::NotUtf8OnBothStreams)]);
+
+    let report = rig.run("docs").await;
+
+    assert_eq!(report, BackupRunReport::Ran(BackupOutcome::Ok));
+    assert_eq!(rig.snapshots(&b, &key).await.len(), 1);
+    assert!(rig.state("docs").await.last_success.is_some());
+}
+
 async fn a_backup_that_meets_a_lock_unlocks_without_remove_all_and_runs_again() {
     let Some(mut rig) = Rig::new().await else { return };
     let source = rig.folder("docs", &[("a.txt", b"hello")]);
@@ -818,5 +920,174 @@ async fn a_config_error_keeps_the_damaged_gate_after_the_config_is_fixed() {
 
     assert_eq!(rig.run("docs").await, BackupRunReport::Skipped(SkipReason::Gated));
     assert_eq!(rig.state("docs").await.gate.unwrap().fault, Some(Fault::RepoDamaged));
+}
+
+async fn a_request_survives_a_round_that_could_not_read_the_config() {
+    let Some(rig) = Rig::new().await else { return };
+    let source = rig.folder("docs", &[("a.txt", b"hello")]);
+    let mut b = backup("docs", &[&source], rig.dest("repo"));
+    b.every = "sometimes".to_owned();
+    rig.add(&b).await;
+    save_request(&rig.paths, "docs", BackupRequest::Check(CheckKind::Full))
+        .await
+        .unwrap();
+
+    assert_eq!(rig.run("docs").await, BackupRunReport::ConfigInvalid);
+    b.every = "daily".to_owned();
+    fix_the_config(&rig, &b).await;
+    let report = rig.run("docs").await;
+
+    assert!(is_checked(&report).is_some(), "{report:?}");
+}
+
+async fn a_request_waits_for_a_destination_that_is_not_there_yet() {
+    let Some(rig) = Rig::new().await else { return };
+    let source = rig.folder("docs", &[("a.txt", b"hello")]);
+    let b = backup("docs", &[&source], rig.dest("repo"));
+    rig.add(&b).await;
+    let away = rig.dir("repo-away");
+    fs::rename(rig.dir("repo"), &away).unwrap();
+    save_request(&rig.paths, "docs", BackupRequest::Check(CheckKind::Full))
+        .await
+        .unwrap();
+
+    let first = rig.run("docs").await;
+    fs::rename(&away, rig.dir("repo")).unwrap();
+    let second = rig.run("docs").await;
+
+    assert_eq!(first, BackupRunReport::Skipped(SkipReason::DestinationUnavailable));
+    assert!(is_checked(&second).is_some(), "{second:?}");
+}
+
+async fn a_missing_destination_leaves_the_damaged_gate_alone_however_long_it_lasts() {
+    let Some(rig) = Rig::new().await else { return };
+    let source = rig.folder("docs", &[("a.txt", b"hello")]);
+    let b = backup("docs", &[&source], rig.dest("repo"));
+    rig.add(&b).await;
+    mark_damaged(&rig).await;
+    let mut state = rig.state("docs").await;
+    state.unavailable_since = Some(
+        Zoned::now()
+            .checked_sub(SignedDuration::from_hours(100))
+            .unwrap()
+            .timestamp(),
+    );
+    state.save(&rig.paths, "docs").await.unwrap();
+    fs::rename(rig.dir("repo"), rig.dir("repo-away")).unwrap();
+
+    let report = rig.check("docs", CheckKind::Full).await;
+
+    assert_eq!(report, BackupRunReport::Skipped(SkipReason::DestinationUnavailable));
+    let state = rig.state("docs").await;
+    assert_eq!(state.gate.unwrap().fault, Some(Fault::RepoDamaged));
+    assert!(state.destination_unavailable);
+}
+
+async fn a_check_that_runs_clears_offline_and_the_missing_destination() {
+    let Some(rig) = Rig::new().await else { return };
+    let source = rig.folder("docs", &[("a.txt", b"hello")]);
+    let b = backup("docs", &[&source], rig.dest("repo"));
+    rig.add(&b).await;
+    leave_unreachable_flags(&rig).await;
+
+    let report = rig.check("docs", CheckKind::Full).await;
+
+    assert!(is_checked(&report).is_some(), "{report:?}");
+    assert_reachable(&rig).await;
+}
+
+async fn a_source_that_is_gone_clears_offline_and_the_missing_destination() {
+    let Some(rig) = Rig::new().await else { return };
+    let source = rig.folder("docs", &[("a.txt", b"hello")]);
+    let b = backup("docs", &[&source], rig.dest("repo"));
+    rig.add(&b).await;
+    leave_unreachable_flags(&rig).await;
+    fs::remove_dir_all(&source).unwrap();
+
+    let report = rig.run("docs").await;
+
+    assert!(matches!(report, BackupRunReport::GateSet(_)), "{report:?}");
+    assert_reachable(&rig).await;
+}
+
+async fn a_missing_key_clears_offline_and_the_missing_destination() {
+    let Some(rig) = Rig::new().await else { return };
+    let source = rig.folder("docs", &[("a.txt", b"hello")]);
+    let b = backup("docs", &[&source], rig.dest("repo"));
+    rig.add(&b).await;
+    leave_unreachable_flags(&rig).await;
+    rig.keys.delete("docs").await.unwrap();
+
+    assert_eq!(rig.run("docs").await, BackupRunReport::KeyUnavailable);
+    assert_reachable(&rig).await;
+}
+
+async fn a_backup_that_cannot_start_restic_is_a_failed_round_not_an_error() {
+    let Some(mut rig) = Rig::new().await else { return };
+    let source = rig.folder("docs", &[("a.txt", b"hello")]);
+    let b = backup("docs", &[&source], rig.dest("repo"));
+    rig.add(&b).await;
+    rig.use_missing_restic();
+
+    let report = rig.run("docs").await;
+
+    assert!(
+        matches!(report, BackupRunReport::Ran(BackupOutcome::Transient { .. })),
+        "{report:?}"
+    );
+    let state = rig.state("docs").await;
+    assert_eq!(state.consecutive_failures, 1);
+    assert!(state.last_attempt.is_some());
+    assert!(!rig.paths.backup_progress_file("docs").exists());
+}
+
+async fn a_cleanup_that_is_interrupted_is_neither_a_failure_nor_followed_by_a_check() {
+    let Some(mut rig) = Rig::new().await else { return };
+    let source = rig.folder("docs", &[("a.txt", b"hello")]);
+    let b = backup("docs", &[&source], rig.dest("repo"));
+    rig.add(&b).await;
+    assert_eq!(rig.run("docs").await, BackupRunReport::Ran(BackupOutcome::Ok));
+    let mut state = rig.state("docs").await;
+    let past = Zoned::now()
+        .checked_sub(SignedDuration::from_hours(1))
+        .unwrap()
+        .timestamp();
+    state.next_check = Some(past);
+    state.save(&rig.paths, "docs").await.unwrap();
+    fs::write(source.join("a.txt"), "changed").unwrap();
+    let calls = rig.use_scripted_restic(&[("forget", Rule::Interrupted)]);
+
+    let report = rig.run("docs").await;
+
+    assert_eq!(report, BackupRunReport::Ran(BackupOutcome::Ok));
+    assert_eq!(calls_with(&calls, "forget").len(), 1);
+    assert_eq!(calls_with(&calls, "check"), Vec::<String>::new());
+    let state = rig.state("docs").await;
+    assert_eq!(state.prune_failures, 0);
+    assert_eq!(state.prune_error, None);
+    assert_eq!(state.next_check, Some(past));
+    assert!(state.gate.is_none());
+}
+
+async fn the_key_saved_while_a_round_runs_stays_saved() {
+    let Some(rig) = Rig::new().await else { return };
+    let source = rig.folder("docs", &[("a.txt", b"hello")]);
+    let b = backup("docs", &[&source], rig.dest("repo"));
+    let key = rig.add(&b).await;
+    let mut state = rig.state("docs").await;
+    key_created_by_agent(&mut state);
+    state.save(&rig.paths, "docs").await.unwrap();
+    let keys = SavesTheKeyWhenRead {
+        inner: MemoryKeyStore::default(),
+        paths: rig.paths.clone(),
+    };
+    keys.inner.put("docs", &b.name, &key).await.unwrap();
+
+    let report = rig.try_run_with("docs", &keys).await.unwrap();
+
+    assert_eq!(report, BackupRunReport::Ran(BackupOutcome::Ok));
+    let state = rig.state("docs").await;
+    assert!(!state.key_unsaved);
+    assert!(!state.notified.iter().any(|key| key == "key_unsaved"));
 }
 }

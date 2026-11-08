@@ -313,6 +313,12 @@ pub(crate) async fn write_json(path: PathBuf, value: &impl Serialize) -> Result<
         .map_err(|source| StateError::Write { path, source })
 }
 
+pub(crate) async fn write_json_or_warn(path: PathBuf, value: &impl Serialize) {
+    if let Err(err) = write_json(path, value).await {
+        log::warn!("{err}");
+    }
+}
+
 /// True while a round of `pair_id` holds its lock. Never blocks.
 #[must_use]
 pub fn is_running(paths: &Paths, pair_id: &str) -> bool {
@@ -409,7 +415,7 @@ pub async fn prune_runs(paths: &Paths, pair_id: &str) -> Result<(), StateError> 
     logs.sort();
     let excess = logs.len().saturating_sub(RUNS_KEPT);
     for name in logs.drain(..excess) {
-        remove_or_warn(&dir.join(name)).await;
+        remove_or_warn(&dir.join(name));
     }
     let kept: Vec<&str> = logs
         .iter()
@@ -421,7 +427,7 @@ pub async fn prune_runs(paths: &Paths, pair_id: &str) -> Result<(), StateError> 
             .filter(|text| text.ends_with(".changes"))
             .and_then(|text| text.split('.').next());
         if stem.is_some_and(|stem| !kept.contains(&stem)) {
-            remove_or_warn(&dir.join(name)).await;
+            remove_or_warn(&dir.join(name));
         }
     }
     prune_previews(&paths.pair_state_dir(pair_id)).await;
@@ -469,13 +475,13 @@ async fn prune_previews(dir: &Path) {
             .ok()
             .and_then(|modified| modified.elapsed().ok());
         if age.is_some_and(|age| age > PREVIEWS_KEPT) {
-            remove_or_warn(&path).await;
+            remove_or_warn(&path);
         }
     }
 }
 
-async fn remove_or_warn(path: &Path) {
-    if let Err(err) = tokio::fs::remove_file(path).await
+pub(crate) fn remove_or_warn(path: &Path) {
+    if let Err(err) = std::fs::remove_file(path)
         && err.kind() != std::io::ErrorKind::NotFound
     {
         log::warn!("cannot delete {}: {err}", path.display());

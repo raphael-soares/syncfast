@@ -14,7 +14,7 @@ use jiff::Timestamp;
 use tokio::process::Command;
 
 use crate::backup::config::{BackupConfig, BackupError, BackupValidation, Every};
-use crate::backup::effects::is_damaged_gate;
+use crate::backup::effects::{clear_gate, is_damaged_gate};
 use crate::backup::state::BackupState;
 use crate::behavior::Behavior;
 use crate::config::{Config, Pair, PairError, RESERVED_ID, valid_id};
@@ -952,10 +952,7 @@ impl Applier<'_, '_> {
         {
             return;
         }
-        state.gate = None;
-        state
-            .notified
-            .retain(|key| *key != GateKind::ConfigError.notified_key());
+        clear_gate(&mut state);
         if let Err(err) = state.save(paths, id).await {
             self.fail(Some(id), "write the backup's state", err.to_string());
         }

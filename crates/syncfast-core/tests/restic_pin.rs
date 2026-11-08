@@ -9,7 +9,10 @@ const MANIFEST: &str = concat!(
     "/../../packaging/flatpak/io.github.raphael_soares.syncfast.yml"
 );
 
-const WORKFLOW: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../.github/workflows/ci.yml");
+const WORKFLOW: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../.github/workflows/ci.yml"
+);
 
 fn workflow_value(key: &str) -> String {
     let text = std::fs::read_to_string(WORKFLOW).unwrap();
