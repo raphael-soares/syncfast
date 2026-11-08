@@ -3,6 +3,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::fmt::Write as _;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -29,7 +30,7 @@ use syncfast_core::notify::{Notice, Notifier};
 use syncfast_core::paths::Paths;
 use syncfast_core::rclone::{Rclone, RcloneError};
 use syncfast_core::restic::{Repository, Restic, ResticError};
-use syncfast_core::state::GateKind;
+use syncfast_core::state::{Gate, GateKind};
 
 const DEADLINE: Duration = Duration::from_secs(90);
 
@@ -306,6 +307,73 @@ impl Rig {
         self.restic = Restic::new(script, rclone, &self.paths);
         calls
     }
+
+    /// Runs restic through a script that logs every call to `calls.log` and
+    /// answers the listed subcommands with `rule` instead of running them.
+    fn use_scripted_restic(&mut self, rules: &[(&str, Rule)]) -> PathBuf {
+        let real = syncfast_core::restic::locate_binary().expect("restic is installed");
+        let calls = self.dir("calls.log");
+        let script = self.dir("restic-scripted");
+        let locked = self.dir("locked.err");
+        fs::write(&locked, include_str!("fixtures/restic-0.19.1/locked.err")).unwrap();
+        let mut arms = String::new();
+        for (subcommand, rule) in rules {
+            let once = self.dir(&format!("answered-{subcommand}"));
+            let body = match rule {
+                Rule::LockedOnce => format!(
+                    "if [ ! -e '{once}' ]; then touch '{once}'; cat '{locked}' >&2; exit 11; fi",
+                    once = once.display(),
+                    locked = locked.display()
+                ),
+                Rule::LockedAlways => {
+                    format!("cat '{}' >&2; exit 11", locked.display())
+                }
+                Rule::FailAlways => "echo 'Fatal: simulated failure' >&2; exit 1".to_owned(),
+            };
+            writeln!(arms, "    {subcommand}) {body} ;;").unwrap();
+        }
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\necho \"$*\" >> '{}'\nfor arg in \"$@\"; do\n  case \"$arg\" in\n{arms}  esac\ndone\nexec '{}' \"$@\"\n",
+                calls.display(),
+                real.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let rclone = self.restic.rclone().clone();
+        self.restic = Restic::new(script, rclone, &self.paths);
+        calls
+    }
+}
+
+async fn mark_damaged(rig: &Rig) {
+    let mut state = rig.state("docs").await;
+    state.gate = Some(Gate {
+        kind: GateKind::NeedsAttention,
+        since: Zoned::now().timestamp(),
+        detail: "The check found 2 damaged files in the backup. Backups and cleanup are paused."
+            .to_owned(),
+        fault: Some(Fault::RepoDamaged),
+        auto_checked: None,
+    });
+    state.save(&rig.paths, "docs").await.unwrap();
+}
+
+#[derive(Clone, Copy)]
+enum Rule {
+    LockedOnce,
+    LockedAlways,
+    FailAlways,
+}
+
+struct StopOnDrop(std::sync::Arc<AtomicBool>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
 }
 
 fn calls_with(log: &Path, word: &str) -> Vec<String> {
@@ -557,6 +625,7 @@ async fn the_key_is_in_no_file_after_checks_and_requests() {
     .map(String::into_bytes)
     .collect();
     let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let _stops_the_watcher = StopOnDrop(stop.clone());
     let watcher = {
         let (stop, needles) = (stop.clone(), needles.clone());
         tokio::task::spawn_blocking(move || {
@@ -599,5 +668,155 @@ async fn the_key_is_in_no_file_after_checks_and_requests() {
     }
     let said = format!("{full:?} {backup_round:?} {sample:?} {:?}", rig.notices());
     assert!(needles.iter().all(|needle| !said.contains(&String::from_utf8_lossy(needle).into_owned())));
+}
+
+async fn a_check_that_meets_a_lock_unlocks_without_remove_all_and_runs_again() {
+    let Some(mut rig) = Rig::new().await else { return };
+    let source = rig.folder("docs", &[("a.txt", b"hello")]);
+    let b = backup("docs", &[&source], rig.dest("repo"));
+    rig.add(&b).await;
+    let calls = rig.use_scripted_restic(&[("check", Rule::LockedOnce)]);
+
+    let report = rig.check("docs", CheckKind::Quick).await;
+
+    assert_eq!(is_checked(&report), Some(&CheckOutcome::Ok), "{report:?}");
+    let unlocks = calls_with(&calls, "unlock");
+    assert_eq!(unlocks.len(), 1, "{unlocks:?}");
+    assert!(!unlocks[0].contains("--remove-all"), "{}", unlocks[0]);
+    assert_eq!(calls_with(&calls, "check").len(), 2);
+}
+
+async fn a_check_that_stays_locked_is_locked_and_asks_nothing_more() {
+    let Some(mut rig) = Rig::new().await else { return };
+    let source = rig.folder("docs", &[("a.txt", b"hello")]);
+    let b = backup("docs", &[&source], rig.dest("repo"));
+    rig.add(&b).await;
+    let calls = rig.use_scripted_restic(&[("check", Rule::LockedAlways)]);
+
+    let report = rig.check("docs", CheckKind::Quick).await;
+
+    assert_eq!(is_checked(&report), Some(&CheckOutcome::Locked), "{report:?}");
+    assert_eq!(calls_with(&calls, "unlock").len(), 1);
+    assert_eq!(calls_with(&calls, "check").len(), 2);
+    assert!(rig.state("docs").await.last_check.is_none());
+}
+
+async fn a_backup_that_meets_a_lock_unlocks_without_remove_all_and_runs_again() {
+    let Some(mut rig) = Rig::new().await else { return };
+    let source = rig.folder("docs", &[("a.txt", b"hello")]);
+    let b = backup("docs", &[&source], rig.dest("repo"));
+    let key = rig.add(&b).await;
+    let calls = rig.use_scripted_restic(&[("backup", Rule::LockedOnce)]);
+
+    let report = rig.run("docs").await;
+
+    assert_eq!(report, BackupRunReport::Ran(BackupOutcome::Ok));
+    let unlocks = calls_with(&calls, "unlock");
+    assert_eq!(unlocks.len(), 1, "{unlocks:?}");
+    assert!(!unlocks[0].contains("--remove-all"), "{}", unlocks[0]);
+    assert_eq!(calls_with(&calls, "backup").len(), 2);
+    assert_eq!(rig.snapshots(&b, &key).await.len(), 1);
+}
+
+async fn a_backup_that_stays_locked_is_locked_and_runs_no_check() {
+    let Some(mut rig) = Rig::new().await else { return };
+    let source = rig.folder("docs", &[("a.txt", b"hello")]);
+    let b = backup("docs", &[&source], rig.dest("repo"));
+    rig.add(&b).await;
+    let calls = rig.use_scripted_restic(&[("backup", Rule::LockedAlways)]);
+
+    let report = rig.run("docs").await;
+
+    assert_eq!(report, BackupRunReport::Ran(BackupOutcome::Locked));
+    assert_eq!(calls_with(&calls, "unlock").len(), 1);
+    assert_eq!(calls_with(&calls, "backup").len(), 2);
+    assert!(calls_with(&calls, "check").is_empty());
+}
+
+async fn a_monthly_check_that_stays_locked_leaves_the_backup_ok_and_the_check_due() {
+    let Some(mut rig) = Rig::new().await else { return };
+    let source = rig.folder("docs", &[("a.txt", b"hello")]);
+    let b = backup("docs", &[&source], rig.dest("repo"));
+    rig.add(&b).await;
+    assert_eq!(rig.run("docs").await, BackupRunReport::Ran(BackupOutcome::Ok));
+    let mut state = rig.state("docs").await;
+    let past = Zoned::now()
+        .checked_sub(SignedDuration::from_hours(1))
+        .unwrap()
+        .timestamp();
+    state.next_check = Some(past);
+    state.save(&rig.paths, "docs").await.unwrap();
+    fs::write(source.join("a.txt"), "changed").unwrap();
+    let calls = rig.use_scripted_restic(&[("check", Rule::LockedAlways)]);
+
+    let report = rig.run("docs").await;
+
+    assert_eq!(report, BackupRunReport::Ran(BackupOutcome::Ok));
+    assert_eq!(calls_with(&calls, "check").len(), 2);
+    assert_eq!(calls_with(&calls, "unlock").len(), 1);
+    let state = rig.state("docs").await;
+    assert_eq!(state.next_check, Some(past));
+    assert_eq!(state.consecutive_failures, 0);
+    assert!(state.gate.is_none());
+}
+
+async fn a_post_failure_check_that_stays_locked_does_not_count_a_second_failure() {
+    let Some(mut rig) = Rig::new().await else { return };
+    let source = rig.folder("docs", &[("a.txt", b"hello")]);
+    let b = backup("docs", &[&source], rig.dest("repo"));
+    rig.add(&b).await;
+    let calls = rig.use_scripted_restic(&[
+        ("backup", Rule::FailAlways),
+        ("check", Rule::LockedAlways),
+    ]);
+
+    let report = rig.run("docs").await;
+
+    assert!(
+        matches!(report, BackupRunReport::Ran(BackupOutcome::Transient { .. })),
+        "{report:?}"
+    );
+    assert_eq!(calls_with(&calls, "check").len(), 2);
+    assert_eq!(calls_with(&calls, "unlock").len(), 1);
+    assert_eq!(rig.state("docs").await.consecutive_failures, 1);
+}
+
+async fn a_check_again_without_the_key_keeps_the_damaged_gate_and_the_backup_held() {
+    let Some(rig) = Rig::new().await else { return };
+    let source = rig.folder("docs", &[("a.txt", b"hello")]);
+    let b = backup("docs", &[&source], rig.dest("repo"));
+    rig.add(&b).await;
+    mark_damaged(&rig).await;
+    rig.keys.delete("docs").await.unwrap();
+
+    let again = rig.check("docs", CheckKind::Full).await;
+
+    assert_eq!(again, BackupRunReport::KeyUnavailable);
+    let gate = rig.state("docs").await.gate.unwrap();
+    assert_eq!(gate.fault, Some(Fault::RepoDamaged));
+    assert_eq!(rig.run("docs").await, BackupRunReport::Skipped(SkipReason::Gated));
+    assert_eq!(rig.state("docs").await.gate.unwrap().fault, Some(Fault::RepoDamaged));
+}
+
+async fn a_config_error_keeps_the_damaged_gate_after_the_config_is_fixed() {
+    let Some(rig) = Rig::new().await else { return };
+    let source = rig.folder("docs", &[("a.txt", b"hello")]);
+    let mut b = backup("docs", &[&source], rig.dest("repo"));
+    b.every = "sometimes".to_owned();
+    rig.add(&b).await;
+    mark_damaged(&rig).await;
+
+    assert_eq!(rig.run("docs").await, BackupRunReport::ConfigInvalid);
+    assert_eq!(rig.state("docs").await.gate.unwrap().fault, Some(Fault::RepoDamaged));
+    b.every = "daily".to_owned();
+    Config::edit(&rig.paths, |config| {
+        config.remove_backup("docs");
+        config.add_backup(&b).unwrap();
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(rig.run("docs").await, BackupRunReport::Skipped(SkipReason::Gated));
+    assert_eq!(rig.state("docs").await.gate.unwrap().fault, Some(Fault::RepoDamaged));
 }
 }
