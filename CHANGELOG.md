@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.0](https://github.com/raphael-soares/syncfast/compare/v0.14.0...v0.15.0) (2026-11-08)
+
+
+### Features
+
+* check backup integrity and hold damaged repositories ([#90](https://github.com/raphael-soares/syncfast/issues/90)) ([9fd3e55](https://github.com/raphael-soares/syncfast/commit/9fd3e55fb1e54acf63d41f01b54a8620d5c0303a))
+
 ## [0.14.0](https://github.com/raphael-soares/syncfast/compare/v0.13.0...v0.14.0) (2026-11-08)
 
 
