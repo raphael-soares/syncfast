@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use egui::text::{LayoutJob, TextFormat};
 use egui::{Id, Rect, RichText, Sense, Ui, UiBuilder, Vec2};
 use syncfast_core::config::{filter_line_problem, remotes_overlap, unique_id};
-use syncfast_core::filters::PRESETS;
+use syncfast_core::filters::{DEFAULT_SYNC_PRESETS, preset_names};
 
 use super::filters::{self as tab, FilterDraft, FilterTest};
 use super::widgets::{
@@ -143,10 +143,7 @@ impl Default for AddSyncState {
             expanded: HashSet::new(),
             new_folder: None,
             local: String::new(),
-            presets: PRESETS
-                .iter()
-                .map(|preset| preset.name.to_owned())
-                .collect(),
+            presets: preset_names(&DEFAULT_SYNC_PRESETS),
             rules: String::new(),
             name: String::new(),
             name_edited: false,

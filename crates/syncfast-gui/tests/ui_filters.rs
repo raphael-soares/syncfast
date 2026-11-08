@@ -39,7 +39,8 @@ fn every_preset_shows_its_state_and_its_rules_or_what_it_leaves_out() {
     harness.get_by_label("Developer folders");
     harness.get_by_label("Git repositories");
     harness.get_by_label("Leaves out every folder with a .git inside, found on each sync");
-    assert_eq!(harness.query_all_by_label("Show rules").count(), 2);
+    harness.get_by_label("Build artifacts and caches");
+    assert_eq!(harness.query_all_by_label("Show rules").count(), 3);
     harness.get_by_label("Custom rules");
 }
 

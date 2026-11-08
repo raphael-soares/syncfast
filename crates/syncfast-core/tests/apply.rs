@@ -418,14 +418,14 @@ async fn global_config_error_changes_nothing_and_exits_with_two() {
     bed.write_config(&[("docs", true)]);
     let systemctl = FakeSystemctl::default();
     apply_with(&bed, SystemdMode::Off, &systemctl, &[]).await;
-    bed.write_config_text("version = 3\n");
+    bed.write_config_text("version = 4\n");
 
     let report = apply_with(&bed, SystemdMode::Off, &systemctl, &["docs"]).await;
 
     assert_eq!(report.exit_code(), 2);
     assert_eq!(
         report.config_error.as_deref(),
-        Some("unsupported config version 3")
+        Some("unsupported config version 4")
     );
     assert_eq!(
         names(&bed.paths.units_preview_dir()),

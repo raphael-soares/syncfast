@@ -22,8 +22,16 @@ pub struct Preset {
     pub rules: &'static [&'static str],
 }
 
+/// The presets a new sync starts with, and the ones a sync that stores no
+/// `presets` key has always had.
+pub const DEFAULT_SYNC_PRESETS: [&str; 3] = ["system_junk", "dev_dirs", GIT_REPOS];
+
+/// The presets a new backup starts with. `dev_dirs` leaves out `.git`, which
+/// would drop repository history from a backup.
+pub const DEFAULT_BACKUP_PRESETS: [&str; 2] = ["system_junk", "build_artifacts"];
+
 /// In render order.
-pub const PRESETS: [Preset; 3] = [
+pub const PRESETS: [Preset; 4] = [
     Preset {
         name: "system_junk",
         rules: &[
@@ -57,10 +65,33 @@ pub const PRESETS: [Preset; 3] = [
         ],
     },
     Preset {
+        name: "build_artifacts",
+        rules: &[
+            "- node_modules/",
+            "- target/",
+            "- .venv/",
+            "- venv/",
+            "- __pycache__/",
+            "- .gradle/",
+            "- .cache/",
+            "- .mypy_cache/",
+            "- .pytest_cache/",
+            "- .ruff_cache/",
+            "- .tox/",
+            "- .parcel-cache/",
+        ],
+    },
+    Preset {
         name: GIT_REPOS,
         rules: &[],
     },
 ];
+
+/// `names` as the owned strings a config and an operation carry.
+#[must_use]
+pub fn preset_names(names: &[&str]) -> Vec<String> {
+    names.iter().map(|name| (*name).to_owned()).collect()
+}
 
 #[must_use]
 pub fn preset(name: &str) -> Option<&'static Preset> {
@@ -385,6 +416,88 @@ mod tests {
 
     fn excluded(matcher: &DirMatcher, dir: &str) -> bool {
         matcher.is_excluded(Path::new(dir))
+    }
+
+    #[test]
+    fn the_default_preset_lists_are_the_ones_the_phases_shipped() {
+        assert_eq!(
+            DEFAULT_SYNC_PRESETS,
+            ["system_junk", "dev_dirs", "git_repos"]
+        );
+        assert_eq!(DEFAULT_BACKUP_PRESETS, ["system_junk", "build_artifacts"]);
+        for name in DEFAULT_SYNC_PRESETS.iter().chain(&DEFAULT_BACKUP_PRESETS) {
+            assert!(preset(name).is_some(), "{name}");
+        }
+    }
+
+    #[test]
+    fn presets_render_in_the_order_of_the_list() {
+        let names: Vec<_> = PRESETS.iter().map(|preset| preset.name).collect();
+
+        assert_eq!(
+            names,
+            ["system_junk", "dev_dirs", "build_artifacts", "git_repos"]
+        );
+    }
+
+    #[test]
+    fn build_artifacts_leaves_out_what_a_tool_recreates_and_never_git_or_build() {
+        let rules = preset("build_artifacts").unwrap().rules;
+
+        assert_eq!(
+            rules,
+            [
+                "- node_modules/",
+                "- target/",
+                "- .venv/",
+                "- venv/",
+                "- __pycache__/",
+                "- .gradle/",
+                "- .cache/",
+                "- .mypy_cache/",
+                "- .pytest_cache/",
+                "- .ruff_cache/",
+                "- .tox/",
+                "- .parcel-cache/",
+            ]
+        );
+        let matcher = DirMatcher::new(&render(&pair(&["build_artifacts"], &[]), &[]));
+        for dir in [
+            "app/node_modules",
+            "crate/target",
+            "py/.venv",
+            "py/venv",
+            "py/pkg/__pycache__",
+            "j/.gradle",
+            "home/.cache",
+            "py/.mypy_cache",
+            "py/.pytest_cache",
+            "py/.ruff_cache",
+            "py/.tox",
+            "web/.parcel-cache",
+        ] {
+            assert!(excluded(&matcher, dir), "{dir}");
+        }
+        assert!(!excluded(&matcher, "repo/.git"));
+        assert!(!excluded(&matcher, "proj/build"));
+    }
+
+    #[test]
+    fn a_sync_with_the_default_presets_does_not_render_the_new_one() {
+        let rendered = render(&pair(&DEFAULT_SYNC_PRESETS, &[]), &[]);
+
+        assert!(!rendered.contains(".mypy_cache"));
+        assert!(!rendered.contains("- venv/"));
+    }
+
+    #[test]
+    fn the_filters_hash_of_a_sync_with_the_default_presets_is_the_one_before_the_new_preset() {
+        let rendered = render(&pair(&DEFAULT_SYNC_PRESETS, &[]), &[]);
+
+        assert_eq!(
+            hash(&rendered),
+            "7d7e0430908eed8441d896e8da5a858187e83928b4868a3e8aeb820bd12c0e53"
+        );
     }
 
     #[test]

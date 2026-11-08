@@ -150,6 +150,8 @@ fn harness_with(state: AddSyncState, edit: impl FnOnce(&mut Sheet)) -> Harness<'
             sheet,
         );
     harness.run_ok();
+    // The Filters step outgrows the sheet, which then recentres over several frames.
+    harness.run_steps(10);
     harness
 }
 
@@ -162,6 +164,8 @@ fn is_disabled(harness: &Harness<'_, Sheet>, label: &str) -> bool {
 }
 
 fn click(harness: &mut Harness<'_, Sheet>, label: &str) {
+    harness.get_by_label(label).scroll_to_me();
+    harness.run_steps(6);
     harness.get_by_label(label).click();
     harness.run_steps(4);
 }
@@ -818,7 +822,7 @@ fn clicking_a_preset_switch_turns_it_off() {
 }
 
 #[test]
-fn a_new_sync_starts_with_every_preset_and_the_git_switch_turns_one_off() {
+fn a_new_sync_starts_with_the_default_presets_and_the_git_switch_turns_one_off() {
     let mut harness = harness_at(Step::Filters);
     assert_eq!(
         harness.state().state.presets,

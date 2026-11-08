@@ -55,6 +55,21 @@ pub enum Fault {
     /// A one-way sync whose source on the account holds no file; it never
     /// reaches rclone, so no log line names it.
     RemoteEmpty,
+    /// The backup key is not in the key storage, or the storage cannot be
+    /// opened without a person.
+    KeyMissing,
+    /// The key in the key storage does not open the backup.
+    WrongKey,
+    /// The folder that should hold the backup has no backup in it.
+    RepositoryMissing,
+    /// A folder to back up is gone or is not a folder.
+    SourceMissing,
+    /// A folder to back up holds nothing, usually a drive that is not mounted.
+    SourceEmpty,
+    /// The local destination of a backup is not there.
+    DestinationMissing,
+    /// `restic check` found damage that a retry does not fix.
+    RepoDamaged,
 }
 
 /// The fault an rclone error line names, if any. Case-insensitive.
@@ -774,6 +789,25 @@ mod tests {
         ]);
 
         assert_eq!(classify(1, &log, workdir.path()), Outcome::AuthError);
+    }
+
+    #[test]
+    fn backup_faults_serialize_with_snake_case_names() {
+        let cases = [
+            (Fault::KeyMissing, "key_missing"),
+            (Fault::WrongKey, "wrong_key"),
+            (Fault::RepositoryMissing, "repository_missing"),
+            (Fault::SourceMissing, "source_missing"),
+            (Fault::SourceEmpty, "source_empty"),
+            (Fault::DestinationMissing, "destination_missing"),
+            (Fault::RepoDamaged, "repo_damaged"),
+        ];
+        for (fault, name) in cases {
+            let json = serde_json::to_string(&fault).unwrap();
+
+            assert_eq!(json, format!("\"{name}\""));
+            assert_eq!(serde_json::from_str::<Fault>(&json).unwrap(), fault);
+        }
     }
 
     #[test]

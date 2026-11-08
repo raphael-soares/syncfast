@@ -7,15 +7,18 @@ license.workspace = true
 publish = false
 
 [dependencies]
+data-encoding.workspace = true
 fastframe-desktop.workspace = true
 fastframe-file.workspace = true
 fastframe-instance.workspace = true
 fastframe-notifications.workspace = true
 futures-core.workspace = true
+getrandom.workspace = true
 globset.workspace = true
 inotify.workspace = true
 jiff.workspace = true
 log.workspace = true
+oo7.workspace = true
 regex.workspace = true
 rustix.workspace = true
 serde.workspace = true
@@ -26,6 +29,7 @@ tokio = { workspace = true, features = ["rt", "process", "fs", "io-util", "time"
 toml.workspace = true
 toml_edit.workspace = true
 zbus.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 cargo_metadata.workspace = true

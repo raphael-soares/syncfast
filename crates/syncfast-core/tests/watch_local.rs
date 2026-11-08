@@ -377,7 +377,7 @@ async fn config_change_through_a_symlink_is_noticed() {
 #[tokio::test]
 async fn broken_config_keeps_the_previous_watches() {
     let run = start(&[("docs", true)], |_| {}).await;
-    run.bed.write_config_text("version = 3\n");
+    run.bed.write_config_text("version = 4\n");
     sleep(Duration::from_millis(1200)).await;
 
     write(&run.local("docs"), "still.txt");

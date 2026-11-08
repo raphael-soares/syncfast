@@ -9,7 +9,7 @@ use super::sync::start_round;
 use super::{OpError, Ops, PairView};
 use crate::behavior::{Behavior, ReviewLevel};
 use crate::config::{Config, Pair, expand_tilde, unique_id};
-use crate::filters::PRESETS;
+use crate::filters::{DEFAULT_SYNC_PRESETS, preset_names};
 use crate::paths::Paths;
 use crate::rclone::RcloneError;
 use crate::state::{ConfirmMarker, GateKind, State, is_running};
@@ -131,12 +131,9 @@ impl Ops {
             unique_id(&name, config.pairs().iter().map(|pair| pair.id.as_str()))
         });
         let local = expand_tilde(Path::new(new.local.trim()), &self.paths.home);
-        let presets = new.presets.unwrap_or_else(|| {
-            PRESETS
-                .iter()
-                .map(|preset| preset.name.to_owned())
-                .collect()
-        });
+        let presets = new
+            .presets
+            .unwrap_or_else(|| preset_names(&DEFAULT_SYNC_PRESETS));
         let pair = Pair {
             id: id.clone(),
             name,

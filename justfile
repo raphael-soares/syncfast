@@ -54,5 +54,9 @@ flatpak-sources:
     curl -fsSL https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/{{cargo_generator_rev}}/cargo/flatpak-cargo-generator.py -o target/flatpak-tools/flatpak-cargo-generator.py
     target/flatpak-tools/bin/python target/flatpak-tools/flatpak-cargo-generator.py Cargo.lock -o packaging/flatpak/cargo-sources.json
 
+# Pins the restic that ships in the Flatpak, for example `just pin-restic 0.19.1`.
+pin-restic version:
+    scripts/pin-restic.sh {{version}}
+
 hooks:
     lefthook install

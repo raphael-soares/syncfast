@@ -95,7 +95,7 @@ struct AddSyncArgs {
     remote: String,
     /// Sync id (a-z, 0-9, `-`, up to 32 characters); made from the name when absent.
     id: Option<String>,
-    /// Presets to turn on: `system_junk`, `dev_dirs` and `git_repos`. All of them when absent; `[]` turns them off.
+    /// Presets to turn on: `system_junk`, `dev_dirs`, `build_artifacts` and `git_repos`. `system_junk`, `dev_dirs` and `git_repos` when absent; `[]` turns them off.
     presets: Option<Vec<String>>,
     /// Custom filter rules, each `- pattern` (exclude) or `+ pattern` (include).
     filters: Option<Vec<String>>,
@@ -125,7 +125,7 @@ struct OneOrAllArgs {
 struct SetFiltersArgs {
     /// The sync id.
     id: String,
-    /// The presets to turn on (`system_junk`, `dev_dirs`, `git_repos`); replaces the current ones. Unchanged when absent.
+    /// The presets to turn on (`system_junk`, `dev_dirs`, `build_artifacts`, `git_repos`); replaces the current ones. Unchanged when absent.
     presets: Option<Vec<String>>,
     /// Custom rules, each `- pattern` or `+ pattern`; replaces the current ones. Unchanged when absent.
     rules: Option<Vec<String>>,
@@ -137,7 +137,7 @@ struct TestFiltersArgs {
     id: Option<String>,
     /// A folder on this computer, to test before a sync exists. Give `id` or `local`.
     local: Option<String>,
-    /// Presets to test with. Absent: the sync's, or all of them.
+    /// Presets to test with. Absent: the sync's, or `system_junk`, `dev_dirs` and `git_repos`.
     presets: Option<Vec<String>>,
     /// Rules to test with. Absent: the sync's, or none.
     rules: Option<Vec<String>>,

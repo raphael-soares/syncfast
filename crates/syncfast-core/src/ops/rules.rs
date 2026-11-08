@@ -9,7 +9,7 @@ use serde::Serialize;
 
 use super::{DEFAULT_WAIT_SECONDS, OpError, Ops, PairView};
 use crate::config::{Config, Pair, expand_tilde, filter_line_problem};
-use crate::filters::{self, ExclusionSummary, PRESETS};
+use crate::filters::{self, DEFAULT_SYNC_PRESETS, ExclusionSummary, preset_names};
 use crate::paths::Paths;
 use crate::state::{Gate, GateKind, State, try_lock_pair};
 
@@ -176,12 +176,7 @@ impl Ops {
             }
             (None, Some(local)) => (
                 expand_tilde(Path::new(local.trim()), &self.paths.home),
-                presets.unwrap_or_else(|| {
-                    PRESETS
-                        .iter()
-                        .map(|preset| preset.name.to_owned())
-                        .collect()
-                }),
+                presets.unwrap_or_else(|| preset_names(&DEFAULT_SYNC_PRESETS)),
                 rules.unwrap_or_default(),
             ),
             (None, None) => {

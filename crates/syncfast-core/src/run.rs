@@ -259,7 +259,7 @@ fn send(env: &RunEnv<'_>, notices: impl IntoIterator<Item = Notice>) {
     }
 }
 
-fn forward_interrupt(child: &Child) {
+pub(crate) fn forward_interrupt(child: &Child, program: &str) {
     let Some(pid) = child
         .id()
         .and_then(|id| i32::try_from(id).ok())
@@ -268,26 +268,26 @@ fn forward_interrupt(child: &Child) {
         return;
     };
     if let Err(err) = rustix::process::kill_process(pid, Signal::INT) {
-        log::warn!("cannot interrupt rclone: {err}");
+        log::warn!("cannot interrupt {program}: {err}");
     }
 }
 
 /// SIGINT and SIGTERM of this process. tokio never undoes a signal
 /// handler, so only a process that exists for rounds installs them.
-struct Interrupts {
+pub(crate) struct Interrupts {
     interrupt: tokio::signal::unix::Signal,
     terminate: tokio::signal::unix::Signal,
 }
 
 impl Interrupts {
-    fn install() -> Result<Self, RunError> {
+    pub(crate) fn install() -> std::io::Result<Self> {
         Ok(Self {
-            interrupt: signal(SignalKind::interrupt()).map_err(RunError::io("signal handler"))?,
-            terminate: signal(SignalKind::terminate()).map_err(RunError::io("signal handler"))?,
+            interrupt: signal(SignalKind::interrupt())?,
+            terminate: signal(SignalKind::terminate())?,
         })
     }
 
-    async fn next(&mut self) {
+    pub(crate) async fn next(&mut self) {
         tokio::select! {
             _ = self.interrupt.recv() => {}
             _ = self.terminate.recv() => {}
@@ -308,7 +308,7 @@ pub(crate) async fn execute(
     forward_signals: bool,
 ) -> Result<i32, RunError> {
     let mut interrupts = if forward_signals {
-        Some(Interrupts::install()?)
+        Some(Interrupts::install().map_err(RunError::io("signal handler"))?)
     } else {
         None
     };
@@ -329,7 +329,7 @@ pub(crate) async fn execute(
                     Some(interrupts) => interrupts.next().await,
                     None => std::future::pending().await,
                 }
-            } => forward_interrupt(&child),
+            } => forward_interrupt(&child, "rclone"),
         }
     }
 }
