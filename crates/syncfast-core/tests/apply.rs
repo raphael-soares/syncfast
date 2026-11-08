@@ -1067,6 +1067,39 @@ async fn an_invalid_backup_does_not_replace_the_damaged_gate_and_fixing_it_keeps
 }
 
 #[tokio::test]
+async fn an_invalid_backup_keeps_any_gate_that_is_not_a_config_error() {
+    let gates = [
+        (GateKind::AuthError, None),
+        (GateKind::NeedsAttention, Some(Fault::Quota)),
+        (GateKind::NeedsAttention, Some(Fault::SourceMissing)),
+    ];
+    for (kind, fault) in gates {
+        let bed = Bed::new();
+        write_backups(&bed, &[backup_text(&bed, "docs", "every = \"monthly\"\n")]);
+        let gate = Gate {
+            kind,
+            since: jiff::Timestamp::now(),
+            detail: "held".to_owned(),
+            fault,
+            auto_checked: None,
+        };
+        BackupState {
+            gate: Some(gate.clone()),
+            ..BackupState::default()
+        }
+        .save(&bed.paths, "docs")
+        .await
+        .unwrap();
+
+        let report = apply_backups(&bed, SystemdMode::Off, &FakeSystemctl::default()).await;
+
+        assert_eq!(report.invalid_backups.len(), 1, "{kind:?} {fault:?}");
+        let state = BackupState::load(&bed.paths, "docs").await.unwrap();
+        assert_eq!(state.gate, Some(gate), "{kind:?} {fault:?}");
+    }
+}
+
+#[tokio::test]
 async fn syncs_and_backups_are_reconciled_side_by_side() {
     let bed = Bed::new();
     bed.write_config_text(&format!(
