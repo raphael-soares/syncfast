@@ -137,6 +137,21 @@ fn back_up_now_is_disabled_while_a_round_runs() {
 }
 
 #[test]
+fn a_damaged_repository_holds_back_up_now_and_other_attention_does_not() {
+    let damaged = card(
+        BackupStatus::Error,
+        gate(GateKind::NeedsAttention, Some(Fault::RepoDamaged), "bad"),
+    );
+    let quota = card(
+        BackupStatus::Error,
+        gate(GateKind::NeedsAttention, Some(Fault::Quota), "full"),
+    );
+
+    assert!(disabled(&damaged, "Back Up Now"));
+    assert!(enabled(&quota, "Back Up Now"));
+}
+
+#[test]
 fn a_missing_key_offers_enter_key() {
     let mut snapshot = backup(BackupStatus::Error);
     snapshot.state = gate(GateKind::NeedsAttention, Some(Fault::KeyMissing), "no key");

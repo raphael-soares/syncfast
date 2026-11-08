@@ -146,16 +146,15 @@ fn account_of(backup: &BackupSnapshot) -> Option<String> {
     }
 }
 
-/// A gate that is not `needs_attention` holds the backup; the next
-/// attempt of a `needs_attention` one may succeed.
+/// A gate that is not `needs_attention` holds the backup, and so does a
+/// damaged repository; the next attempt of any other `needs_attention` one
+/// may succeed.
 fn can_back_up(backup: &BackupSnapshot) -> bool {
     backup.running.is_none()
         && !backup.config.paths.is_empty()
-        && backup
-            .state
-            .gate
-            .as_ref()
-            .is_none_or(|gate| gate.kind == GateKind::NeedsAttention)
+        && backup.state.gate.as_ref().is_none_or(|gate| {
+            gate.kind == GateKind::NeedsAttention && gate.fault != Some(Fault::RepoDamaged)
+        })
 }
 
 fn back_up_button(ui: &mut Ui, backup: &BackupSnapshot, actions: &mut Vec<Action>) {

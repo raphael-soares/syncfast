@@ -179,7 +179,7 @@ fn entry(
     }
     let kind = tally.kind.unwrap_or(RunKind::Backup);
     let check_errors = match kind {
-        RunKind::Check(_) => tally.num_errors.or(Some(tally.error_lines)),
+        RunKind::Check(_) => tally.num_errors,
         RunKind::Backup => None,
     };
     let result = if in_progress {
@@ -338,6 +338,22 @@ mod tests {
 
         assert_eq!(run.kind, RunKind::Check(Some(CheckKind::Sample)));
         assert_eq!(run.check_errors, Some(2));
+        assert_eq!(run.result, RunResult::Failed);
+    }
+
+    #[test]
+    fn a_check_log_without_a_summary_has_no_error_count_and_failed() {
+        let text = concat!(
+            r#"{"syncfast_step":"check","kind":"full"}"#,
+            "\n",
+            r#"{"message_type":"exit_error","code":11,"message":"repository is already locked"}"#,
+            "\n",
+        );
+
+        let run = entry("20260102-150405.jsonl", text, Some(at(3)), false);
+
+        assert_eq!(run.kind, RunKind::Check(Some(CheckKind::Full)));
+        assert_eq!(run.check_errors, None);
         assert_eq!(run.result, RunResult::Failed);
     }
 
