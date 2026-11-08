@@ -166,7 +166,13 @@ pub fn show(ui: &mut Ui, vm: &ViewModel, backup: &BackupSnapshot) -> Vec<Action>
     }
 
     ui.spacing_mut().item_spacing.y = space::S;
-    folders(ui, &mut draft, &palette, &mut actions);
+    folders(
+        ui,
+        &mut draft,
+        &backup.missing_folders,
+        &palette,
+        &mut actions,
+    );
 
     section(ui, "Destination", &palette);
     note(ui, &saved.dest, &palette);
@@ -274,7 +280,13 @@ pub fn show(ui: &mut Ui, vm: &ViewModel, backup: &BackupSnapshot) -> Vec<Action>
     actions
 }
 
-fn folders(ui: &mut Ui, draft: &mut Draft, palette: &Palette, actions: &mut Vec<Action>) {
+fn folders(
+    ui: &mut Ui,
+    draft: &mut Draft,
+    missing: &[PathBuf],
+    palette: &Palette,
+    actions: &mut Vec<Action>,
+) {
     section(ui, "Folders", palette);
     let mut remove = None;
     for (index, folder) in draft.paths.iter().enumerate() {
@@ -291,7 +303,7 @@ fn folders(ui: &mut Ui, draft: &mut Draft, palette: &Palette, actions: &mut Vec<
                 }
             });
         });
-        if folder.is_absolute() && !folder.exists() {
+        if missing.contains(folder) {
             ui.label(
                 RichText::new("This folder is missing.")
                     .font(theme::callout())

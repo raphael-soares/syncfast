@@ -16,25 +16,41 @@ pub const NO_STORAGE: &str =
 
 pub const HOST_KEYRING_NOTE: &str = "The Flatpak can read every secret in your keyring. Routing the Secret portal is safer; see docs/guide/backup.md.";
 
-/// What the last look at the key storage found.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// What the last look at the key storage found, and what the last test of it
+/// said.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum KeyStorageView {
     #[default]
     Checking,
     Found(KeyBackend),
     Missing,
+    Tested(KeyBackend),
+    Failed(String),
 }
+
+pub const TEST_PASSED: &str = "Available";
+pub const TEST_FAILED: &str = "Not available";
 
 impl KeyStorageView {
     #[must_use]
-    pub fn text(self) -> &'static str {
+    pub fn text(&self) -> &str {
         match self {
             Self::Checking => "Checking…",
-            Self::Found(KeyBackend::Portal) => "Secret portal",
-            Self::Found(KeyBackend::HostKeyring) => "Host keyring (Secret Service)",
-            Self::Found(KeyBackend::Plain) => "Files in the data folder (development only)",
-            Self::Found(KeyBackend::Memory) => "Memory (tests only)",
+            Self::Found(backend) | Self::Tested(backend) => match backend {
+                KeyBackend::Portal => "Secret portal",
+                KeyBackend::HostKeyring => "Host keyring (Secret Service)",
+                KeyBackend::Plain => "Files in the data folder (development only)",
+                KeyBackend::Memory => "Memory (tests only)",
+            },
             Self::Missing => NO_STORAGE,
+            Self::Failed(_) => TEST_FAILED,
+        }
+    }
+
+    fn backend(&self) -> Option<KeyBackend> {
+        match self {
+            Self::Found(backend) | Self::Tested(backend) => Some(*backend),
+            _ => None,
         }
     }
 }
@@ -49,7 +65,24 @@ pub fn show(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
             actions.push(Action::TestKeyStorage);
         }
     });
-    if vm.key_storage == KeyStorageView::Found(KeyBackend::HostKeyring) {
+    match &vm.key_storage {
+        KeyStorageView::Tested(_) => {
+            ui.label(
+                RichText::new(TEST_PASSED)
+                    .font(theme::callout())
+                    .color(palette.secondary),
+            );
+        }
+        KeyStorageView::Failed(text) => {
+            ui.label(
+                RichText::new(text)
+                    .font(theme::callout())
+                    .color(palette.warning),
+            );
+        }
+        _ => {}
+    }
+    if vm.key_storage.backend() == Some(KeyBackend::HostKeyring) {
         ui.label(
             RichText::new(HOST_KEYRING_NOTE)
                 .font(theme::callout())

@@ -15,7 +15,6 @@ use syncfast_core::backup::config::BackupConfig;
 use syncfast_core::backup::keystore::KeyBackend;
 use syncfast_core::backup::lifecycle;
 use syncfast_core::backup::snapshots::SnapshotView;
-use syncfast_core::backup::state::CheckKind;
 use syncfast_core::backup::test_filters::FilterTest as BackupFilterCount;
 use syncfast_core::behavior::{ReviewLevel, SyncMode};
 use syncfast_core::bisync::ReviewKind;
@@ -170,11 +169,6 @@ pub enum Command {
     BackUpAll,
     /// Pause (`false`) or resume (`true`) one backup, then `apply`.
     SetBackupEnabled(String, bool),
-    /// Ask a backup's next round for a check of the repository.
-    CheckBackup {
-        id: String,
-        kind: CheckKind,
-    },
     /// Ask the repository of a backup for its snapshots.
     LoadBackupSnapshots(String),
     /// Read the rounds of a backup from its logs, for Activity.
@@ -299,8 +293,12 @@ pub enum Event {
         id: String,
         filters_changed: bool,
     },
-    /// Which storage holds the backup keys, or why none answered.
-    KeyStorage(Result<KeyBackend, String>),
+    /// Which storage holds the backup keys, or why none answered; `test`
+    /// when it answers the Test Key Storage button.
+    KeyStorage {
+        test: bool,
+        outcome: Result<KeyBackend, String>,
+    },
     ResticVersion(Option<String>),
     /// The answer to a [`backup_sheets::BackupCommand`].
     Backup(backup_sheets::BackupReply),
@@ -552,7 +550,6 @@ async fn run(
                     Command::SetBackupEnabled(id, enabled) => {
                         spawn_set_backup_enabled(&context, id, enabled);
                     }
-                    Command::CheckBackup { id, kind } => spawn_check_backup(&context, id, kind),
                     Command::LoadBackupSnapshots(id) => spawn_load_backup_snapshots(&context, id),
                     Command::LoadBackupRuns { id, running } => {
                         spawn_load_backup_runs(&context, id, running);
@@ -1005,16 +1002,6 @@ fn spawn_set_backup_enabled(context: &Arc<Context>, id: String, enabled: bool) {
     );
 }
 
-fn spawn_check_backup(context: &Arc<Context>, id: String, kind: CheckKind) {
-    let context = Arc::clone(context);
-    guarded(context.emitter.clone(), "starting a check", async move {
-        match backup_tools::request_check(&context.paths, &id, kind).await {
-            Ok(()) => spawn_backup(&context, vec![id]),
-            Err(text) => fail(&context, text),
-        }
-    });
-}
-
 fn spawn_load_backup_snapshots(context: &Arc<Context>, id: String) {
     let context = Arc::clone(context);
     guarded(
@@ -1090,7 +1077,7 @@ fn spawn_check_key_storage(context: &Arc<Context>, test: bool) {
         "checking the key storage",
         async move {
             let outcome = backup_tools::key_storage(&context.paths, test).await;
-            context.emitter.send(Event::KeyStorage(outcome));
+            context.emitter.send(Event::KeyStorage { test, outcome });
         },
     );
 }
@@ -1428,6 +1415,11 @@ async fn reconnected(context: &Arc<Context>, account: String) {
     match sheet_io::clear_auth_gates(&context.paths, &account).await {
         Ok(ids) if ids.is_empty() => {}
         Ok(ids) => spawn_sync(context, ids),
+        Err(text) => fail(context, text),
+    }
+    match sheet_io::clear_backup_auth_gates(&context.paths, &account).await {
+        Ok(ids) if ids.is_empty() => {}
+        Ok(ids) => spawn_backup(context, ids),
         Err(text) => fail(context, text),
     }
     context.emitter.send(Event::Connected(Ok(account)));

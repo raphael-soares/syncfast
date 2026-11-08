@@ -7,6 +7,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use jiff::Zoned;
+use syncfast_core::backup::destination::Destination;
+use syncfast_core::backup::state::BackupState;
 use syncfast_core::behavior::{Behavior, ReviewLevel, SyncMode};
 use syncfast_core::bisync::{Fault, ReviewKind, fault_of};
 use syncfast_core::config::{Config, Pair, expand_tilde, split_remote};
@@ -267,6 +269,40 @@ pub async fn clear_auth_gates(paths: &Paths, account: &str) -> Result<Vec<String
             .await
             .map_err(|e| e.to_string())?;
         cleared.push(pair.id.clone());
+    }
+    Ok(cleared)
+}
+
+/// After a sign-in to `account`: the backups whose destination is on it
+/// and were stopped for lack of access can run again. Returns their ids.
+///
+/// # Errors
+/// The config or a state file cannot be read or written.
+pub async fn clear_backup_auth_gates(paths: &Paths, account: &str) -> Result<Vec<String>, String> {
+    let config = Config::load(paths).await.map_err(|e| e.to_string())?;
+    let mut cleared = Vec::new();
+    for backup in config.backups() {
+        let on_account = matches!(
+            Destination::parse(&backup.dest),
+            Ok(Destination::Account { name, .. }) if name == account
+        );
+        if !on_account {
+            continue;
+        }
+        let mut state = BackupState::load(paths, &backup.id)
+            .await
+            .map_err(|e| e.to_string())?;
+        if state.gate.as_ref().map(|gate| gate.kind) != Some(GateKind::AuthError) {
+            continue;
+        }
+        state.gate = None;
+        let announced = GateKind::AuthError.notified_key();
+        state.notified.retain(|key| *key != announced);
+        state
+            .save(paths, &backup.id)
+            .await
+            .map_err(|e| e.to_string())?;
+        cleared.push(backup.id.clone());
     }
     Ok(cleared)
 }
@@ -645,6 +681,68 @@ mod tests {
             review.gate.map(|g| g.kind),
             Some(GateKind::NeedsReviewFirstRun)
         );
+    }
+
+    fn backup_toml(id: &str, dest: &str) -> String {
+        format!(
+            "\n[[backup]]\nid = \"{id}\"\nname = \"{}\"\npaths = [\"/work/{id}\"]\ndest = \"{dest}\"\n",
+            id.to_uppercase()
+        )
+    }
+
+    #[tokio::test]
+    async fn after_a_sign_in_only_backups_on_that_account_stopped_by_auth_run_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        write_config(
+            &paths,
+            &format!(
+                "version = 3\n{}{}{}{}",
+                backup_toml("mine", "gdrive:Backups/mine"),
+                backup_toml("other", "work:Backups/other"),
+                backup_toml("local", "/backups/local"),
+                backup_toml("attention", "gdrive:Backups/attention"),
+            ),
+        );
+        let gate = |kind| {
+            Some(Gate {
+                kind,
+                since: jiff::Timestamp::UNIX_EPOCH,
+                detail: String::new(),
+                fault: None,
+                auto_checked: None,
+            })
+        };
+        for (id, kind) in [
+            ("mine", GateKind::AuthError),
+            ("other", GateKind::AuthError),
+            ("local", GateKind::AuthError),
+            ("attention", GateKind::NeedsAttention),
+        ] {
+            BackupState {
+                gate: gate(kind),
+                notified: vec![GateKind::AuthError.notified_key(), "failures".into()],
+                ..BackupState::default()
+            }
+            .save(&paths, id)
+            .await
+            .unwrap();
+        }
+
+        let cleared = clear_backup_auth_gates(&paths, "gdrive").await.unwrap();
+
+        assert_eq!(cleared, ["mine"]);
+        let mine = BackupState::load(&paths, "mine").await.unwrap();
+        assert_eq!(mine.gate, None);
+        assert_eq!(mine.notified, ["failures"]);
+        for (id, kind) in [
+            ("other", GateKind::AuthError),
+            ("local", GateKind::AuthError),
+            ("attention", GateKind::NeedsAttention),
+        ] {
+            let state = BackupState::load(&paths, id).await.unwrap();
+            assert_eq!(state.gate.map(|g| g.kind), Some(kind), "{id}");
+        }
     }
 
     #[tokio::test]

@@ -392,7 +392,7 @@ impl Sheets {
             Event::Dirs { path, result } => sheet.on_dirs(path, result),
             Event::RemoteDirMade { path, result } => return Some(sheet.on_dir_made(path, result)),
             Event::FolderPicked(picked) => sheet.on_picked(picked.as_ref()),
-            Event::KeyStorage(result) => sheet.on_key_storage(result),
+            Event::KeyStorage { outcome, .. } => sheet.on_key_storage(outcome),
             Event::BackupFilterTest { .. } => sheet.on_filter_test(event),
             Event::Backup(reply) => {
                 let outcome = sheet.on_reply(reply);

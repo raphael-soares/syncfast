@@ -36,14 +36,18 @@ const GLYPH_VIEWBOX: f32 = 24.0;
 /// The icon files are stroked in white so egui can tint them.
 const GLYPH_SOURCE_INK: &str = "#ffffff";
 
-/// One sync as the tray sees it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PairView {
     pub status: DisplayStatus,
     pub enabled: bool,
 }
 
-/// What the tray says about all the syncs together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BackupView {
+    pub status: BackupStatus,
+    pub runnable: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Summary {
     pub count: usize,
@@ -123,22 +127,26 @@ impl Summary {
     }
 }
 
-/// What the tray says about all the backups together.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackupSummary {
     pub count: usize,
+    pub runnable: usize,
     pub running: usize,
     pub attention: usize,
 }
 
 impl BackupSummary {
     #[must_use]
-    pub fn of(statuses: &[BackupStatus]) -> Self {
+    pub fn of(backups: &[BackupView]) -> Self {
         let count_of = |matches: fn(BackupStatus) -> bool| {
-            statuses.iter().filter(|status| matches(**status)).count()
+            backups
+                .iter()
+                .filter(|backup| matches(backup.status))
+                .count()
         };
         Self {
-            count: statuses.len(),
+            count: backups.len(),
+            runnable: backups.iter().filter(|backup| backup.runnable).count(),
             running: count_of(|status| {
                 matches!(status, BackupStatus::BackingUp | BackupStatus::Checking)
             }),
@@ -230,7 +238,6 @@ impl IconLook {
     }
 }
 
-/// What the menu and the icon show right now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrayView {
     pub summary: Summary,
@@ -276,7 +283,7 @@ pub fn menu_items(view: &TrayView) -> Vec<MenuItem> {
         MenuItem::Separator,
         MenuItem::action(ID_TOGGLE, view.toggle_label()),
         MenuItem::action(ID_SYNC_ALL, "Sync All Now").enabled(view.has_syncs()),
-        MenuItem::action(ID_BACKUP_ALL, "Back Up All Now").enabled(view.backups.count > 0),
+        MenuItem::action(ID_BACKUP_ALL, "Back Up All Now").enabled(view.backups.runnable > 0),
         MenuItem::action(ID_PAUSE, view.pause_label()).enabled(view.has_syncs()),
         MenuItem::Separator,
         MenuItem::action(ID_SETTINGS, "Settings…"),
@@ -284,7 +291,6 @@ pub fn menu_items(view: &TrayView) -> Vec<MenuItem> {
     ]
 }
 
-/// What a click on the item or its menu asks the app to do.
 #[must_use]
 pub fn action(event: &Event, view: &TrayView) -> Option<Action> {
     let toggle = || {
@@ -403,7 +409,6 @@ fn draw_current(size: usize) -> Vec<u8> {
 
 const DRAW: DrawIcon = draw_current;
 
-/// The tray item, kept in step with a [`TrayView`].
 #[derive(Debug)]
 pub struct SyncTray {
     tray: Tray,
@@ -499,10 +504,25 @@ mod tests {
         }
     }
 
-    fn with_backups(mut view: TrayView, statuses: &[BackupStatus]) -> TrayView {
-        view.backups = BackupSummary::of(statuses);
+    fn backup(status: BackupStatus, runnable: bool) -> BackupView {
+        BackupView { status, runnable }
+    }
+
+    fn running_backups(statuses: &[BackupStatus]) -> Vec<BackupView> {
+        statuses
+            .iter()
+            .map(|status| backup(*status, true))
+            .collect()
+    }
+
+    fn with_backup_views(mut view: TrayView, backups: &[BackupView]) -> TrayView {
+        view.backups = BackupSummary::of(backups);
         view.look = view.look.counting(&view.backups);
         view
+    }
+
+    fn with_backups(view: TrayView, statuses: &[BackupStatus]) -> TrayView {
+        with_backup_views(view, &running_backups(statuses))
     }
 
     fn labels(items: &[MenuItem]) -> Vec<String> {
@@ -603,7 +623,8 @@ mod tests {
 
     #[test]
     fn backups_line_says_what_the_backups_are_doing() {
-        let line = |statuses: &[BackupStatus]| BackupSummary::of(statuses).status_line();
+        let line =
+            |statuses: &[BackupStatus]| BackupSummary::of(&running_backups(statuses)).status_line();
 
         assert_eq!(line(&[]), "No backups yet");
         assert_eq!(line(&[BackupStatus::UpToDate]), "Backups up to date");
@@ -634,6 +655,27 @@ mod tests {
             action(&Event::Menu(ID_BACKUP_ALL), &some),
             Some(Action::BackUpAll)
         );
+    }
+
+    #[test]
+    fn back_up_all_is_disabled_when_every_backup_is_paused_or_has_no_folder() {
+        let stopped = with_backup_views(
+            view(&[], false),
+            &[
+                backup(BackupStatus::Paused, false),
+                backup(BackupStatus::Paused, false),
+            ],
+        );
+        let one_runs = with_backup_views(
+            view(&[], false),
+            &[
+                backup(BackupStatus::Paused, false),
+                backup(BackupStatus::UpToDate, true),
+            ],
+        );
+
+        assert!(!enabled(&menu_items(&stopped), ID_BACKUP_ALL));
+        assert!(enabled(&menu_items(&one_runs), ID_BACKUP_ALL));
     }
 
     #[test]

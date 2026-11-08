@@ -40,7 +40,6 @@ use crate::gui_state::SettingsPane;
 use crate::snapshot::BackupSnapshot;
 use crate::snapshot::PairSnapshot;
 use syncfast_core::backup::config::BackupConfig;
-use syncfast_core::backup::state::CheckKind;
 use syncfast_core::runs::RunEntry;
 
 pub use detail::DetailTab;
@@ -255,10 +254,6 @@ pub enum Action {
     BackUpAll,
     /// Pause (`false`) or resume (`true`) one backup.
     SetBackupEnabled(String, bool),
-    CheckBackup {
-        id: String,
-        kind: CheckKind,
-    },
     /// Opens the local folder a backup writes to.
     OpenBackupDestination(String),
     /// Asks the repository for its snapshots again.

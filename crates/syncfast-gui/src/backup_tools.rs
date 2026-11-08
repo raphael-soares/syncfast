@@ -1,6 +1,6 @@
 //! What the backend does for the backup screens: the tools the core's
-//! lifecycle needs, the repository's snapshots, the filter test, the check
-//! request and the restic version.
+//! lifecycle needs, the repository's snapshots, the filter test and the
+//! restic version.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -11,9 +11,7 @@ use syncfast_core::backup::excludes::render_excludes_live;
 use syncfast_core::backup::key::Key;
 use syncfast_core::backup::keystore::{DefaultKeyStore, KeyBackend, KeyStore as _};
 use syncfast_core::backup::lifecycle::{self, LifecycleEnv};
-use syncfast_core::backup::run_decision::{BackupRequest, save_request};
 use syncfast_core::backup::snapshots::SnapshotView;
-use syncfast_core::backup::state::CheckKind;
 use syncfast_core::backup::test_filters::{FilterTest, run_filter_test};
 use syncfast_core::config::Config;
 use syncfast_core::flatpak;
@@ -138,16 +136,6 @@ fn repository_of(paths: &Paths, backup: &BackupConfig) -> Result<Repository, Str
         Repository::new(destination, paths.backup_state_dir(&backup.id))
             .with_limits(behavior.limit_upload, behavior.limit_download),
     )
-}
-
-/// Asks the next round of a backup for `kind` of check.
-///
-/// # Errors
-/// The request file cannot be written.
-pub async fn request_check(paths: &Paths, backup_id: &str, kind: CheckKind) -> Result<(), String> {
-    save_request(paths, backup_id, BackupRequest::Check(kind))
-        .await
-        .map_err(|err| err.to_string())
 }
 
 /// The backups that are not paused.

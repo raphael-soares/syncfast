@@ -74,9 +74,8 @@ pub struct BackupScreens {
 }
 
 impl BackupScreens {
-    /// Puts what the screens of backups show into `vm`.
     pub fn fill(&self, vm: &mut ViewModel) {
-        vm.key_storage = self.storage;
+        vm.key_storage = self.storage.clone();
         vm.restic_version.clone_from(&self.restic_version);
         let Some(id) = vm.selected_backup.as_deref() else {
             return;
@@ -146,10 +145,12 @@ impl BackupScreens {
                 id,
                 filters_changed,
             } => self.saved = Some((id, filters_changed)),
-            Event::KeyStorage(outcome) => {
-                self.storage = match outcome {
-                    Ok(backend) => KeyStorageView::Found(backend),
-                    Err(_) => KeyStorageView::Missing,
+            Event::KeyStorage { test, outcome } => {
+                self.storage = match (test, outcome) {
+                    (false, Ok(backend)) => KeyStorageView::Found(backend),
+                    (false, Err(_)) => KeyStorageView::Missing,
+                    (true, Ok(backend)) => KeyStorageView::Tested(backend),
+                    (true, Err(text)) => KeyStorageView::Failed(text),
                 };
             }
             Event::ResticVersion(version) => {
@@ -286,6 +287,7 @@ impl BackupScreens {
 mod tests {
     use std::path::Path;
 
+    use syncfast_core::backup::keystore::KeyBackend;
     use syncfast_core::backup::state::{BackupState, LastSnapshot};
     use syncfast_core::backup::status::BackupStatus;
     use syncfast_core::config::Config;
@@ -312,6 +314,7 @@ mod tests {
                 running: None,
                 status: BackupStatus::UpToDate,
                 progress: None,
+                missing_folders: Vec::new(),
             }],
             ..Snapshot::default()
         }
@@ -421,15 +424,46 @@ mod tests {
 
         let command = screens.act(Action::TestKeyStorage);
         let waiting = shown(&screens, "docs").key_storage;
-        screens.on_event(Event::KeyStorage(Err("none".to_owned())));
-        let answered = shown(&screens, "docs").key_storage;
+        screens.on_event(Event::KeyStorage {
+            test: true,
+            outcome: Ok(KeyBackend::Portal),
+        });
+        let passed = shown(&screens, "docs").key_storage;
+        screens.on_event(Event::KeyStorage {
+            test: true,
+            outcome: Err("the portal refused the item".to_owned()),
+        });
+        let failed = shown(&screens, "docs").key_storage;
 
         assert!(matches!(
             command,
             Some(Command::CheckKeyStorage { test: true })
         ));
         assert_eq!(waiting, KeyStorageView::Checking);
-        assert_eq!(answered, KeyStorageView::Missing);
+        assert_eq!(passed, KeyStorageView::Tested(KeyBackend::Portal));
+        assert_eq!(
+            failed,
+            KeyStorageView::Failed("the portal refused the item".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_look_that_is_not_a_test_still_says_where_the_keys_are_or_that_none_answered() {
+        let mut screens = BackupScreens::default();
+
+        screens.on_event(Event::KeyStorage {
+            test: false,
+            outcome: Ok(KeyBackend::HostKeyring),
+        });
+        let found = shown(&screens, "docs").key_storage;
+        screens.on_event(Event::KeyStorage {
+            test: false,
+            outcome: Err("none".to_owned()),
+        });
+        let missing = shown(&screens, "docs").key_storage;
+
+        assert_eq!(found, KeyStorageView::Found(KeyBackend::HostKeyring));
+        assert_eq!(missing, KeyStorageView::Missing);
     }
 
     #[test]

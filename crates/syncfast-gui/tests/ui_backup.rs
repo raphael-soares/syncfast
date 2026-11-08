@@ -8,6 +8,7 @@ use egui::accesskit::Role;
 
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use syncfast_core::backup::keystore::KeyBackend;
+use syncfast_core::backup::run::KEY_ABSENT;
 use syncfast_core::backup::state::BackupState;
 use syncfast_core::backup::status::{BackupProgressFile, BackupStatus, RunningStep};
 use syncfast_core::bisync::Fault;
@@ -37,6 +38,7 @@ fn backup(status: BackupStatus) -> BackupSnapshot {
         running: (status == BackupStatus::BackingUp).then_some(RunningStep::Backup),
         status,
         progress: None,
+        missing_folders: Vec::new(),
     }
 }
 
@@ -73,12 +75,17 @@ fn screen(vm: ViewModel) -> egui_kittest::Harness<'static, common::Frame> {
 }
 
 fn disabled(harness: &egui_kittest::Harness<'_, common::Frame>, label: &str) -> bool {
-    harness
-        .get_all_by_label(label)
-        .next()
-        .unwrap()
-        .accesskit_node()
-        .is_disabled()
+    let nodes: Vec<_> = harness.get_all_by_label(label).collect();
+    assert!(!nodes.is_empty(), "{label}");
+    nodes.iter().all(|node| node.accesskit_node().is_disabled())
+}
+
+fn enabled(harness: &egui_kittest::Harness<'_, common::Frame>, label: &str) -> bool {
+    let nodes: Vec<_> = harness.get_all_by_label(label).collect();
+    assert!(!nodes.is_empty(), "{label}");
+    nodes
+        .iter()
+        .all(|node| !node.accesskit_node().is_disabled())
 }
 
 #[test]
@@ -145,21 +152,240 @@ fn a_missing_key_offers_enter_key() {
 }
 
 #[test]
-fn a_damaged_repository_offers_a_full_check() {
-    let mut snapshot = backup(BackupStatus::Error);
-    snapshot.state = gate(GateKind::NeedsAttention, Some(Fault::RepoDamaged), "bad");
-    let mut harness = screen(view(snapshot));
+fn the_card_names_what_needs_attention_in_plain_words() {
+    let dest_gone = "gdrive:Backups/docs has not been available since Jan 1";
+    let cases = [
+        (
+            Fault::Account,
+            "access denied",
+            "Google Drive refused the account. Reconnect it to continue.",
+        ),
+        (Fault::Quota, "quota", "Google Drive is full."),
+        (
+            Fault::Permission,
+            "forbidden",
+            "No permission to the backup folder on Google Drive.",
+        ),
+        (
+            Fault::RemoteMissing,
+            "not found",
+            "The backup folder is missing.",
+        ),
+        (
+            Fault::RepositoryMissing,
+            "no repository",
+            "The backup folder is missing.",
+        ),
+        (
+            Fault::DestinationMissing,
+            dest_gone,
+            "gdrive:Backups/docs is not available. Backups resume when it is back.",
+        ),
+        (
+            Fault::KeyMissing,
+            "no key",
+            "The key for this backup is missing on this computer.",
+        ),
+        (
+            Fault::WrongKey,
+            "wrong password",
+            "The saved key does not open this backup.",
+        ),
+        (
+            Fault::SourceMissing,
+            "/work/docs",
+            "/work/docs is missing. Backups resume when it is back.",
+        ),
+        (
+            Fault::SourceEmpty,
+            "/work/docs",
+            "/work/docs is empty. If it is on a drive, mount it.",
+        ),
+        (
+            Fault::RepoDamaged,
+            "pack is damaged",
+            "The check found damaged data. Backups are paused until you review it.",
+        ),
+        (Fault::LocalEmpty, "empty", "Backups keep failing."),
+    ];
 
-    harness.get_by_label("Check Again").click();
+    for (fault, detail, sentence) in cases {
+        let harness = card(
+            BackupStatus::Error,
+            gate(GateKind::NeedsAttention, Some(fault), detail),
+        );
+        assert!(harness.query_by_label(sentence).is_some(), "{sentence}");
+        assert!(
+            harness.query_by_label_contains("Open syncfast").is_none(),
+            "{sentence}"
+        );
+    }
+}
+
+#[test]
+fn the_raw_detail_shows_under_the_sentence_only_when_it_adds_something() {
+    let shown = [
+        (Fault::Account, "access denied"),
+        (Fault::Quota, "quota exceeded"),
+        (Fault::RepoDamaged, "pack is damaged"),
+        (Fault::KeyMissing, "the keyring is locked"),
+        (Fault::LocalEmpty, "rclone refused"),
+    ];
+    for (fault, detail) in shown {
+        let harness = card(
+            BackupStatus::Error,
+            gate(GateKind::NeedsAttention, Some(fault), detail),
+        );
+        assert!(harness.query_by_label(detail).is_some(), "{detail}");
+    }
+    let hidden = [
+        (Fault::KeyMissing, KEY_ABSENT),
+        (Fault::SourceMissing, "/work/docs"),
+        (Fault::SourceEmpty, "/work/docs"),
+    ];
+    for (fault, detail) in hidden {
+        let harness = card(
+            BackupStatus::Error,
+            gate(GateKind::NeedsAttention, Some(fault), detail),
+        );
+        assert!(harness.query_by_label(detail).is_none(), "{detail}");
+    }
+}
+
+#[test]
+fn a_lost_sign_in_offers_reconnect_account() {
+    let mut harness = card(
+        BackupStatus::Error,
+        gate(GateKind::AuthError, Some(Fault::Auth), "token expired"),
+    );
+
+    harness.get_by_label("Google Drive refused the account. Reconnect it to continue.");
+    harness.get_by_label("Reconnect Account…").click();
     harness.run_steps(4);
 
     assert_eq!(
         harness.state().actions,
-        [Action::CheckBackup {
-            id: "docs".into(),
-            kind: syncfast_core::backup::state::CheckKind::Full
-        }]
+        [Action::ReconnectAccount("gdrive".into())]
     );
+}
+
+#[test]
+fn a_damaged_repository_offers_no_check() {
+    let harness = card(
+        BackupStatus::Error,
+        gate(GateKind::NeedsAttention, Some(Fault::RepoDamaged), "bad"),
+    );
+
+    assert!(harness.query_by_label("Check Again").is_none());
+    assert!(harness.query_by_label("More").is_some());
+}
+
+#[test]
+fn the_more_menu_has_no_check_commands() {
+    let mut harness = screen(view(backup(BackupStatus::UpToDate)));
+
+    harness.get_by_label("More").click();
+    harness.run_steps(4);
+
+    harness.get_by_label("Show Key…");
+    harness.get_by_label("Remove Backup…");
+    for label in ["Quick Check", "Check Sample", "Full Check…", "Check Now"] {
+        assert!(harness.query_by_label(label).is_none(), "{label}");
+    }
+}
+
+#[test]
+fn a_failed_snapshot_list_of_a_missing_key_says_so_and_does_not_offer_try_again() {
+    let mut snapshot = backup(BackupStatus::Error);
+    snapshot.state = gate(GateKind::NeedsAttention, Some(Fault::KeyMissing), "no key");
+    let mut vm = view(snapshot);
+    vm.backup.snapshots = SnapshotsView::Failed("exit status 1: wrong password".into());
+    let harness = screen(vm);
+
+    harness.get_by_label("The snapshots cannot be listed until the key is entered.");
+    assert!(harness.query_by_label("Try Again").is_none());
+    assert!(harness.query_by_label_contains("wrong password").is_none());
+}
+
+#[test]
+fn the_last_failed_clean_up_of_old_snapshots_shows_under_the_card() {
+    let state = BackupState {
+        prune_error: Some("rate limited".into()),
+        ..BackupState::default()
+    };
+    let harness = card(BackupStatus::UpToDate, state);
+
+    harness.get_by_label("Old snapshots could not be cleaned up: rate limited");
+}
+
+#[test]
+fn the_clean_up_gate_says_it_once() {
+    let line = "Old snapshots could not be cleaned up: rate limited";
+    let mut state = gate(GateKind::NeedsAttention, None, line);
+    state.prune_error = Some("rate limited".into());
+    let harness = card(BackupStatus::Error, state);
+
+    harness.get_by_label(line);
+    assert!(harness.query_by_label("Backups keep failing.").is_none());
+}
+
+fn no_folder_config() -> syncfast_core::backup::config::BackupConfig {
+    let text = "version = 3\n\n[[backup]]\nid = \"docs\"\nname = \"Documents\"\nenabled = false\npaths = []\ndest = \"gdrive:Backups/docs\"\n";
+    Config::parse(text, Path::new("/home/ada"))
+        .unwrap()
+        .backups()[0]
+        .clone()
+}
+
+#[test]
+fn a_backup_without_folders_cannot_resume_or_back_up_and_says_why() {
+    let mut snapshot = backup(BackupStatus::Paused);
+    snapshot.config = no_folder_config();
+    let harness = screen(view(snapshot));
+
+    assert!(disabled(&harness, "Resume"));
+    assert_eq!(harness.query_all_by_label("Back Up Now").count(), 1);
+    assert!(disabled(&harness, "Back Up Now"));
+    harness.get_by_label("This backup has no folder yet. Add one with Add Folder… in Settings.");
+}
+
+#[test]
+fn a_paused_backup_with_folders_can_resume() {
+    let mut snapshot = backup(BackupStatus::Paused);
+    snapshot.config.enabled = false;
+    let harness = screen(view(snapshot));
+
+    assert!(enabled(&harness, "Resume"));
+}
+
+#[test]
+fn the_empty_snapshots_list_offers_back_up_now_only_when_it_can_run() {
+    let can = screen(view(backup(BackupStatus::UpToDate)));
+    let running = screen(view(backup(BackupStatus::BackingUp)));
+
+    assert_eq!(can.query_all_by_label("Back Up Now").count(), 2);
+    assert!(enabled(&can, "Back Up Now"));
+    assert_eq!(running.query_all_by_label("Back Up Now").count(), 1);
+}
+
+#[test]
+fn the_folders_that_are_gone_say_so_in_settings() {
+    let mut snapshot = backup(BackupStatus::UpToDate);
+    snapshot.missing_folders = vec!["/work/docs".into()];
+    let mut vm = view(snapshot);
+    vm.backup.tab = BackupTab::Settings;
+    let harness = tall(vm);
+
+    harness.get_by_label("This folder is missing.");
+}
+
+#[test]
+fn a_folder_that_is_there_has_no_warning() {
+    let mut vm = view(backup(BackupStatus::UpToDate));
+    vm.backup.tab = BackupTab::Settings;
+    let harness = tall(vm);
+
+    assert!(harness.query_by_label("This folder is missing.").is_none());
 }
 
 #[test]
@@ -222,19 +448,72 @@ fn with_state(status: BackupStatus, state: BackupState) -> ViewModel {
 }
 
 #[test]
-fn the_empty_sidebar_offers_new_backup() {
+fn the_empty_sidebar_offers_new_backup_twice_and_both_work() {
     let mut vm = view_model(vec![common::pair("drive", "Google Drive")], Some("drive"));
     vm.backups.clear();
     let mut harness = screen(vm);
 
+    assert_eq!(harness.query_all_by_label("New Backup…").count(), 2);
+    for index in 0..2 {
+        harness
+            .get_all_by_label("New Backup…")
+            .nth(index)
+            .unwrap()
+            .click();
+        harness.run_steps(4);
+    }
+
+    assert_eq!(
+        harness.state().actions,
+        [Action::NewBackup, Action::NewBackup]
+    );
+}
+
+#[test]
+fn the_plus_of_the_backups_header_starts_a_new_backup() {
+    let mut harness = screen(view(backup(BackupStatus::UpToDate)));
+
+    harness.get_by_label("New Backup…").click();
+    harness.run_steps(4);
+
+    assert_eq!(harness.state().actions, [Action::NewBackup]);
+}
+
+#[test]
+fn the_backup_actions_menu_adds_an_existing_backup() {
+    let mut harness = screen(view(backup(BackupStatus::UpToDate)));
+
+    harness.get_by_label("Backup Actions").click();
+    harness.run_steps(4);
+    harness.get_by_label("Add Existing Backup…").click();
+    harness.run_steps(4);
+
+    assert_eq!(harness.state().actions, [Action::AddExistingBackup]);
+}
+
+#[test]
+fn a_sidebar_with_backups_and_no_syncs_offers_add_sync() {
+    let mut harness = screen(view(backup(BackupStatus::UpToDate)));
+
+    harness.get_by_label("No syncs yet");
+    assert_eq!(harness.query_all_by_label("Add Sync…").count(), 2);
     harness
-        .get_all_by_label("New Backup…")
-        .last()
+        .get_all_by_label("Add Sync…")
+        .nth(1)
         .unwrap()
         .click();
     harness.run_steps(4);
 
-    assert_eq!(harness.state().actions, [Action::NewBackup]);
+    assert_eq!(harness.state().actions, [Action::AddSync]);
+}
+
+#[test]
+fn a_sidebar_with_syncs_does_not_say_there_are_none() {
+    let mut vm = view(backup(BackupStatus::UpToDate));
+    vm.pairs = vec![common::pair("drive", "Google Drive")];
+    let harness = screen(vm);
+
+    assert!(harness.query_by_label("No syncs yet").is_none());
 }
 
 #[test]
@@ -249,45 +528,6 @@ fn selecting_a_sync_while_a_backup_is_open_goes_back_to_the_sync() {
     assert_eq!(
         harness.state().actions,
         [Action::SelectPair("drive".into())]
-    );
-}
-
-fn open_full_check(harness: &mut egui_kittest::Harness<'_, common::Frame>) {
-    harness.get_by_label("More").click();
-    harness.run_steps(4);
-    harness.get_by_label("Full Check…").click();
-    harness.run_steps(4);
-}
-
-#[test]
-fn full_check_asks_before_reading_everything_and_cancel_is_the_default() {
-    let mut harness = screen(view(backup(BackupStatus::UpToDate)));
-
-    open_full_check(&mut harness);
-
-    harness.get_by_label("Read all backup data?");
-    harness.get_by_label("This downloads everything from gdrive:Backups/docs and can take hours.");
-    harness.get_by_label("Check");
-    harness.key_press(egui::Key::Enter);
-    harness.run_steps(4);
-    assert!(harness.query_by_label("Read all backup data?").is_none());
-    assert!(harness.state().actions.is_empty());
-}
-
-#[test]
-fn confirming_the_full_check_starts_it() {
-    let mut harness = screen(view(backup(BackupStatus::UpToDate)));
-    open_full_check(&mut harness);
-
-    harness.get_by_role_and_label(Role::Button, "Check").click();
-    harness.run_steps(4);
-
-    assert_eq!(
-        harness.state().actions,
-        [Action::CheckBackup {
-            id: "docs".into(),
-            kind: syncfast_core::backup::state::CheckKind::Full,
-        }]
     );
 }
 
@@ -639,4 +879,24 @@ fn test_key_storage_and_the_guide_link_emit_their_actions() {
             ),
         ]
     );
+}
+
+#[test]
+fn a_passed_key_storage_test_says_available_and_a_failed_one_says_why() {
+    let passed = settings_pane(KeyStorageView::Tested(KeyBackend::Portal));
+    passed.get_by_label("Secret portal");
+    passed.get_by_label("Available");
+
+    let failed = settings_pane(KeyStorageView::Failed("the portal timed out".into()));
+    failed.get_by_label("Not available");
+    failed.get_by_label("the portal timed out");
+    assert!(failed.query_by_label("Available").is_none());
+}
+
+#[test]
+fn a_key_storage_that_was_not_tested_shows_neither_line() {
+    let harness = settings_pane(KeyStorageView::Found(KeyBackend::Portal));
+
+    assert!(harness.query_by_label("Available").is_none());
+    assert!(harness.query_by_label("Not available").is_none());
 }

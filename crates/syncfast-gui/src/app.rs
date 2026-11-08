@@ -23,7 +23,8 @@ use crate::sheets::{Sheets, Surroundings};
 use crate::snapshot::Snapshot;
 use crate::theme::{self, Palette, ThemeChoice, Themes};
 use crate::tray::{
-    BackupSummary, IconLook, PairView, Summary, SyncTray, TrayView, action as tray_action,
+    BackupSummary, BackupView, IconLook, PairView, Summary, SyncTray, TrayView,
+    action as tray_action,
 };
 use crate::ui::backup_detail::BackupDetailData;
 use crate::ui::backup_wizard::BackupFacts;
@@ -329,13 +330,16 @@ impl App {
             })
             .collect();
         let summary = Summary::of(&pairs);
-        let statuses: Vec<_> = self
+        let backups: Vec<BackupView> = self
             .snapshot
             .backups
             .iter()
-            .map(|backup| backup.status)
+            .map(|backup| BackupView {
+                status: backup.status,
+                runnable: backup.config.enabled && !backup.config.paths.is_empty(),
+            })
             .collect();
-        let backups = BackupSummary::of(&statuses);
+        let backups = BackupSummary::of(&backups);
         TrayView {
             look: IconLook::of(summary.worst, self.system_dark).counting(&backups),
             summary,
@@ -468,7 +472,7 @@ impl App {
             Event::BackupFilterTest { ref id, .. } if id.is_empty() => {
                 self.forward_to_sheets(&event);
             }
-            Event::KeyStorage(_) => {
+            Event::KeyStorage { .. } => {
                 self.forward_to_sheets(&event);
                 self.backup_screens.on_event(event);
             }
@@ -756,10 +760,6 @@ impl App {
             Action::SetBackupEnabled(id, enabled) => {
                 self.error = None;
                 self.backend.send(Command::SetBackupEnabled(id, enabled));
-            }
-            Action::CheckBackup { id, kind } => {
-                self.error = None;
-                self.backend.send(Command::CheckBackup { id, kind });
             }
             Action::OpenBackupDestination(id) => {
                 self.error = None;

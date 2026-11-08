@@ -44,6 +44,8 @@ pub struct BackupSnapshot {
     pub running: Option<RunningStep>,
     pub status: BackupStatus,
     pub progress: Option<BackupProgressFile>,
+    /// The folders in `config.paths` that are not on this computer now.
+    pub missing_folders: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -141,13 +143,25 @@ async fn load_backup(paths: &Paths, backup: &BackupConfig) -> BackupSnapshot {
     };
     let running = running_step(paths, &backup.id);
     let progress = running.and_then(|_| BackupProgressFile::read(paths, &backup.id));
+    let missing_folders = missing_folders(&backup.paths).await;
     BackupSnapshot {
         status: display_backup_status(backup, &state, running),
         config: backup.clone(),
         state,
         running,
         progress,
+        missing_folders,
     }
+}
+
+async fn missing_folders(folders: &[PathBuf]) -> Vec<PathBuf> {
+    let mut missing = Vec::new();
+    for folder in folders {
+        if folder.is_absolute() && !tokio::fs::try_exists(folder).await.unwrap_or(false) {
+            missing.push(folder.clone());
+        }
+    }
+    missing
 }
 
 /// A state file that cannot be read shows as a configuration error rather
@@ -429,5 +443,26 @@ mod tests {
         let snapshot = load(&paths).await;
 
         assert_eq!(snapshot.backups[0].status, BackupStatus::Error);
+    }
+
+    #[tokio::test]
+    async fn a_backup_lists_the_folders_that_are_not_on_the_computer() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let present = dir.path().join("present");
+        std::fs::create_dir(&present).unwrap();
+        let absent = dir.path().join("absent");
+        write_config(
+            &paths,
+            &format!(
+                "version = 3\n\n[[backup]]\nid = \"docs\"\nname = \"Documents\"\npaths = [\"{}\", \"{}\"]\ndest = \"/backups/docs\"\n",
+                present.display(),
+                absent.display()
+            ),
+        );
+
+        let snapshot = load(&paths).await;
+
+        assert_eq!(snapshot.backups[0].missing_folders, [absent]);
     }
 }

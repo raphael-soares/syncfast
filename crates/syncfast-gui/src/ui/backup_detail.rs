@@ -8,22 +8,22 @@ use egui::{Frame, Id, Margin, RichText, Ui, Vec2};
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use syncfast_core::backup::destination::Destination;
+use syncfast_core::backup::effects::retention_message;
+use syncfast_core::backup::run::KEY_ABSENT;
 use syncfast_core::backup::snapshots::SnapshotView;
 use syncfast_core::backup::state::CheckKind;
 use syncfast_core::backup::status::{BackupProgressFile, BackupStatus};
 use syncfast_core::bisync::Fault;
-use syncfast_core::notify::attention_body;
 use syncfast_core::restic::backup_host;
-use syncfast_core::state::GateKind;
+use syncfast_core::state::{Gate, GateKind};
 
 use super::backup_settings;
 use super::detail::padded;
 use super::format::{bytes, duration, eta, started};
 use super::menu::{self, Tone};
 use super::widgets::{
-    AlertButton, AnyStatus, BadgeSize, ButtonKind, alert, button_with_icon, empty_state,
-    icon_button, inline_error, list_row, progress_bar, secondary_button, segmented, status_badge,
-    toolbar,
+    AnyStatus, BadgeSize, ButtonKind, button_with_icon, empty_state, icon_button, inline_error,
+    list_row, progress_bar, secondary_button, segmented, status_badge, toolbar,
 };
 use super::{Action, ViewModel, filters};
 use crate::backup_runs::{BackupRunEntry, RunKind, RunResult};
@@ -35,9 +35,9 @@ const WHEN_WIDTH: f32 = 140.0;
 const DURATION_WIDTH: f32 = 60.0;
 const RESULT_WIDTH: f32 = 130.0;
 const FILES_WIDTH: f32 = 170.0;
-/// The expanded log scrolls past this height.
 const LOG_MAX_HEIGHT: f32 = 220.0;
 
+const SNAPSHOTS_NEED_KEY: &str = "The snapshots cannot be listed until the key is entered.";
 pub const KEY_CARD_TITLE: &str = "Save the backup key";
 pub const KEY_CARD_TEXT: &str = "An agent created this backup. Save its key now; without it you cannot restore on another computer.";
 
@@ -62,7 +62,6 @@ impl BackupTab {
     }
 }
 
-/// The snapshots of the repository, as `restic snapshots` last answered.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum SnapshotsView {
     #[default]
@@ -71,7 +70,6 @@ pub enum SnapshotsView {
     Failed(String),
 }
 
-/// What the screens of the selected backup remember beyond the snapshot.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct BackupDetailData {
     pub tab: BackupTab,
@@ -124,7 +122,6 @@ pub fn detail(ui: &mut Ui, vm: &ViewModel, backup: &BackupSnapshot) -> Vec<Actio
                 BackupTab::Settings => actions.extend(backup_settings::show(ui, vm, backup)),
             });
     });
-    full_check_alert(ui.ctx(), backup, &mut actions);
     actions
 }
 
@@ -178,13 +175,15 @@ fn pause_button(ui: &mut Ui, backup: &BackupSnapshot, actions: &mut Vec<Action>)
     } else {
         (Icon::Play, "Resume")
     };
-    if button_with_icon(ui, ButtonKind::Secondary, Some(icon), label).clicked() {
+    let can_toggle = enabled || !backup.config.paths.is_empty();
+    let clicked = ui
+        .add_enabled_ui(can_toggle, |ui| {
+            button_with_icon(ui, ButtonKind::Secondary, Some(icon), label).clicked()
+        })
+        .inner;
+    if clicked {
         actions.push(Action::SetBackupEnabled(backup.config.id.clone(), !enabled));
     }
-}
-
-fn full_check_key(id: &str) -> Id {
-    Id::new(("backup-full-check", id))
 }
 
 fn more_menu(
@@ -194,35 +193,9 @@ fn more_menu(
     actions: &mut Vec<Action>,
 ) {
     let id = &backup.config.id;
-    let check_tone = if backup.running.is_some() {
-        Tone::Disabled
-    } else {
-        Tone::Normal
-    };
     menu::popup(button, palette, |ui| {
         if menu::item(ui, palette, Icon::KeyRound, "Show Key…", Tone::Normal) {
             actions.push(Action::ShowBackupKey(id.clone()));
-        }
-        ui.separator();
-        ui.label(
-            RichText::new("Check Now")
-                .font(theme::subheadline())
-                .color(palette.dim),
-        );
-        if menu::item(ui, palette, Icon::ShieldCheck, "Quick Check", check_tone) {
-            actions.push(Action::CheckBackup {
-                id: id.clone(),
-                kind: CheckKind::Quick,
-            });
-        }
-        if menu::item(ui, palette, Icon::ShieldCheck, "Check Sample", check_tone) {
-            actions.push(Action::CheckBackup {
-                id: id.clone(),
-                kind: CheckKind::Sample,
-            });
-        }
-        if menu::item(ui, palette, Icon::ShieldCheck, "Full Check…", check_tone) {
-            ui.data_mut(|data| data.insert_temp(full_check_key(id), true));
         }
         if local_destination(backup) {
             ui.separator();
@@ -241,34 +214,6 @@ fn more_menu(
             actions.push(Action::RemoveBackup(id.clone()));
         }
     });
-}
-
-fn full_check_alert(ctx: &egui::Context, backup: &BackupSnapshot, actions: &mut Vec<Action>) {
-    let key = full_check_key(&backup.config.id);
-    if !ctx.data(|data| data.get_temp::<bool>(key)).unwrap_or(false) {
-        return;
-    }
-    let text = format!(
-        "This downloads everything from {} and can take hours.",
-        backup.config.dest
-    );
-    let chosen = alert(
-        ctx,
-        "backup-full-check",
-        "Read all backup data?",
-        &text,
-        &[AlertButton::cancel("Cancel"), AlertButton::normal("Check")],
-        |_| {},
-    );
-    if let Some(index) = chosen {
-        ctx.data_mut(|data| data.remove::<bool>(key));
-        if index == 1 {
-            actions.push(Action::CheckBackup {
-                id: backup.config.id.clone(),
-                kind: CheckKind::Full,
-            });
-        }
-    }
 }
 
 fn key_card(ui: &mut Ui, id: &str, palette: &Palette, actions: &mut Vec<Action>) {
@@ -298,11 +243,12 @@ fn key_card(ui: &mut Ui, id: &str, palette: &Palette, actions: &mut Vec<Action>)
         });
 }
 
-/// What the card says beside the status, and the button that goes with it.
 struct CardText {
     phrase: String,
     /// Raw text of the failure, selectable so the user can copy it.
     detail: Option<String>,
+    /// The last failed clean-up of old snapshots, when the phrase is not it.
+    note: Option<String>,
     button: Option<(&'static str, Action)>,
 }
 
@@ -341,13 +287,89 @@ fn last_backup_line(backup: &BackupSnapshot, now: Timestamp) -> String {
     )
 }
 
-fn card_text(backup: &BackupSnapshot, now: Timestamp) -> CardText {
-    let plain = |phrase: String| CardText {
+const AUTH_SENTENCE: &str = "Google Drive refused the account. Reconnect it to continue.";
+const KEY_MISSING_SENTENCE: &str = "The key for this backup is missing on this computer.";
+const WRONG_KEY_SENTENCE: &str = "The saved key does not open this backup.";
+
+fn plain(phrase: String) -> CardText {
+    CardText {
         phrase,
         detail: None,
+        note: None,
         button: None,
-    };
+    }
+}
+
+fn needs_attention_card(backup: &BackupSnapshot, gate: &Gate) -> CardText {
     let id = backup.config.id.clone();
+    let detail = Some(gate.detail.clone()).filter(|detail| !detail.is_empty());
+    let named = |fallback: &str| {
+        if gate.detail.is_empty() {
+            fallback.to_owned()
+        } else {
+            gate.detail.clone()
+        }
+    };
+    let with_detail = |phrase: String, button| CardText {
+        phrase,
+        detail: detail.clone(),
+        note: None,
+        button,
+    };
+    match gate.fault {
+        Some(Fault::Auth | Fault::Account) => with_detail(
+            AUTH_SENTENCE.to_owned(),
+            account_of(backup).map(|name| ("Reconnect Account…", Action::ReconnectAccount(name))),
+        ),
+        Some(Fault::Quota) => with_detail("Google Drive is full.".to_owned(), None),
+        Some(Fault::Permission) => with_detail(
+            "No permission to the backup folder on Google Drive.".to_owned(),
+            None,
+        ),
+        Some(Fault::RemoteMissing | Fault::RepositoryMissing) => {
+            with_detail("The backup folder is missing.".to_owned(), None)
+        }
+        Some(Fault::DestinationMissing) => with_detail(
+            format!(
+                "{} is not available. Backups resume when it is back.",
+                backup.config.dest
+            ),
+            None,
+        ),
+        Some(fault @ (Fault::KeyMissing | Fault::WrongKey)) => CardText {
+            phrase: if fault == Fault::KeyMissing {
+                KEY_MISSING_SENTENCE
+            } else {
+                WRONG_KEY_SENTENCE
+            }
+            .to_owned(),
+            detail: detail.filter(|detail| detail != KEY_ABSENT),
+            note: None,
+            button: Some(("Enter Key…", Action::EnterBackupKey(id))),
+        },
+        Some(Fault::SourceMissing) => plain(format!(
+            "{} is missing. Backups resume when it is back.",
+            named("A folder to back up")
+        )),
+        Some(Fault::SourceEmpty) => plain(format!(
+            "{} is empty. If it is on a drive, mount it.",
+            named("A folder to back up")
+        )),
+        Some(Fault::RepoDamaged) => with_detail(
+            "The check found damaged data. Backups are paused until you review it.".to_owned(),
+            None,
+        ),
+        Some(Fault::LocalEmpty | Fault::RemoteEmpty) | None => {
+            let cleanup = backup.state.prune_error.as_deref().map(retention_message);
+            match cleanup {
+                Some(line) if line == gate.detail => plain(line),
+                _ => with_detail("Backups keep failing.".to_owned(), None),
+            }
+        }
+    }
+}
+
+fn base_card_text(backup: &BackupSnapshot, now: Timestamp) -> CardText {
     if let Some(gate) = &backup.state.gate
         && backup.status == BackupStatus::Error
     {
@@ -355,32 +377,17 @@ fn card_text(backup: &BackupSnapshot, now: Timestamp) -> CardText {
             GateKind::AuthError => {
                 let account = account_of(backup);
                 CardText {
-                    phrase: match &account {
-                        Some(name) => format!("Reconnect \"{name}\" in Settings > Accounts."),
-                        None => "The account of this backup was disconnected.".to_owned(),
+                    phrase: if account.is_some() {
+                        AUTH_SENTENCE.to_owned()
+                    } else {
+                        "The account of this backup was disconnected.".to_owned()
                     },
-                    detail: None,
                     button: account
                         .map(|name| ("Reconnect Account…", Action::ReconnectAccount(name))),
+                    ..plain(String::new())
                 }
             }
-            GateKind::NeedsAttention => CardText {
-                phrase: attention_body(gate.fault, &gate.detail).to_owned(),
-                detail: Some(gate.detail.clone()).filter(|detail| !detail.is_empty()),
-                button: match gate.fault {
-                    Some(Fault::KeyMissing | Fault::WrongKey) => {
-                        Some(("Enter Key…", Action::EnterBackupKey(id)))
-                    }
-                    Some(Fault::RepoDamaged) => Some((
-                        "Check Again",
-                        Action::CheckBackup {
-                            id,
-                            kind: CheckKind::Full,
-                        },
-                    )),
-                    _ => None,
-                },
-            },
+            GateKind::NeedsAttention => needs_attention_card(backup, gate),
             _ => plain(if gate.detail.is_empty() {
                 "The configuration of this backup has a problem.".to_owned()
             } else {
@@ -393,6 +400,9 @@ fn card_text(backup: &BackupSnapshot, now: Timestamp) -> CardText {
             "{} is not available. Backups resume when it is back.",
             backup.config.dest
         ),
+        BackupStatus::Paused if backup.config.paths.is_empty() => {
+            "This backup has no folder yet. Add one with Add Folder… in Settings.".into()
+        }
         BackupStatus::Paused => "This backup is paused. Resume it to back up again.".into(),
         BackupStatus::Offline => "No network. Backups resume when it is back.".into(),
         BackupStatus::Failing => format!(
@@ -402,6 +412,24 @@ fn card_text(backup: &BackupSnapshot, now: Timestamp) -> CardText {
         BackupStatus::Retrying => "The last backup failed. It will try again soon.".into(),
         BackupStatus::UpToDate | BackupStatus::SaveKey => last_backup_line(backup, now),
         BackupStatus::BackingUp | BackupStatus::Checking | BackupStatus::Error => String::new(),
+    })
+}
+
+fn card_text(backup: &BackupSnapshot, now: Timestamp) -> CardText {
+    let mut text = base_card_text(backup, now);
+    text.note = backup
+        .state
+        .prune_error
+        .as_deref()
+        .map(retention_message)
+        .filter(|line| *line != text.phrase);
+    text
+}
+
+fn key_problem(backup: &BackupSnapshot) -> bool {
+    backup.state.gate.as_ref().is_some_and(|gate| {
+        gate.kind == GateKind::NeedsAttention
+            && matches!(gate.fault, Some(Fault::KeyMissing | Fault::WrongKey))
     })
 }
 
@@ -446,6 +474,16 @@ fn status_card(
                 ui.add(
                     egui::Label::new(
                         RichText::new(detail)
+                            .font(theme::subheadline())
+                            .color(palette.secondary),
+                    )
+                    .selectable(true),
+                );
+            }
+            if let Some(note) = text.note {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(note)
                             .font(theme::subheadline())
                             .color(palette.secondary),
                     )
@@ -517,6 +555,9 @@ fn snapshots_tab(ui: &mut Ui, vm: &ViewModel, backup: &BackupSnapshot) -> Vec<Ac
         SnapshotsView::Loading => {
             progress_bar(ui, "Loading snapshots", None);
         }
+        SnapshotsView::Failed(_) if key_problem(backup) => {
+            inline_error(ui, SNAPSHOTS_NEED_KEY);
+        }
         SnapshotsView::Failed(text) => {
             inline_error(ui, text);
             ui.add_space(space::S);
@@ -525,13 +566,8 @@ fn snapshots_tab(ui: &mut Ui, vm: &ViewModel, backup: &BackupSnapshot) -> Vec<Ac
             }
         }
         SnapshotsView::Loaded(list) if list.is_empty() => {
-            if empty_state(
-                ui,
-                Icon::Archive,
-                "No snapshots yet",
-                None,
-                Some("Back Up Now"),
-            ) {
+            let button = can_back_up(backup).then_some("Back Up Now");
+            if empty_state(ui, Icon::Archive, "No snapshots yet", None, button) {
                 actions.push(Action::BackUpNow(id));
             }
         }
