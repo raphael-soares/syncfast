@@ -576,7 +576,11 @@ impl RunLog {
         let mut bytes = Vec::with_capacity(text.len() + 1);
         bytes.extend_from_slice(text.as_bytes());
         bytes.push(b'\n');
-        if let Err(err) = self.file.write_all(&bytes).await {
+        let written = match self.file.write_all(&bytes).await {
+            Ok(()) => self.file.flush().await,
+            Err(err) => Err(err),
+        };
+        if let Err(err) = written {
             log::warn!("cannot write the run log: {err}");
         }
     }
