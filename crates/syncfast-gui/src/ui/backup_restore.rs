@@ -278,6 +278,7 @@ fn node_row(ui: &mut Ui, browse: &Browse, node: &NodeView, actions: &mut Vec<Act
             egui::vec2(name_width, ROW_HEIGHT),
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
+                ui.set_min_size(egui::vec2(name_width, ROW_HEIGHT));
                 let name = ui
                     .add(
                         egui::Label::new(
@@ -300,6 +301,7 @@ fn node_row(ui: &mut Ui, browse: &Browse, node: &NodeView, actions: &mut Vec<Act
             egui::vec2(SIZE_WIDTH, ROW_HEIGHT),
             egui::Layout::right_to_left(egui::Align::Center),
             |ui| {
+                ui.set_min_size(egui::vec2(SIZE_WIDTH, ROW_HEIGHT));
                 if let (false, Some(total)) = (folder, node.size) {
                     ui.label(
                         RichText::new(bytes(total))
@@ -309,13 +311,20 @@ fn node_row(ui: &mut Ui, browse: &Browse, node: &NodeView, actions: &mut Vec<Act
                 }
             },
         );
-        if let Some(at) = node.mtime {
-            ui.label(
-                RichText::new(modified(at))
-                    .font(theme::callout())
-                    .color(palette.secondary),
-            );
-        }
+        ui.allocate_ui_with_layout(
+            egui::vec2(DATE_WIDTH, ROW_HEIGHT),
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                ui.set_min_size(egui::vec2(DATE_WIDTH, ROW_HEIGHT));
+                if let Some(at) = node.mtime {
+                    ui.label(
+                        RichText::new(modified(at))
+                            .font(theme::callout())
+                            .color(palette.secondary),
+                    );
+                }
+            },
+        );
     });
     if folder && (opened || row.clicked()) {
         emit(actions, RestoreAction::Open(node.path.clone()));
