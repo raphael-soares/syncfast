@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/raphael-soares/syncfast/compare/v0.12.2...v0.13.0) (2026-11-08)
+
+
+### Features
+
+* add the restic backup engine, key store and backup config ([#86](https://github.com/raphael-soares/syncfast/issues/86)) ([255fc66](https://github.com/raphael-soares/syncfast/commit/255fc669c76d337b43d031bc886de01038129d47))
+
 ## [0.12.2](https://github.com/raphael-soares/syncfast/compare/v0.12.1...v0.12.2) (2026-11-08)
 
 
