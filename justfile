@@ -14,6 +14,9 @@ mutants:
 capture-fixtures *scenarios:
     crates/syncfast-core/tests/capture_fixtures.sh {{scenarios}}
 
+capture-restic-fixtures *scenarios:
+    crates/syncfast-core/tests/capture_restic_fixtures.sh {{scenarios}}
+
 dev-env:
     mkdir -p .dev/config/syncfast .dev/state .dev/data .dev/run .dev/remote
     printf '[devremote]\ntype = alias\nremote = %s/.dev/remote\n' "$PWD" > .dev/rclone.conf

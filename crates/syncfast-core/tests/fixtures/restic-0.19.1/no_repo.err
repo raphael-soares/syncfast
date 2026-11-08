@@ -1,0 +1,1 @@
+{"message_type":"exit_error","code":10,"message":"Fatal: repository does not exist: unable to open config file: \u003cconfig/\u003e does not exist\nIs there a repository at the following location?\nrclone:testremote:/tmp/fixture/nope"}

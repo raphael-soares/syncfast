@@ -1,0 +1,9 @@
+{"message_type":"status","seconds_elapsed":1,"percent_done":3.7252902845841263e-9,"total_files":6,"files_restored":1,"total_bytes":1610612742,"bytes_restored":6}
+{"message_type":"status","seconds_elapsed":2,"percent_done":0.12972617163114433,"total_files":6,"files_restored":1,"total_bytes":1610612742,"bytes_restored":208938625}
+{"message_type":"status","seconds_elapsed":3,"percent_done":0.2808499611385789,"total_files":6,"files_restored":1,"total_bytes":1610612742,"bytes_restored":452340526}
+{"message_type":"status","seconds_elapsed":4,"percent_done":0.4362450095405988,"total_files":6,"files_restored":1,"total_bytes":1610612742,"bytes_restored":702621771}
+{"message_type":"status","seconds_elapsed":5,"percent_done":0.5850109678320178,"total_files":6,"files_restored":1,"total_bytes":1610612742,"bytes_restored":942226119}
+{"message_type":"status","seconds_elapsed":6,"percent_done":0.7136622373747494,"total_files":6,"files_restored":1,"total_bytes":1610612742,"bytes_restored":1149433493}
+{"message_type":"status","seconds_elapsed":7,"percent_done":0.8425537558549875,"total_files":6,"files_restored":1,"total_bytes":1610612742,"bytes_restored":1357027815}
+{"message_type":"status","seconds_elapsed":8,"percent_done":0.9712754191038183,"total_files":6,"files_restored":1,"total_bytes":1610612742,"bytes_restored":1564348566}
+{"message_type":"summary","seconds_elapsed":8,"total_files":6,"files_restored":6,"total_bytes":1610612742,"bytes_restored":1610612742}
