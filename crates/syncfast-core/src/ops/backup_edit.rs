@@ -428,6 +428,21 @@ mod tests {
     }
 
     #[test]
+    fn removing_a_backup_is_refused_for_the_user_whatever_the_id() {
+        for id in ["docs", "", "nope"] {
+            let err = Ops::remove_backup(id).unwrap_err();
+
+            assert!(matches!(err, OpError::UserOnly(_)), "{id}: {err:?}");
+            assert_eq!(err.exit_code(), 4);
+        }
+    }
+
+    #[test]
+    fn the_current_folder_is_the_one_of_the_process() {
+        assert_eq!(current_folder().unwrap(), std::env::current_dir().unwrap());
+    }
+
+    #[test]
     fn a_keep_value_changes_alone() {
         let changed = after("keep.weekly", &["9"]);
 
