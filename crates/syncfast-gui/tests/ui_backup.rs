@@ -14,7 +14,7 @@ use syncfast_core::backup::status::{BackupProgressFile, BackupStatus, RunningSte
 use syncfast_core::bisync::Fault;
 use syncfast_core::config::Config;
 use syncfast_core::state::{Gate, GateKind};
-use syncfast_gui::backup_runs::{BackupRunEntry, RunKind, RunResult};
+use syncfast_gui::backup_runs::{BackupRunEntry, RunResult};
 use syncfast_gui::gui_state::SettingsPane;
 use syncfast_gui::snapshot::BackupSnapshot;
 use syncfast_gui::ui::backup_detail::{BackupDetailData, BackupTab, SnapshotsView};
@@ -242,6 +242,10 @@ fn the_raw_detail_shows_under_the_sentence_only_when_it_adds_something() {
         (Fault::KeyMissing, KEY_ABSENT),
         (Fault::SourceMissing, "/work/docs"),
         (Fault::SourceEmpty, "/work/docs"),
+        (
+            Fault::DestinationMissing,
+            "gdrive:Backups/docs has not been available since Jan 1",
+        ),
     ];
     for (fault, detail) in hidden {
         let harness = card(
@@ -302,7 +306,8 @@ fn a_failed_snapshot_list_of_a_missing_key_says_so_and_does_not_offer_try_again(
     vm.backup.snapshots = SnapshotsView::Failed("exit status 1: wrong password".into());
     let harness = screen(vm);
 
-    harness.get_by_label("The snapshots cannot be listed until the key is entered.");
+    let sentence = "The key for this backup is missing on this computer.";
+    assert_eq!(harness.query_all_by_label(sentence).count(), 2);
     assert!(harness.query_by_label("Try Again").is_none());
     assert!(harness.query_by_label_contains("wrong password").is_none());
 }
@@ -679,12 +684,10 @@ fn run(id: &str, result: RunResult, messages: &[&str]) -> BackupRunEntry {
         id: id.to_owned(),
         started: None,
         seconds: Some(7),
-        kind: RunKind::Backup,
         result,
         files_new: Some(3),
         files_changed: Some(2),
         data_added: Some(2048),
-        check_errors: None,
         messages: messages.iter().map(|text| (*text).to_owned()).collect(),
     }
 }
@@ -854,11 +857,12 @@ fn the_backups_pane_warns_about_the_host_keyring() {
 }
 
 #[test]
-fn the_backups_pane_says_when_no_key_storage_answers() {
-    let harness = settings_pane(KeyStorageView::Missing);
+fn the_backups_pane_says_when_no_key_storage_answers_and_why() {
+    let harness = settings_pane(KeyStorageView::Missing("no portal on the bus".into()));
 
     harness
         .get_by_label("No Secret portal and no Secret Service answered. See docs/guide/backup.md.");
+    harness.get_by_label("no portal on the bus");
 }
 
 #[test]

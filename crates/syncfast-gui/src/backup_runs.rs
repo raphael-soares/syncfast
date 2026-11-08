@@ -11,20 +11,11 @@ use jiff::civil::DateTime;
 use jiff::tz::TimeZone;
 use serde::Deserialize;
 use serde_json::Value;
-use syncfast_core::backup::state::CheckKind;
 use syncfast_core::paths::Paths;
 use syncfast_core::runs::MESSAGES_KEPT;
 use syncfast_core::state::RUNS_KEPT;
 
 const STAMP_FORMAT: &str = "%Y%m%d-%H%M%S";
-
-/// What a round did: the backup itself or one of the checks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RunKind {
-    Backup,
-    /// `None` when the log does not say how much it read.
-    Check(Option<CheckKind>),
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunResult {
@@ -44,13 +35,10 @@ pub struct BackupRunEntry {
     pub started: Option<Zoned>,
     /// `None` while the round runs.
     pub seconds: Option<u64>,
-    pub kind: RunKind,
     pub result: RunResult,
     pub files_new: Option<u64>,
     pub files_changed: Option<u64>,
     pub data_added: Option<u64>,
-    /// Of a check: how many errors it found.
-    pub check_errors: Option<u64>,
     /// The last [`MESSAGES_KEPT`] messages of the log, oldest first.
     pub messages: Vec<String>,
 }
@@ -71,10 +59,6 @@ impl BackupRunEntry {
 #[derive(Deserialize)]
 struct Line {
     #[serde(default)]
-    syncfast_step: Option<String>,
-    #[serde(default)]
-    kind: Option<CheckKind>,
-    #[serde(default)]
     message_type: Option<String>,
     #[serde(default)]
     snapshot_id: Option<String>,
@@ -84,8 +68,6 @@ struct Line {
     files_changed: Option<u64>,
     #[serde(default)]
     data_added: Option<u64>,
-    #[serde(default)]
-    num_errors: Option<u64>,
     #[serde(default)]
     message: Option<String>,
     #[serde(default)]
@@ -111,12 +93,10 @@ impl Line {
 /// What the lines of a log add up to.
 #[derive(Default)]
 struct Tally {
-    kind: Option<RunKind>,
     snapshot: bool,
     files_new: Option<u64>,
     files_changed: Option<u64>,
     data_added: Option<u64>,
-    num_errors: Option<u64>,
     error_lines: u64,
     messages: Vec<String>,
 }
@@ -127,21 +107,12 @@ impl Tally {
             self.messages.push(text.to_owned());
             return;
         };
-        if let Some(step) = &line.syncfast_step {
-            self.kind = Some(if step == "check" {
-                RunKind::Check(line.kind)
-            } else {
-                RunKind::Backup
-            });
-            return;
-        }
         match line.message_type.as_deref() {
             Some("summary") => {
                 self.snapshot |= line.snapshot_id.as_deref().is_some_and(|id| !id.is_empty());
                 self.files_new = line.files_new.or(self.files_new);
                 self.files_changed = line.files_changed.or(self.files_changed);
                 self.data_added = line.data_added.or(self.data_added);
-                self.num_errors = line.num_errors.or(self.num_errors);
             }
             Some("error") => {
                 self.error_lines += 1;
@@ -177,22 +148,14 @@ fn entry(
     for line in text.lines().filter(|line| !line.trim().is_empty()) {
         tally.add(line);
     }
-    let kind = tally.kind.unwrap_or(RunKind::Backup);
-    let check_errors = match kind {
-        RunKind::Check(_) => tally.num_errors.or(Some(tally.error_lines)),
-        RunKind::Backup => None,
-    };
     let result = if in_progress {
         RunResult::Running
+    } else if tally.snapshot && tally.error_lines > 0 {
+        RunResult::DoneWithWarnings(tally.error_lines)
+    } else if tally.snapshot {
+        RunResult::Done
     } else {
-        match kind {
-            RunKind::Backup if tally.snapshot && tally.error_lines > 0 => {
-                RunResult::DoneWithWarnings(tally.error_lines)
-            }
-            RunKind::Backup if tally.snapshot => RunResult::Done,
-            RunKind::Check(_) if tally.num_errors == Some(0) => RunResult::Done,
-            _ => RunResult::Failed,
-        }
+        RunResult::Failed
     };
     let started = started_of(name);
     let seconds = match (in_progress, &started, finished) {
@@ -204,12 +167,10 @@ fn entry(
         id: name.to_owned(),
         started,
         seconds,
-        kind,
         result,
         files_new: tally.files_new,
         files_changed: tally.files_changed,
         data_added: tally.data_added,
-        check_errors,
         messages: tally.messages.split_off(skip),
     }
 }
@@ -282,7 +243,6 @@ mod tests {
         let run = entry("20260102-150405.jsonl", OK, Some(at(7)), false);
 
         assert_eq!(run.result, RunResult::Done);
-        assert_eq!(run.kind, RunKind::Backup);
         assert_eq!(run.files_changed_total(), Some(5));
         assert_eq!(run.data_added, Some(2048));
         assert_eq!(run.seconds, Some(7));
@@ -323,22 +283,6 @@ mod tests {
 
         assert_eq!(run.result, RunResult::Running);
         assert_eq!(run.seconds, None);
-    }
-
-    #[test]
-    fn a_check_log_reports_its_kind_and_its_errors() {
-        let text = concat!(
-            r#"{"syncfast_step":"check","kind":"sample"}"#,
-            "\n",
-            r#"{"message_type":"summary","num_errors":2}"#,
-            "\n",
-        );
-
-        let run = entry("20260102-150405.jsonl", text, Some(at(3)), false);
-
-        assert_eq!(run.kind, RunKind::Check(Some(CheckKind::Sample)));
-        assert_eq!(run.check_errors, Some(2));
-        assert_eq!(run.result, RunResult::Failed);
     }
 
     #[test]

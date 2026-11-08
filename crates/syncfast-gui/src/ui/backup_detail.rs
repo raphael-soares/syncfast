@@ -11,7 +11,6 @@ use syncfast_core::backup::destination::Destination;
 use syncfast_core::backup::effects::retention_message;
 use syncfast_core::backup::run::KEY_ABSENT;
 use syncfast_core::backup::snapshots::SnapshotView;
-use syncfast_core::backup::state::CheckKind;
 use syncfast_core::backup::status::{BackupProgressFile, BackupStatus};
 use syncfast_core::bisync::Fault;
 use syncfast_core::restic::backup_host;
@@ -26,7 +25,7 @@ use super::widgets::{
     list_row, progress_bar, secondary_button, segmented, status_badge, toolbar,
 };
 use super::{Action, ViewModel, filters};
-use crate::backup_runs::{BackupRunEntry, RunKind, RunResult};
+use crate::backup_runs::{BackupRunEntry, RunResult};
 use crate::icons::Icon;
 use crate::snapshot::BackupSnapshot;
 use crate::theme::{self, Palette, radius, size, space};
@@ -37,7 +36,6 @@ const RESULT_WIDTH: f32 = 130.0;
 const FILES_WIDTH: f32 = 170.0;
 const LOG_MAX_HEIGHT: f32 = 220.0;
 
-const SNAPSHOTS_NEED_KEY: &str = "The snapshots cannot be listed until the key is entered.";
 pub const KEY_CARD_TITLE: &str = "Save the backup key";
 pub const KEY_CARD_TEXT: &str = "An agent created this backup. Save its key now; without it you cannot restore on another computer.";
 
@@ -329,13 +327,10 @@ fn needs_attention_card(backup: &BackupSnapshot, gate: &Gate) -> CardText {
         Some(Fault::RemoteMissing | Fault::RepositoryMissing) => {
             with_detail("The backup folder is missing.".to_owned(), None)
         }
-        Some(Fault::DestinationMissing) => with_detail(
-            format!(
-                "{} is not available. Backups resume when it is back.",
-                backup.config.dest
-            ),
-            None,
-        ),
+        Some(Fault::DestinationMissing) => plain(format!(
+            "{} is not available. Backups resume when it is back.",
+            backup.config.dest
+        )),
         Some(fault @ (Fault::KeyMissing | Fault::WrongKey)) => CardText {
             phrase: if fault == Fault::KeyMissing {
                 KEY_MISSING_SENTENCE
@@ -411,7 +406,7 @@ fn base_card_text(backup: &BackupSnapshot, now: Timestamp) -> CardText {
         ),
         BackupStatus::Retrying => "The last backup failed. It will try again soon.".into(),
         BackupStatus::UpToDate | BackupStatus::SaveKey => last_backup_line(backup, now),
-        BackupStatus::BackingUp | BackupStatus::Checking | BackupStatus::Error => String::new(),
+        BackupStatus::BackingUp | BackupStatus::Error => String::new(),
     })
 }
 
@@ -448,16 +443,9 @@ fn status_card(
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = space::S;
             status_badge(ui, backup.status, BadgeSize::Large);
-            match backup.status {
-                BackupStatus::BackingUp => {
-                    progress_block(ui, backup.progress.as_ref(), palette);
-                    return;
-                }
-                BackupStatus::Checking => {
-                    progress_bar(ui, "Check progress", None);
-                    return;
-                }
-                _ => {}
+            if backup.status == BackupStatus::BackingUp {
+                progress_block(ui, backup.progress.as_ref(), palette);
+                return;
             }
             let text = card_text(backup, now);
             if !text.phrase.is_empty() {
@@ -556,7 +544,7 @@ fn snapshots_tab(ui: &mut Ui, vm: &ViewModel, backup: &BackupSnapshot) -> Vec<Ac
             progress_bar(ui, "Loading snapshots", None);
         }
         SnapshotsView::Failed(_) if key_problem(backup) => {
-            inline_error(ui, SNAPSHOTS_NEED_KEY);
+            inline_error(ui, KEY_MISSING_SENTENCE);
         }
         SnapshotsView::Failed(text) => {
             inline_error(ui, text);
@@ -652,48 +640,23 @@ fn activity_tab(
     Vec::new()
 }
 
-fn check_label(kind: Option<CheckKind>) -> &'static str {
-    match kind {
-        Some(CheckKind::Quick) => "Quick check",
-        Some(CheckKind::Sample) => "Sample check",
-        Some(CheckKind::Full) => "Full check",
-        None => "Check",
-    }
-}
-
 fn run_status(run: &BackupRunEntry) -> AnyStatus {
-    let status = match (run.kind, run.result) {
-        (RunKind::Backup, RunResult::Running) => BackupStatus::BackingUp,
-        (RunKind::Check(_), RunResult::Running) => BackupStatus::Checking,
-        (_, RunResult::Failed) => BackupStatus::Failing,
-        (RunKind::Check(_), _) if run.check_errors.unwrap_or(0) > 0 => BackupStatus::Failing,
+    let status = match run.result {
+        RunResult::Running => BackupStatus::BackingUp,
+        RunResult::Failed => BackupStatus::Failing,
         _ => BackupStatus::UpToDate,
     };
     status.into()
 }
 
 fn run_counters(run: &BackupRunEntry) -> String {
-    match run.kind {
-        RunKind::Backup => {
-            if let RunResult::DoneWithWarnings(files) = run.result {
-                return format!("{} could not be read", plural_files(files));
-            }
-            match (run.files_changed_total(), run.data_added) {
-                (Some(files), Some(added)) => format!("+{files} new \u{b7} {}", bytes(added)),
-                (Some(files), None) => format!("+{files} new"),
-                _ => String::new(),
-            }
-        }
-        RunKind::Check(kind) => {
-            let found = match run.check_errors {
-                Some(0) => "OK".to_owned(),
-                Some(1) => "1 error".to_owned(),
-                Some(errors) => format!("{errors} errors"),
-                None if run.result == RunResult::Failed => "Failed".to_owned(),
-                None => String::new(),
-            };
-            format!("{} \u{b7} {found}", check_label(kind))
-        }
+    if let RunResult::DoneWithWarnings(files) = run.result {
+        return format!("{} could not be read", plural_files(files));
+    }
+    match (run.files_changed_total(), run.data_added) {
+        (Some(files), Some(added)) => format!("+{files} new \u{b7} {}", bytes(added)),
+        (Some(files), None) => format!("+{files} new"),
+        _ => String::new(),
     }
 }
 

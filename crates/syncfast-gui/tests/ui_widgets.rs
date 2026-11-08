@@ -137,6 +137,19 @@ fn sheet_with_back_puts_cancel_left_of_back_and_the_primary() {
 }
 
 #[test]
+fn sheet_with_back_and_no_cancel_has_back_and_the_primary_only() {
+    let mut buttons = SheetButtons::new("Continue");
+    buttons.back = true;
+    buttons.cancel = false;
+    let mut harness = sheet_harness(buttons);
+    harness.run();
+
+    assert!(harness.query_by_label("Cancel").is_none());
+    harness.get_by_label("Back");
+    harness.get_by_label("Continue");
+}
+
+#[test]
 fn sheet_without_back_puts_cancel_left_of_the_primary() {
     let mut harness = sheet_harness(SheetButtons::new("Sync"));
     harness.run();

@@ -23,7 +23,7 @@ pub enum KeyStorageView {
     #[default]
     Checking,
     Found(KeyBackend),
-    Missing,
+    Missing(String),
     Tested(KeyBackend),
     Failed(String),
 }
@@ -42,7 +42,7 @@ impl KeyStorageView {
                 KeyBackend::Plain => "Files in the data folder (development only)",
                 KeyBackend::Memory => "Memory (tests only)",
             },
-            Self::Missing => NO_STORAGE,
+            Self::Missing(_) => NO_STORAGE,
             Self::Failed(_) => TEST_FAILED,
         }
     }
@@ -73,7 +73,7 @@ pub fn show(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
                     .color(palette.secondary),
             );
         }
-        KeyStorageView::Failed(text) => {
+        KeyStorageView::Missing(text) | KeyStorageView::Failed(text) => {
             ui.label(
                 RichText::new(text)
                     .font(theme::callout())

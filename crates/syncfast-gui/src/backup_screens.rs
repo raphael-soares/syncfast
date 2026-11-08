@@ -148,7 +148,7 @@ impl BackupScreens {
             Event::KeyStorage { test, outcome } => {
                 self.storage = match (test, outcome) {
                     (false, Ok(backend)) => KeyStorageView::Found(backend),
-                    (false, Err(_)) => KeyStorageView::Missing,
+                    (false, Err(text)) => KeyStorageView::Missing(text),
                     (true, Ok(backend)) => KeyStorageView::Tested(backend),
                     (true, Err(text)) => KeyStorageView::Failed(text),
                 };
@@ -463,7 +463,7 @@ mod tests {
         let missing = shown(&screens, "docs").key_storage;
 
         assert_eq!(found, KeyStorageView::Found(KeyBackend::HostKeyring));
-        assert_eq!(missing, KeyStorageView::Missing);
+        assert_eq!(missing, KeyStorageView::Missing("none".to_owned()));
     }
 
     #[test]

@@ -128,7 +128,7 @@ fn footer(ui: &mut Ui, buttons: &SheetButtons<'_>) -> Option<SheetAction> {
     let mut action = None;
     ui.add_space(space::XS);
     ui.horizontal(|ui| {
-        if buttons.back && secondary_button(ui, "Cancel").clicked() {
+        if buttons.back && buttons.cancel && secondary_button(ui, "Cancel").clicked() {
             action = Some(SheetAction::Cancel);
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {

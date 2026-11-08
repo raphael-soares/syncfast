@@ -249,7 +249,6 @@ pub enum Action {
     /// Selects a backup; a sync is selected again with `SelectPair`.
     SelectBackup(String),
     SelectBackupTab(backup_detail::BackupTab),
-    /// Starts a backup round now.
     BackUpNow(String),
     BackUpAll,
     /// Pause (`false`) or resume (`true`) one backup.
@@ -278,9 +277,7 @@ pub enum Action {
     ResizeSidebar(f32),
     /// Opens the Add Sync sheet.
     AddSync,
-    /// Opens the New Backup sheet.
     NewBackup,
-    /// Opens the Add Existing Backup sheet.
     AddExistingBackup,
     /// Asks to show the key of a backup (the alert decides; a backup whose
     /// key was never saved opens the key sheet at once).

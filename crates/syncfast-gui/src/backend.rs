@@ -163,13 +163,11 @@ pub enum Command {
     /// Take an account out of rclone's config. Its syncs stay in the config
     /// and stop with the account missing.
     RemoveAccount(String),
-    /// Start a backup round now.
     BackUpNow(String),
     /// A round for every enabled backup.
     BackUpAll,
     /// Pause (`false`) or resume (`true`) one backup, then `apply`.
     SetBackupEnabled(String, bool),
-    /// Ask the repository of a backup for its snapshots.
     LoadBackupSnapshots(String),
     /// Read the rounds of a backup from its logs, for Activity.
     LoadBackupRuns {
@@ -843,7 +841,8 @@ async fn remove_sync(paths: &Paths, id: &str, delete_versions: bool) -> Result<(
 fn spawn_sync(context: &Arc<Context>, ids: Vec<String>) {
     let context = Arc::clone(context);
     guarded(context.emitter.clone(), "starting a sync", async move {
-        match start_rounds(&ids).await {
+        let started = async { start_rounds(&*round_trigger()?, &ids).await }.await;
+        match started {
             Ok(()) => tokio::time::sleep(ROUND_START_WAIT).await,
             Err(text) => fail(&context, text),
         }
@@ -853,8 +852,7 @@ fn spawn_sync(context: &Arc<Context>, ids: Vec<String>) {
 
 /// Starts a round of each sync; the error joins the reason of every one
 /// that could not start.
-async fn start_rounds(ids: &[String]) -> Result<(), String> {
-    let trigger = round_trigger()?;
+async fn start_rounds(trigger: &dyn Trigger, ids: &[String]) -> Result<(), String> {
     let mut failures = Vec::new();
     for id in ids {
         if let Err(reason) = trigger.start(id).await {
@@ -942,8 +940,7 @@ async fn write_enabled(paths: &Paths, enabled: bool) -> Result<(), String> {
 
 /// A backup run for each id; the error joins the reason of every one that
 /// could not start.
-async fn start_backups(ids: &[String]) -> Result<(), String> {
-    let trigger = round_trigger()?;
+async fn start_backups(trigger: &dyn Trigger, ids: &[String]) -> Result<(), String> {
     let mut failures = Vec::new();
     for id in ids {
         if let Err(reason) = trigger.start_backup(id).await {
@@ -960,7 +957,8 @@ async fn start_backups(ids: &[String]) -> Result<(), String> {
 fn spawn_backup(context: &Arc<Context>, ids: Vec<String>) {
     let context = Arc::clone(context);
     guarded(context.emitter.clone(), "starting a backup", async move {
-        match start_backups(&ids).await {
+        let started = async { start_backups(&*round_trigger()?, &ids).await }.await;
+        match started {
             Ok(()) => tokio::time::sleep(ROUND_START_WAIT).await,
             Err(text) => fail(&context, text),
         }
@@ -1408,22 +1406,51 @@ fn spawn_connect(context: &Arc<Context>, request: ConnectRequest) {
     });
 }
 
-/// A sign-in worked: the remote list changed, and syncs that waited for
-/// access can run.
+/// A sign-in worked: the remote list changed, and the syncs and backups
+/// that waited for access can run.
 async fn reconnected(context: &Arc<Context>, account: String) {
     publish_remotes(context).await;
-    match sheet_io::clear_auth_gates(&context.paths, &account).await {
-        Ok(ids) if ids.is_empty() => {}
-        Ok(ids) => spawn_sync(context, ids),
-        Err(text) => fail(context, text),
-    }
-    match sheet_io::clear_backup_auth_gates(&context.paths, &account).await {
-        Ok(ids) if ids.is_empty() => {}
-        Ok(ids) => spawn_backup(context, ids),
-        Err(text) => fail(context, text),
+    for text in resume_after_sign_in(&context.paths, &account, round_trigger).await {
+        fail(context, text);
     }
     context.emitter.send(Event::Connected(Ok(account)));
     spawn_check_accounts(context);
+    tokio::time::sleep(ROUND_START_WAIT).await;
+    context.refresh.notify_one();
+}
+
+/// Clears the sign-in stop of every sync and backup on `account` and starts
+/// what it held. The trigger is only asked for when something was held.
+/// Returns the reason of every failure.
+async fn resume_after_sign_in(
+    paths: &Paths,
+    account: &str,
+    trigger: impl FnOnce() -> Result<Arc<dyn Trigger>, String>,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    let syncs = sheet_io::clear_auth_gates(paths, account)
+        .await
+        .unwrap_or_else(|text| {
+            failures.push(text);
+            Vec::new()
+        });
+    let backups = sheet_io::clear_backup_auth_gates(paths, account)
+        .await
+        .unwrap_or_else(|text| {
+            failures.push(text);
+            Vec::new()
+        });
+    if syncs.is_empty() && backups.is_empty() {
+        return failures;
+    }
+    match trigger() {
+        Ok(trigger) => {
+            failures.extend(start_rounds(&*trigger, &syncs).await.err());
+            failures.extend(start_backups(&*trigger, &backups).await.err());
+        }
+        Err(text) => failures.push(text),
+    }
+    failures
 }
 
 /// The new account is signed in: the syncs of `from` move to it, held for a
@@ -1827,5 +1854,82 @@ mod tests {
             refused.unwrap_err(),
             "Cannot open https://example.org.".to_owned()
         );
+    }
+
+    #[derive(Default)]
+    struct Starts(Mutex<Vec<String>>);
+
+    impl Trigger for Starts {
+        fn start<'a>(
+            &'a self,
+            pair_id: &'a str,
+        ) -> syncfast_core::network::BoxFuture<'a, Result<(), String>> {
+            self.0.lock().unwrap().push(format!("sync {pair_id}"));
+            Box::pin(async { Ok(()) })
+        }
+
+        fn start_backup<'a>(
+            &'a self,
+            backup_id: &'a str,
+        ) -> syncfast_core::network::BoxFuture<'a, Result<(), String>> {
+            self.0.lock().unwrap().push(format!("backup {backup_id}"));
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn signing_in_again_starts_the_backup_that_waited_for_the_account() {
+        use syncfast_core::backup::state::BackupState;
+        use syncfast_core::state::{Gate, GateKind};
+
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(
+            dir.path().join("home"),
+            dir.path().join("config"),
+            dir.path().join("state"),
+            dir.path().join("data"),
+            dir.path().join("run"),
+        );
+        let file = paths.config_file();
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let backup = |id: &str, dest: &str| {
+            format!(
+                "\n[[backup]]\nid = \"{id}\"\nname = \"{id}\"\npaths = [\"/work/{id}\"]\ndest = \"{dest}\"\n"
+            )
+        };
+        std::fs::write(
+            &file,
+            format!(
+                "version = 3\n{}{}",
+                backup("docs", "gdrive:Backups/docs"),
+                backup("other", "work:Backups/other"),
+            ),
+        )
+        .unwrap();
+        for id in ["docs", "other"] {
+            BackupState {
+                gate: Some(Gate {
+                    kind: GateKind::AuthError,
+                    since: jiff::Timestamp::UNIX_EPOCH,
+                    detail: String::new(),
+                    fault: None,
+                    auto_checked: None,
+                }),
+                ..BackupState::default()
+            }
+            .save(&paths, id)
+            .await
+            .unwrap();
+        }
+        let starts = Arc::new(Starts::default());
+        let trigger: Arc<dyn Trigger> = starts.clone();
+
+        let failures = resume_after_sign_in(&paths, "gdrive", || Ok(trigger)).await;
+
+        assert!(failures.is_empty(), "{failures:?}");
+        assert_eq!(*starts.0.lock().unwrap(), ["backup docs"]);
+        assert_eq!(BackupState::load(&paths, "docs").await.unwrap().gate, None);
+        let other = BackupState::load(&paths, "other").await.unwrap();
+        assert_eq!(other.gate.map(|gate| gate.kind), Some(GateKind::AuthError));
     }
 }
