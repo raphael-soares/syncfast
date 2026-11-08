@@ -37,6 +37,7 @@ fastframe_icons::icons! {
         Refresh => lucide "refresh-cw",
         RotateCcw => "rotate-ccw",
         Settings => lucide "settings",
+        ShieldCheck => "shield-check",
         Trash => lucide "trash-2",
         TriangleAlert => "triangle-alert",
         User => lucide "user",
@@ -64,6 +65,7 @@ pub fn status_icon(status: DisplayStatus) -> Icon {
 pub fn backup_status_icon(status: BackupStatus) -> Icon {
     match status {
         BackupStatus::BackingUp => Icon::Refresh,
+        BackupStatus::Checking => Icon::ShieldCheck,
         BackupStatus::Error | BackupStatus::Failing => Icon::CircleAlert,
         BackupStatus::SaveKey => Icon::KeyRound,
         BackupStatus::Paused => Icon::Pause,
@@ -111,6 +113,7 @@ mod tests {
     fn every_backup_status_icon_matches_the_name_core_assigns() {
         let statuses = [
             BackupStatus::BackingUp,
+            BackupStatus::Checking,
             BackupStatus::Error,
             BackupStatus::SaveKey,
             BackupStatus::Paused,

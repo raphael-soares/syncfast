@@ -9,12 +9,12 @@ use egui::accesskit::Role;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use syncfast_core::backup::keystore::KeyBackend;
 use syncfast_core::backup::run::KEY_ABSENT;
-use syncfast_core::backup::state::BackupState;
+use syncfast_core::backup::state::{BackupState, CheckKind};
 use syncfast_core::backup::status::{BackupProgressFile, BackupStatus, RunningStep};
 use syncfast_core::bisync::Fault;
 use syncfast_core::config::Config;
 use syncfast_core::state::{Gate, GateKind};
-use syncfast_gui::backup_runs::{BackupRunEntry, RunResult};
+use syncfast_gui::backup_runs::{BackupRunEntry, RunKind, RunResult};
 use syncfast_gui::gui_state::SettingsPane;
 use syncfast_gui::snapshot::BackupSnapshot;
 use syncfast_gui::ui::backup_detail::{BackupDetailData, BackupTab, SnapshotsView};
@@ -274,28 +274,127 @@ fn a_lost_sign_in_offers_reconnect_account() {
 }
 
 #[test]
-fn a_damaged_repository_offers_no_check() {
-    let harness = card(
+fn a_damaged_repository_offers_a_full_check_that_starts_without_asking() {
+    let mut harness = card(
         BackupStatus::Error,
         gate(GateKind::NeedsAttention, Some(Fault::RepoDamaged), "bad"),
     );
 
-    assert!(harness.query_by_label("Check Again").is_none());
-    assert!(harness.query_by_label("More").is_some());
+    harness.get_by_label("Check Again").click();
+    harness.run_steps(4);
+
+    assert_eq!(
+        harness.state().actions,
+        [Action::CheckBackup {
+            id: "docs".into(),
+            kind: CheckKind::Full
+        }]
+    );
+}
+
+fn open_check_menu(harness: &mut egui_kittest::Harness<'_, common::Frame>) {
+    harness.get_by_label("More").click();
+    harness.run_steps(4);
 }
 
 #[test]
-fn the_more_menu_has_no_check_commands() {
+fn the_more_menu_groups_the_checks_under_check_now() {
     let mut harness = screen(view(backup(BackupStatus::UpToDate)));
 
-    harness.get_by_label("More").click();
-    harness.run_steps(4);
+    open_check_menu(&mut harness);
 
     harness.get_by_label("Show Key…");
+    harness.get_by_label("Check Now");
+    harness.get_by_label("Quick Check");
+    harness.get_by_label("Check Sample");
+    harness.get_by_label("Full Check…");
     harness.get_by_label("Remove Backup…");
-    for label in ["Quick Check", "Check Sample", "Full Check…", "Check Now"] {
-        assert!(harness.query_by_label(label).is_none(), "{label}");
+    assert!(enabled(&harness, "Quick Check"));
+}
+
+#[test]
+fn the_quick_and_sample_checks_start_at_once() {
+    for (label, kind) in [
+        ("Quick Check", CheckKind::Quick),
+        ("Check Sample", CheckKind::Sample),
+    ] {
+        let mut harness = screen(view(backup(BackupStatus::UpToDate)));
+        open_check_menu(&mut harness);
+
+        harness.get_by_label(label).click();
+        harness.run_steps(4);
+
+        assert_eq!(
+            harness.state().actions,
+            [Action::CheckBackup {
+                id: "docs".into(),
+                kind
+            }],
+            "{label}"
+        );
     }
+}
+
+#[test]
+fn the_checks_are_disabled_while_a_round_runs() {
+    let mut harness = screen(view(backup(BackupStatus::BackingUp)));
+
+    open_check_menu(&mut harness);
+
+    for label in ["Quick Check", "Check Sample", "Full Check…"] {
+        assert!(disabled(&harness, label), "{label}");
+    }
+}
+
+fn open_full_check(harness: &mut egui_kittest::Harness<'_, common::Frame>) {
+    open_check_menu(harness);
+    harness.get_by_label("Full Check…").click();
+    harness.run_steps(4);
+}
+
+#[test]
+fn full_check_asks_before_reading_everything_and_cancel_is_the_default() {
+    let mut harness = screen(view(backup(BackupStatus::UpToDate)));
+
+    open_full_check(&mut harness);
+
+    harness.get_by_label("Read all backup data?");
+    harness.get_by_label("This downloads everything from gdrive:Backups/docs and can take hours.");
+    harness.get_by_label("Check");
+    harness.key_press(egui::Key::Enter);
+    harness.run_steps(4);
+
+    assert!(harness.query_by_label("Read all backup data?").is_none());
+    assert!(harness.state().actions.is_empty());
+}
+
+#[test]
+fn confirming_the_full_check_starts_it() {
+    let mut harness = screen(view(backup(BackupStatus::UpToDate)));
+    open_full_check(&mut harness);
+
+    harness.get_by_role_and_label(Role::Button, "Check").click();
+    harness.run_steps(4);
+
+    assert!(harness.query_by_label("Read all backup data?").is_none());
+    assert_eq!(
+        harness.state().actions,
+        [Action::CheckBackup {
+            id: "docs".into(),
+            kind: CheckKind::Full,
+        }]
+    );
+}
+
+#[test]
+fn the_checking_card_shows_an_unknown_length_bar_and_no_back_up_now() {
+    let mut snapshot = backup(BackupStatus::Checking);
+    snapshot.running = Some(RunningStep::Check);
+    let harness = screen(view(snapshot));
+
+    harness.get_by_label("Checking…");
+    harness.get_by_label("Check progress");
+    assert!(disabled(&harness, "Back Up Now"));
 }
 
 #[test]
@@ -684,10 +783,12 @@ fn run(id: &str, result: RunResult, messages: &[&str]) -> BackupRunEntry {
         id: id.to_owned(),
         started: None,
         seconds: Some(7),
+        kind: RunKind::Backup,
         result,
         files_new: Some(3),
         files_changed: Some(2),
         data_added: Some(2048),
+        check_errors: None,
         messages: messages.iter().map(|text| (*text).to_owned()).collect(),
     }
 }
@@ -718,6 +819,64 @@ fn activity_lists_the_rounds_and_opens_the_log_of_one() {
 
     harness.get_by_label("scanned 5 files");
     assert!(harness.query_by_label("No activity yet").is_none());
+}
+
+fn check_run(
+    id: &str,
+    kind: Option<CheckKind>,
+    result: RunResult,
+    errors: Option<u64>,
+) -> BackupRunEntry {
+    BackupRunEntry {
+        kind: RunKind::Check(kind),
+        files_new: None,
+        files_changed: None,
+        data_added: None,
+        check_errors: errors,
+        ..run(id, result, &[])
+    }
+}
+
+#[test]
+fn activity_names_each_check_with_what_it_found() {
+    let harness = screen(activity(vec![
+        check_run(
+            "20260105-100000.jsonl",
+            Some(CheckKind::Quick),
+            RunResult::Done,
+            Some(0),
+        ),
+        check_run(
+            "20260104-100000.jsonl",
+            Some(CheckKind::Sample),
+            RunResult::Done,
+            Some(0),
+        ),
+        check_run(
+            "20260103-100000.jsonl",
+            Some(CheckKind::Full),
+            RunResult::Failed,
+            Some(1),
+        ),
+        check_run(
+            "20260102-100000.jsonl",
+            Some(CheckKind::Full),
+            RunResult::Failed,
+            Some(2),
+        ),
+        check_run(
+            "20260101-100000.jsonl",
+            Some(CheckKind::Sample),
+            RunResult::Failed,
+            None,
+        ),
+    ]));
+
+    harness.get_by_label("Quick check \u{b7} OK");
+    harness.get_by_label("Sample check \u{b7} OK");
+    harness.get_by_label("Full check \u{b7} 1 error");
+    harness.get_by_label("Full check \u{b7} 2 errors");
+    harness.get_by_label("Sample check \u{b7} Failed");
 }
 
 #[test]

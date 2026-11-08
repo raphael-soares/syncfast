@@ -11,10 +11,12 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::process::{Child, Command};
 
+use crate::backup::CHECK_SAMPLE;
 use crate::backup::config::Keep;
 use crate::backup::destination::Destination;
 use crate::backup::key::Key;
 use crate::backup::snapshots::{SnapshotView, parse_snapshots};
+use crate::backup::state::CheckKind;
 use crate::behavior::Bandwidth;
 use crate::bisync::{Fault, fault_of};
 use crate::flatpak;
@@ -32,7 +34,7 @@ pub const RESTIC_MIN_VERSION: &str = "0.17.1";
 const BINARY_NAME: &str = "restic";
 const BINARY_OVERRIDE_VAR: &str = "SYNCFAST_RESTIC";
 const EXIT_NO_REPOSITORY: i32 = 10;
-const EXIT_LOCKED: i32 = 11;
+pub(crate) const EXIT_LOCKED: i32 = 11;
 const EXIT_WRONG_PASSWORD: i32 = 12;
 const RCLONE_ARGS: &str =
     "rclone.args=serve restic --stdio --b2-hard-delete --drive-use-trash=false";
@@ -115,6 +117,15 @@ pub struct Output {
     pub stderr: Vec<u8>,
 }
 
+/// What a restic call wrote and how it ended, whatever the exit code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawOutput {
+    /// `None` when a signal ended it.
+    pub code: Option<i32>,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Restic {
     bin: PathBuf,
@@ -154,6 +165,21 @@ const VERIFY_ARGS: &[&str] = &["cat", "config"];
 const SNAPSHOTS_ARGS: &[&str] = &["snapshots", "--json"];
 /// Never `--remove-all`, which would break a run that is alive.
 const UNLOCK_ARGS: &[&str] = &["unlock"];
+
+/// The subcommand of one integrity check. Never `--with-cache`: the cache
+/// is only trusted for what it already holds, and a check must read the
+/// repository.
+#[must_use]
+pub fn check_args(kind: CheckKind) -> Vec<String> {
+    let mut args = vec!["check".to_owned()];
+    match kind {
+        CheckKind::Quick => {}
+        CheckKind::Sample => args.push(format!("--read-data-subset={CHECK_SAMPLE}")),
+        CheckKind::Full => args.push("--read-data".to_owned()),
+    }
+    args.push("--json".to_owned());
+    args
+}
 
 /// The subcommand of one backup run. `--host` comes with [`build_args`].
 #[must_use]
@@ -303,7 +329,7 @@ struct ExitError {
 
 /// The message restic ended with: the `exit_error` line of `--json` calls,
 /// else the last line of stderr.
-fn failure_message(stderr: &str) -> String {
+pub(crate) fn failure_message(stderr: &str) -> String {
     stderr
         .lines()
         .rev()
@@ -527,6 +553,32 @@ impl Restic {
         subcommand: &[&str],
         forward_signals: bool,
     ) -> Result<Output, ResticError> {
+        let raw = self
+            .run_raw(repository, key, subcommand, forward_signals)
+            .await?;
+        if raw.code == Some(0) {
+            Ok(Output {
+                stdout: raw.stdout,
+                stderr: raw.stderr,
+            })
+        } else {
+            Err(classify_failure(raw.code, &raw.stderr))
+        }
+    }
+
+    /// Like [`Restic::run`], but an exit code other than 0 is not an error:
+    /// the caller reads the output (`restic check` says what is damaged on
+    /// stdout and exits 1).
+    ///
+    /// # Errors
+    /// restic cannot be started.
+    pub async fn run_raw(
+        &self,
+        repository: &Repository,
+        key: &Key,
+        subcommand: &[&str],
+        forward_signals: bool,
+    ) -> Result<RawOutput, ResticError> {
         let interrupts = if forward_signals {
             Some(Interrupts::install().map_err(ResticError::Spawn)?)
         } else {
@@ -540,11 +592,11 @@ impl Restic {
             read_all(stderr)
         );
         let status = status.map_err(ResticError::Spawn)?;
-        if status.success() {
-            Ok(Output { stdout, stderr })
-        } else {
-            Err(classify_failure(status.code(), &stderr))
-        }
+        Ok(RawOutput {
+            code: status.code(),
+            stdout,
+            stderr,
+        })
     }
 
     /// `restic init --json`.
@@ -902,6 +954,31 @@ mod tests {
 
                 assert_eq!(text(&args), [&head[..], &flags, tail].concat());
             }
+        }
+    }
+
+    #[test]
+    fn each_check_kind_has_its_own_arguments_and_none_reads_through_the_cache() {
+        assert_eq!(check_args(CheckKind::Quick), ["check", "--json"]);
+        assert_eq!(
+            check_args(CheckKind::Sample),
+            ["check", "--read-data-subset=5%", "--json"]
+        );
+        assert_eq!(
+            check_args(CheckKind::Full),
+            ["check", "--read-data", "--json"]
+        );
+        for kind in [CheckKind::Quick, CheckKind::Sample, CheckKind::Full] {
+            let args = check_args(kind);
+            let built = build_args(
+                Path::new("r"),
+                &local(),
+                "laptop",
+                &args.iter().map(String::as_str).collect::<Vec<_>>(),
+            );
+
+            assert!(!args.iter().any(|arg| arg == "--with-cache"));
+            assert!(!text(&built).contains(&"--host"));
         }
     }
 

@@ -19,6 +19,18 @@ pub enum CheckKind {
     Full,
 }
 
+impl CheckKind {
+    /// The name in `state.json`, `request.json` and the run logs.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Quick => "quick",
+            Self::Sample => "sample",
+            Self::Full => "full",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LastSnapshot {
     pub id: String,
@@ -122,6 +134,16 @@ mod tests {
     use super::*;
     use crate::bisync::Fault;
     use crate::state::GateKind;
+
+    #[test]
+    fn a_check_kind_is_named_as_it_is_written_to_disk() {
+        for kind in [CheckKind::Quick, CheckKind::Sample, CheckKind::Full] {
+            assert_eq!(
+                serde_json::to_value(kind).unwrap(),
+                serde_json::Value::from(kind.as_str())
+            );
+        }
+    }
 
     fn paths_in(root: &std::path::Path) -> Paths {
         Paths::new(

@@ -761,6 +761,10 @@ impl App {
                 self.error = None;
                 self.backend.send(Command::SetBackupEnabled(id, enabled));
             }
+            Action::CheckBackup { id, kind } => {
+                self.error = None;
+                self.backend.send(Command::CheckBackup { id, kind });
+            }
             Action::OpenBackupDestination(id) => {
                 self.error = None;
                 self.backend.send(Command::OpenBackupDestination(id));
