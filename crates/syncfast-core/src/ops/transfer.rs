@@ -172,47 +172,58 @@ impl DetachedStarter {
 
 impl TransferStarter for DetachedStarter {
     fn start<'a>(&'a self, transfer_id: &'a str) -> BoxFuture<'a, Result<(), String>> {
-        Box::pin(async move {
-            let args = ["transfer-run", transfer_id];
-            if let Some(app_id) = flatpak::app_id() {
-                let unit = format!("{UNIT_PREFIX}{transfer_id}");
-                let (program, full) = flatpak::transient_command(&app_id, &unit, &args);
-                let status = Command::new(program)
-                    .args(full)
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status()
-                    .await
-                    .map_err(|err| format!("cannot run {program}: {err}"))?;
-                return if status.success() {
-                    Ok(())
-                } else {
-                    Err(format!("cannot start the transfer: {program} {status}"))
-                };
-            }
-            let mut child = Command::new(&self.bin)
-                .args(args)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .process_group(0)
-                .spawn()
-                .map_err(|err| {
-                    format!(
-                        "cannot start {} transfer-run {transfer_id}: {err}",
-                        self.bin.display()
-                    )
-                })?;
-            // Reaps the child; its outcome is in the job file.
-            tokio::spawn(async move {
-                if let Err(err) = child.wait().await {
-                    log::warn!("cannot wait for a transfer: {err}");
-                }
-            });
-            Ok(())
-        })
+        Box::pin(start_detached(
+            &self.bin,
+            "transfer-run",
+            UNIT_PREFIX,
+            transfer_id,
+        ))
     }
+}
+
+/// Starts `bin <subcommand> <job_id>` on its own: in a session of its
+/// own, or as the transient unit `<unit_prefix><job_id>` on the host
+/// inside the Flatpak sandbox.
+pub(crate) async fn start_detached(
+    bin: &Path,
+    subcommand: &str,
+    unit_prefix: &str,
+    job_id: &str,
+) -> Result<(), String> {
+    let args = [subcommand, job_id];
+    if let Some(app_id) = flatpak::app_id() {
+        let unit = format!("{unit_prefix}{job_id}");
+        let (program, full) = flatpak::transient_command(&app_id, &unit, &args);
+        let status = Command::new(program)
+            .args(full)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+            .map_err(|err| format!("cannot run {program}: {err}"))?;
+        return if status.success() {
+            Ok(())
+        } else {
+            Err(format!("cannot start {subcommand}: {program} {status}"))
+        };
+    }
+    let mut child = Command::new(bin)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map_err(|err| format!("cannot start {} {subcommand} {job_id}: {err}", bin.display()))?;
+    // Reaps the child; its outcome is in the job file.
+    let subcommand = subcommand.to_owned();
+    tokio::spawn(async move {
+        if let Err(err) = child.wait().await {
+            log::warn!("cannot wait for {subcommand}: {err}");
+        }
+    });
+    Ok(())
 }
 
 /// Where a path lives, as rclone is told about it.

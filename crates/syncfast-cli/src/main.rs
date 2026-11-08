@@ -18,6 +18,7 @@ use clap::{CommandFactory as _, Parser as _};
 use jiff::Zoned;
 use serde::Serialize;
 use syncfast_core::backup::keystore::DefaultKeyStore;
+use syncfast_core::backup::restore_job::{RestoreEnv, RestoreError, run_restore};
 use syncfast_core::backup::run::{BackupRunEnv, BackupRunError, run_backup};
 use syncfast_core::flatpak;
 use syncfast_core::network::NetworkManager;
@@ -76,6 +77,8 @@ fn failure_code(err: &anyhow::Error) -> u8 {
     } else if let Some(err) = err.downcast_ref::<RunError>() {
         err.exit_code()
     } else if let Some(err) = err.downcast_ref::<BackupRunError>() {
+        err.exit_code()
+    } else if let Some(err) = err.downcast_ref::<RestoreError>() {
         err.exit_code()
     } else if let Some(err) = err.downcast_ref::<PreviewError>() {
         err.exit_code()
@@ -212,6 +215,18 @@ async fn dispatch(command: Command, json: bool) -> anyhow::Result<ExitCode> {
             };
             let report = run_backup(&env, &id).await?;
             Ok(ExitCode::from(report.exit_code()))
+        }
+        Command::RestoreRun { id } => {
+            let paths = paths()?;
+            let restic = Restic::from_env(Rclone::from_env()?, &paths).await?;
+            let keys = DefaultKeyStore::from_env(&paths);
+            let env = RestoreEnv {
+                paths: &paths,
+                restic: &restic,
+                keys: &keys,
+            };
+            run_restore(&env, &id, true).await?;
+            Ok(ExitCode::SUCCESS)
         }
         Command::Operation(operation) => operate(operation, json).await,
     }
