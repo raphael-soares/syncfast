@@ -379,7 +379,7 @@ pub fn damaged_message(files: u64) -> String {
     format!("The check found {files} damaged {noun} in the backup. Backups and cleanup are paused.")
 }
 
-fn is_damaged_gate(state: &BackupState) -> bool {
+pub(crate) fn is_damaged_gate(state: &BackupState) -> bool {
     state.gate.as_ref().is_some_and(|gate| {
         gate.kind == GateKind::NeedsAttention && gate.fault == Some(Fault::RepoDamaged)
     })
