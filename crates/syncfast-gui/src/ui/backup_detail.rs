@@ -684,17 +684,30 @@ fn snapshot_row(
             |ui| {
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
-                    ui.add(
-                        egui::Label::new(
+                    ui.spacing_mut().interact_size.y = 0.0;
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = space::S;
+                        ui.label(
                             RichText::new(when(now, snapshot.time))
                                 .font(theme::body())
                                 .color(palette.text),
-                        )
-                        .truncate(),
-                    );
+                        );
+                        if own_host != Some(snapshot.host.as_str()) {
+                            ui.add(Icon::HardDrive.image(palette.dim, size::ICON));
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&snapshot.host)
+                                        .font(theme::subheadline())
+                                        .color(palette.dim),
+                                )
+                                .truncate(),
+                            )
+                            .on_hover_text(&snapshot.host);
+                        }
+                    });
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = space::S;
-                        snapshot_facts(ui, snapshot, own_host, palette);
+                        snapshot_facts(ui, snapshot, palette);
                     });
                 });
             },
@@ -724,7 +737,7 @@ fn snapshot_row(
     actions
 }
 
-fn snapshot_facts(ui: &mut Ui, snapshot: &SnapshotView, own_host: Option<&str>, palette: &Palette) {
+fn snapshot_facts(ui: &mut Ui, snapshot: &SnapshotView, palette: &Palette) {
     let text = match (snapshot.files, snapshot.bytes) {
         (Some(files), Some(total)) => format!("{} \u{b7} {}", plural_files(files), bytes(total)),
         (Some(files), None) => plural_files(files),
@@ -742,16 +755,6 @@ fn snapshot_facts(ui: &mut Ui, snapshot: &SnapshotView, own_host: Option<&str>, 
     ui.add(secondary(text));
     if let Some(added) = snapshot.added_bytes {
         ui.add(secondary(format!("+{}", bytes(added))));
-    }
-    if own_host != Some(snapshot.host.as_str()) {
-        ui.add(
-            egui::Label::new(
-                RichText::new(&snapshot.host)
-                    .font(theme::subheadline())
-                    .color(palette.dim),
-            )
-            .truncate(),
-        );
     }
 }
 

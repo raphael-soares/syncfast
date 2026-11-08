@@ -414,6 +414,19 @@ fn progress_counts_the_files_and_cancel_interrupts_the_job() {
 }
 
 #[test]
+fn escape_does_not_interrupt_a_restore_that_is_running() {
+    let mut rig = running();
+
+    rig.harness.key_press(egui::Key::Escape);
+    rig.harness.run_steps(4);
+
+    assert!(!backup_commands(&rig).contains(&BackupCommand::CancelRestore("r1".to_owned())));
+    assert!(!rig.closed.get());
+    rig.harness
+        .get_by_label("Restoring to Docs 2026-11-03 1200");
+}
+
+#[test]
 fn a_restore_that_has_not_reported_yet_says_it_is_starting() {
     let mut rig = at_confirmation();
 

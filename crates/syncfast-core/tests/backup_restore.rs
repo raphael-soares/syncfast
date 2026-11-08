@@ -79,6 +79,11 @@ struct Rig {
 }
 
 #[allow(clippy::print_stderr)]
+fn skipping(why: &str) {
+    eprintln!("skipping: {why}");
+}
+
+#[allow(clippy::print_stderr)]
 async fn rig() -> Option<Rig> {
     let found = match Rclone::from_env() {
         Err(RcloneError::RcloneNotFound) => {
@@ -351,6 +356,10 @@ async fn a_snapshot_restores_after_its_source_was_deleted() {
 
 async fn a_snapshot_of_another_machine_is_listed_and_restored() {
     let Some(rig) = rig().await else { return };
+    let Some(restic_bin) = syncfast_core::restic::locate_binary() else {
+        skipping("restic is not installed");
+        return;
+    };
     rig.make_source();
     let password = rig.root.join("password");
     let key_text: String = rig
@@ -360,7 +369,7 @@ async fn a_snapshot_of_another_machine_is_listed_and_restored() {
         .filter(char::is_ascii_alphanumeric)
         .collect();
     fs::write(&password, key_text).unwrap();
-    let made = Command::new("restic")
+    let made = Command::new(restic_bin)
         .args(["-r", &rig.backup.dest, "--password-file"])
         .arg(&password)
         .args(["--cache-dir"])

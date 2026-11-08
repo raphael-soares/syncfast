@@ -17,6 +17,7 @@ use syncfast_core::state::{Gate, GateKind};
 use syncfast_gui::backup_runs::{BackupRunEntry, RunKind, RunResult};
 use syncfast_gui::gui_state::SettingsPane;
 use syncfast_gui::snapshot::BackupSnapshot;
+use syncfast_gui::theme::Palette;
 use syncfast_gui::ui::backup_detail::{BackupDetailData, BackupTab, SnapshotsView};
 use syncfast_gui::ui::settings::KeyStorageView;
 use syncfast_gui::ui::{self, Action, ViewModel};
@@ -775,6 +776,25 @@ fn snapshots_show_the_host_only_when_it_is_not_this_computer() {
     assert_eq!(harness.query_all_by_label("laptop-ada").count(), 1);
     assert_eq!(harness.query_all_by_label(own).count(), 0);
     assert!(harness.query_by_label("No snapshots yet").is_none());
+}
+
+#[test]
+fn the_host_of_another_computer_is_whole_next_to_the_date_at_760() {
+    let width = |window: f32| {
+        let mut vm = view(backup(BackupStatus::UpToDate));
+        vm.backup.snapshots =
+            SnapshotsView::Loaded(vec![snapshot_view("aaaa", "laptop-ada")].into());
+        let mut harness =
+            common::harness_in(vm, egui::vec2(window, 700.0), Palette::dark(), ui::root);
+        harness.run_steps(4);
+        let host = harness.get_by_label("laptop-ada").rect();
+        let date = harness.get_by_label_contains("Today").rect();
+        assert!(host.min.x > date.max.x, "the host follows the date");
+        assert!((host.center().y - date.center().y).abs() < 4.0, "same line");
+        host.width()
+    };
+
+    assert!(width(760.0) >= width(1400.0) - 0.5);
 }
 
 #[test]

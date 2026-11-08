@@ -493,7 +493,7 @@ pub fn progress(
         label: "Cancel",
         kind: ButtonKind::Secondary,
         is_default: false,
-        is_cancel: true,
+        is_cancel: false,
     };
     let chosen = alert(
         ctx,
