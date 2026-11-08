@@ -992,6 +992,27 @@ mod tests {
         assert_eq!(five.failing_after(), 5);
     }
 
+    #[test]
+    fn each_sync_fault_has_its_own_attention_text() {
+        let faults = [
+            Fault::Account,
+            Fault::Quota,
+            Fault::Permission,
+            Fault::RemoteMissing,
+            Fault::LocalEmpty,
+            Fault::RemoteEmpty,
+        ];
+        let mut texts: Vec<_> = faults
+            .iter()
+            .map(|fault| attention_body(Some(*fault), ""))
+            .collect();
+        texts.sort_unstable();
+        texts.dedup();
+
+        assert_eq!(texts.len(), faults.len());
+        assert!(texts.iter().all(|text| *text != attention_body(None, "")));
+    }
+
     fn backup() -> BackupConfig {
         BackupConfig {
             id: "docs".into(),
