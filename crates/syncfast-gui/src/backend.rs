@@ -1410,23 +1410,32 @@ fn spawn_connect(context: &Arc<Context>, request: ConnectRequest) {
 /// that waited for access can run.
 async fn reconnected(context: &Arc<Context>, account: String) {
     publish_remotes(context).await;
-    for text in resume_after_sign_in(&context.paths, &account, round_trigger).await {
+    let resumed = resume_after_sign_in(&context.paths, &account, round_trigger).await;
+    for text in resumed.failures {
         fail(context, text);
     }
     context.emitter.send(Event::Connected(Ok(account)));
     spawn_check_accounts(context);
-    tokio::time::sleep(ROUND_START_WAIT).await;
-    context.refresh.notify_one();
+    if resumed.started {
+        tokio::time::sleep(ROUND_START_WAIT).await;
+        context.refresh.notify_one();
+    }
+}
+
+struct Resumed {
+    started: bool,
+    failures: Vec<String>,
 }
 
 /// Clears the sign-in stop of every sync and backup on `account` and starts
 /// what it held. The trigger is only asked for when something was held.
-/// Returns the reason of every failure.
+/// `started` is true when the trigger was obtained, `failures` has the reason
+/// of every failure.
 async fn resume_after_sign_in(
     paths: &Paths,
     account: &str,
     trigger: impl FnOnce() -> Result<Arc<dyn Trigger>, String>,
-) -> Vec<String> {
+) -> Resumed {
     let mut failures = Vec::new();
     let syncs = sheet_io::clear_auth_gates(paths, account)
         .await
@@ -1441,16 +1450,23 @@ async fn resume_after_sign_in(
             Vec::new()
         });
     if syncs.is_empty() && backups.is_empty() {
-        return failures;
+        return Resumed {
+            started: false,
+            failures,
+        };
     }
-    match trigger() {
+    let started = match trigger() {
         Ok(trigger) => {
             failures.extend(start_rounds(&*trigger, &syncs).await.err());
             failures.extend(start_backups(&*trigger, &backups).await.err());
+            true
         }
-        Err(text) => failures.push(text),
-    }
-    failures
+        Err(text) => {
+            failures.push(text);
+            false
+        }
+    };
+    Resumed { started, failures }
 }
 
 /// The new account is signed in: the syncs of `from` move to it, held for a
@@ -1587,6 +1603,7 @@ fn spawn_remove_account(context: &Arc<Context>, name: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
 
     fn emitter() -> (Emitter, mpsc::Receiver<Event>) {
         let (events, received) = mpsc::channel();
@@ -1877,59 +1894,157 @@ mod tests {
         }
     }
 
+    fn paths_in(root: &std::path::Path) -> Paths {
+        Paths::new(
+            root.join("home"),
+            root.join("config"),
+            root.join("state"),
+            root.join("data"),
+            root.join("run"),
+        )
+    }
+
+    fn write_config(paths: &Paths, syncs: &[(&str, &str)], backups: &[(&str, &str)]) {
+        let mut text = "version = 3\n".to_owned();
+        for (id, remote) in syncs {
+            write!(
+                text,
+                "\n[[pair]]\nid = \"{id}\"\nname = \"{id}\"\nlocal = \"/work/{id}\"\nremote = \"{remote}\"\n"
+            )
+            .unwrap();
+        }
+        for (id, dest) in backups {
+            write!(
+                text,
+                "\n[[backup]]\nid = \"{id}\"\nname = \"{id}\"\npaths = [\"/work/{id}\"]\ndest = \"{dest}\"\n"
+            )
+            .unwrap();
+        }
+        let file = paths.config_file();
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, text).unwrap();
+    }
+
+    fn auth_gate() -> syncfast_core::state::Gate {
+        syncfast_core::state::Gate {
+            kind: syncfast_core::state::GateKind::AuthError,
+            since: jiff::Timestamp::UNIX_EPOCH,
+            detail: String::new(),
+            fault: None,
+            auto_checked: None,
+        }
+    }
+
+    async fn stop_sync_for_auth(paths: &Paths, id: &str) {
+        syncfast_core::state::State {
+            gate: Some(auth_gate()),
+            ..syncfast_core::state::State::default()
+        }
+        .save(paths, id)
+        .await
+        .unwrap();
+    }
+
+    async fn stop_backup_for_auth(paths: &Paths, id: &str) {
+        syncfast_core::backup::state::BackupState {
+            gate: Some(auth_gate()),
+            ..syncfast_core::backup::state::BackupState::default()
+        }
+        .save(paths, id)
+        .await
+        .unwrap();
+    }
+
     #[tokio::test]
     async fn signing_in_again_starts_the_backup_that_waited_for_the_account() {
         use syncfast_core::backup::state::BackupState;
-        use syncfast_core::state::{Gate, GateKind};
+        use syncfast_core::state::GateKind;
 
         let dir = tempfile::tempdir().unwrap();
-        let paths = Paths::new(
-            dir.path().join("home"),
-            dir.path().join("config"),
-            dir.path().join("state"),
-            dir.path().join("data"),
-            dir.path().join("run"),
+        let paths = paths_in(dir.path());
+        write_config(
+            &paths,
+            &[],
+            &[
+                ("docs", "gdrive:Backups/docs"),
+                ("other", "work:Backups/other"),
+            ],
         );
-        let file = paths.config_file();
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        let backup = |id: &str, dest: &str| {
-            format!(
-                "\n[[backup]]\nid = \"{id}\"\nname = \"{id}\"\npaths = [\"/work/{id}\"]\ndest = \"{dest}\"\n"
-            )
-        };
-        std::fs::write(
-            &file,
-            format!(
-                "version = 3\n{}{}",
-                backup("docs", "gdrive:Backups/docs"),
-                backup("other", "work:Backups/other"),
-            ),
-        )
-        .unwrap();
-        for id in ["docs", "other"] {
-            BackupState {
-                gate: Some(Gate {
-                    kind: GateKind::AuthError,
-                    since: jiff::Timestamp::UNIX_EPOCH,
-                    detail: String::new(),
-                    fault: None,
-                    auto_checked: None,
-                }),
-                ..BackupState::default()
-            }
-            .save(&paths, id)
-            .await
-            .unwrap();
-        }
+        stop_backup_for_auth(&paths, "docs").await;
+        stop_backup_for_auth(&paths, "other").await;
         let starts = Arc::new(Starts::default());
         let trigger: Arc<dyn Trigger> = starts.clone();
 
-        let failures = resume_after_sign_in(&paths, "gdrive", || Ok(trigger)).await;
+        let resumed = resume_after_sign_in(&paths, "gdrive", || Ok(trigger)).await;
 
-        assert!(failures.is_empty(), "{failures:?}");
+        assert!(resumed.failures.is_empty(), "{:?}", resumed.failures);
+        assert!(resumed.started);
         assert_eq!(*starts.0.lock().unwrap(), ["backup docs"]);
         assert_eq!(BackupState::load(&paths, "docs").await.unwrap().gate, None);
         let other = BackupState::load(&paths, "other").await.unwrap();
         assert_eq!(other.gate.map(|gate| gate.kind), Some(GateKind::AuthError));
+    }
+
+    #[tokio::test]
+    async fn signing_in_again_starts_a_sync_and_a_backup_on_the_same_account() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        write_config(
+            &paths,
+            &[("notes", "gdrive:notes")],
+            &[("docs", "gdrive:Backups/docs")],
+        );
+        stop_sync_for_auth(&paths, "notes").await;
+        stop_backup_for_auth(&paths, "docs").await;
+        let starts = Arc::new(Starts::default());
+        let trigger: Arc<dyn Trigger> = starts.clone();
+
+        let resumed = resume_after_sign_in(&paths, "gdrive", || Ok(trigger)).await;
+
+        assert!(resumed.failures.is_empty(), "{:?}", resumed.failures);
+        assert!(resumed.started);
+        let mut started = starts.0.lock().unwrap().clone();
+        started.sort();
+        assert_eq!(started, ["backup docs", "sync notes"]);
+    }
+
+    #[tokio::test]
+    async fn a_trigger_that_cannot_be_made_is_reported_once_for_all_that_waited() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        write_config(
+            &paths,
+            &[("notes", "gdrive:notes")],
+            &[("docs", "gdrive:Backups/docs")],
+        );
+        stop_sync_for_auth(&paths, "notes").await;
+        stop_backup_for_auth(&paths, "docs").await;
+
+        let resumed =
+            resume_after_sign_in(&paths, "gdrive", || Err("no way to start".to_owned())).await;
+
+        assert_eq!(resumed.failures, ["no way to start"]);
+        assert!(!resumed.started);
+    }
+
+    #[tokio::test]
+    async fn nothing_stopped_for_the_account_never_asks_for_a_trigger() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        write_config(
+            &paths,
+            &[("notes", "gdrive:notes")],
+            &[("docs", "gdrive:Backups/docs")],
+        );
+        stop_sync_for_auth(&paths, "notes").await;
+        stop_backup_for_auth(&paths, "docs").await;
+
+        let resumed = resume_after_sign_in(&paths, "work", || {
+            panic!("no sync or backup waits for this account")
+        })
+        .await;
+
+        assert!(resumed.failures.is_empty(), "{:?}", resumed.failures);
+        assert!(!resumed.started);
     }
 }

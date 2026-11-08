@@ -16,6 +16,7 @@ fastframe_icons::icons! {
         Clock => lucide "clock",
         CloudOff => "cloud-off",
         Copy => lucide "copy",
+        Download => "download",
         Ellipsis => lucide "ellipsis",
         ExternalLink => lucide "external-link",
         Eye => lucide "eye",

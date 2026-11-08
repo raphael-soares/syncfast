@@ -10,12 +10,16 @@ use zeroize::Zeroizing;
 
 use super::Action;
 use super::backup_wizard::BackupSheetAction;
-use super::widgets::{self, AlertButton, PrimaryKind, SheetAction, SheetButtons, alert, sheet};
+use super::widgets::{
+    self, AlertButton, ButtonKind, PrimaryKind, SheetAction, SheetButtons, alert, sheet,
+};
+use crate::icons::Icon;
 use crate::theme::{self, radius, space};
 
 const KEY_INTRO: &str = "This key opens your backup. syncfast cannot recover it, and without it the backup cannot be read. Keep it somewhere safe.";
 const FILE_NOTE: &str = "The file is not encrypted.";
 const KEY_FONT_SIZE: f32 = 16.0;
+const KEY_GAP: f32 = 6.0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyFileOutcome {
@@ -41,7 +45,14 @@ pub fn key_body(ui: &mut Ui, key: &Key, file: Option<&KeyFileOutcome>, actions: 
     key_box(ui, key);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::M;
-        if widgets::secondary_button(ui, "Save Key to File\u{2026}").clicked() {
+        if widgets::button_with_icon(
+            ui,
+            ButtonKind::Secondary,
+            Some(Icon::Download),
+            "Save Key to File\u{2026}",
+        )
+        .clicked()
+        {
             emit(actions, BackupSheetAction::SaveKeyToFile(key.clone()));
         }
         ui.label(
@@ -78,12 +89,13 @@ fn key_box(ui: &mut Ui, key: &Key) {
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(space::XS, space::S);
+                ui.spacing_mut().item_spacing = egui::vec2(KEY_GAP, space::S);
                 for (index, group) in groups.split('-').enumerate() {
                     let mut job = LayoutJob::default();
                     job.append(group, 0.0, TextFormat::simple(font.clone(), palette.text));
                     if index < last {
-                        job.append("-", 0.0, TextFormat::simple(font.clone(), palette.dim));
+                        let dash = TextFormat::simple(font.clone(), palette.dim);
+                        job.append("-", KEY_GAP, dash);
                     }
                     // `extend`: a wrapped label would otherwise split a group across rows
                     ui.add(egui::Label::new(job).extend().selectable(true));
