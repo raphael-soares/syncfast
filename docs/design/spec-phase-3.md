@@ -253,7 +253,6 @@ Arquivos: `config.rs` (tabela `[[backup]]`), `backup/config.rs` (tipos e valida�
     "next_check": null,
     "check_after_failure_done": false,
     "prune_failures": 0,
-    "prune_error": null,
     "key_unsaved": false,
     "notified": []
   }
@@ -264,6 +263,7 @@ Arquivos: `config.rs` (tabela `[[backup]]`), `backup/config.rs` (tipos e valida�
   - `last_run`: `{ "started", "finished", "exit_code", "summary": BackupSummary, "log_file" }`, com `BackupSummary { snapshot_id, files_new, files_changed, files_unmodified, data_added, data_added_packed, total_files_processed, total_bytes_processed, warnings }` (`warnings` conta erros de leitura da saída 3).
   - `last_check`: `{ "at", "kind": "quick"|"sample"|"full", "ok": bool, "detail" }`. `next_check`: quando o próximo check de amostra vence.
   - `key_unsaved`: `true` quando um agente criou o backup e o usuário ainda não concluiu `I Saved the Key` (passo 12); backup criado pela GUI ou adicionado com `Add Existing Backup…` nasce com `false`. Não segura nenhuma rodada.
+  - `prune_error`: a mensagem do último `forget` que falhou; a chave só existe no arquivo enquanto houver erro (some no primeiro `forget` que dá certo), e ler um arquivo sem ela dá `null`. A gate de retenção (passo 6, item 10) é a gate `needs_attention` sem fault cujo `detail` é a frase de `prune_error`; um backup bom a deixa quando `prune_error` ainda a descreve e a limpa se outra coisa a escreveu depois.
   - Arquivo ausente equivale ao estado padrão: backup não tem revisão de primeira rodada.
   - O estado nunca guarda "running": é o lock do backup (`is_running`), como no sync.
 - `Fault` (em `bisync.rs`, usado por `Gate.fault`) ganha as variantes de backup, todas `snake_case` no JSON: `key_missing`, `wrong_key`, `repository_missing`, `source_missing`, `source_empty`, `destination_missing`, `repo_damaged`. As existentes (`auth`, `account`, `quota`, `permission`, `remote_missing`) valem para backup quando o texto do rclone aparece no stderr do restic; `local_empty` não é usada. O `match` de `notify.rs` que hoje cobre `Fault` ganha os braços novos.
@@ -526,7 +526,7 @@ Arquivo: `backup/status.rs`, `notify.rs` (extensão).
 | Ordem | Condição | Status | Cor | Ícone | Texto |
 |---|---|---|---|---|---|
 | 1 | `running`, passo `backup` | BackingUp | `accent` | `refresh-cw` | `Backing up…` |
-| 1b | `running`, passo `check` | Checking | `accent` | `shield-check` | `Checking…` |
+| 1b (P3.3) | `running`, passo `check` | Checking | `accent` | `shield-check` | `Checking…` |
 | 2 | gate `config_error`, `auth_error` ou `needs_attention` | Error | `danger` | `circle-alert` | `Needs attention` |
 | 2b | `key_unsaved` | SaveKey | `accent` | `key-round` | `Save the key` |
 | 3 | `!enabled` | Paused | `dim` | `pause` | `Paused` |

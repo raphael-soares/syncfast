@@ -11,6 +11,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::{Duration, Instant};
 
+use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Zoned};
 use syncfast_core::backup::classify::BackupOutcome;
 use syncfast_core::backup::config::{BackupConfig, KeepSetting};
@@ -459,6 +460,20 @@ fn size_of(folder: &Path) -> u64 {
         .sum()
 }
 
+/// The snapshot times as restic groups them: in this machine's time zone.
+fn local_times(snapshots: &[SnapshotView]) -> Vec<String> {
+    snapshots
+        .iter()
+        .map(|snapshot| {
+            snapshot
+                .time
+                .to_zoned(TimeZone::system())
+                .strftime("%Y-%m-%d %H:%M:%S")
+                .to_string()
+        })
+        .collect()
+}
+
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack
         .windows(needle.len())
@@ -648,12 +663,7 @@ async fn the_default_policy_keeps_seven_daily_four_weekly_and_six_monthly_snapsh
     let report = rig.run("docs").await;
 
     assert_eq!(report, BackupRunReport::Ran(BackupOutcome::Ok));
-    let times: Vec<String> = rig
-        .snapshots(&b, &key)
-        .await
-        .iter()
-        .map(|snapshot| snapshot.time.to_string())
-        .collect();
+    let times = local_times(&rig.snapshots(&b, &key).await);
     let kept: Vec<&str> = times.iter().skip(1).map(|time| &time[..10]).collect();
     assert_eq!(
         kept,
@@ -687,12 +697,7 @@ async fn the_yearly_policy_keeps_the_latest_snapshot_of_the_two_newest_years_and
     let report = rig.run("docs").await;
 
     assert_eq!(report, BackupRunReport::Ran(BackupOutcome::Ok));
-    let times: Vec<String> = rig
-        .snapshots(&b, &key)
-        .await
-        .iter()
-        .map(|snapshot| snapshot.time.to_string())
-        .collect();
+    let times = local_times(&rig.snapshots(&b, &key).await);
     assert_eq!(times.len(), 2, "{times:?}");
     assert!(times[1].starts_with("2024-07-01"), "{times:?}");
     assert!(size_of(&rig.dir("repo/data")) < before / 2, "packs of dropped snapshots remain");

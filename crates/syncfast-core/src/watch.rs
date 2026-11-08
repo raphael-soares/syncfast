@@ -979,10 +979,16 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        ChildTrigger::new(script)
-            .start_backup("docs")
-            .await
-            .unwrap();
+        let trigger = ChildTrigger::new(script);
+        for attempt in 0.. {
+            match trigger.start_backup("docs").await {
+                Ok(()) => break,
+                Err(err) if err.contains("Text file busy") && attempt < 40 => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(err) => panic!("{err}"),
+            }
+        }
 
         for _ in 0..100 {
             if let Ok(text) = std::fs::read_to_string(&argv)

@@ -235,6 +235,11 @@ impl Bed {
     }
 }
 
+#[allow(clippy::print_stderr)]
+fn skipping(why: &str) {
+    eprintln!("skipping: {why}");
+}
+
 macro_rules! deadline_tests {
     ($(async fn $name:ident() $body:block)*) => {
         $(
@@ -492,6 +497,7 @@ async fn an_existing_backup_whose_config_cannot_be_saved_does_not_keep_the_key()
     fs::set_permissions(&config_dir, fs::Permissions::from_mode(0o555)).unwrap();
     if fs::write(config_dir.join("probe"), "").is_ok() {
         fs::set_permissions(&config_dir, fs::Permissions::from_mode(0o755)).unwrap();
+        skipping("the config folder stays writable, as for root");
         return;
     }
 

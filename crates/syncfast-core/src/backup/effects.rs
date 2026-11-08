@@ -336,11 +336,11 @@ pub fn apply_retention_result(
 ) -> Vec<BackupEvent> {
     match result {
         Ok(()) => {
-            state.prune_failures = 0;
-            state.prune_error = None;
             if is_retention_gate(state) {
                 clear_gate(state);
             }
+            state.prune_failures = 0;
+            state.prune_error = None;
             Vec::new()
         }
         Err(message) => {
@@ -362,12 +362,15 @@ pub fn retention_message(message: &str) -> String {
 }
 
 /// Only `forget` lifts this gate: a good backup in between leaves it, and its
-/// notification, alone.
+/// notification, alone. It is the gate that says the stored `prune_error`.
 fn is_retention_gate(state: &BackupState) -> bool {
+    let Some(message) = state.prune_error.as_deref() else {
+        return false;
+    };
     state.gate.as_ref().is_some_and(|gate| {
         gate.kind == GateKind::NeedsAttention
             && gate.fault.is_none()
-            && gate.detail.starts_with(RETENTION_PREFIX)
+            && gate.detail == retention_message(message)
     })
 }
 
@@ -1155,6 +1158,42 @@ mod tests {
 
         assert_eq!(state.gate, None);
         assert!(state.notified.is_empty());
+    }
+
+    #[test]
+    fn a_gate_that_only_looks_like_the_cleanup_one_is_cleared_by_a_good_backup() {
+        let mut gate = attention_gate(before(HOUR), None);
+        gate.detail = retention_message("repository is locked");
+        let mut state = BackupState {
+            gate: Some(gate),
+            prune_failures: 3,
+            prune_error: Some("another message".to_owned()),
+            notified: vec!["gate:needs_attention".to_owned()],
+            ..BackupState::default()
+        };
+
+        apply_outcome(&mut state, &BackupOutcome::Ok, &ctx());
+
+        assert_eq!(state.gate, None);
+        assert!(state.notified.is_empty());
+    }
+
+    #[test]
+    fn a_good_backup_leaves_the_gate_that_says_the_stored_cleanup_error() {
+        let mut gate = attention_gate(before(HOUR), None);
+        gate.detail = retention_message("repository is locked");
+        let mut state = BackupState {
+            gate: Some(gate.clone()),
+            prune_failures: 3,
+            prune_error: Some("repository is locked".to_owned()),
+            notified: vec!["gate:needs_attention".to_owned()],
+            ..BackupState::default()
+        };
+
+        apply_outcome(&mut state, &BackupOutcome::Ok, &ctx());
+
+        assert_eq!(state.gate, Some(gate));
+        assert_eq!(state.notified, ["gate:needs_attention"]);
     }
 
     #[test]
