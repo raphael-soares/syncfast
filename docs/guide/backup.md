@@ -29,6 +29,8 @@ You can see the key again from the **…** menu of a backup: **Show Key…** ask
 
 syncfast stores the key in your desktop's keyring, never in a file, a log or a command line. See [Key storage](#key-storage).
 
+For a backup on a disk, **Open Destination Folder** in the same menu shows the folder in your file manager.
+
 ### Backups created by an agent
 
 An AI agent can create a backup through the command line or MCP ([agent guide](../agents.md)). syncfast generates and stores the key inside that process and never hands it to the agent. The backup runs, and syncfast shows **Save the backup key** at the top of the backup, with a notification the first time. Press **Show Key…**, write the key down and press **I Saved the Key**. Until then you cannot restore on another computer.
@@ -99,7 +101,7 @@ You only need the destination and the key.
 2. Press **…** next to **Backups**, **Add Existing Backup…**.
 3. Pick the **Destination** folder that holds the backup, enter the **Backup key** (capitals, lowercase, spaces and dashes are all accepted) and a **Name**, and press **Add Backup**. **No backup was found in that folder.** and **That key does not open this backup.** say what to fix.
 
-The backup is added paused and with no folders to back up. **Browse Files…** works at once. To make this machine back up to it too, press **Add Folders…** and resume it.
+The backup is added paused and with no folders to back up. **Browse Files…** works at once. To make this machine back up to it too, press **Add Folder…** in the **Settings** tab and resume it.
 
 ## Two machines, one repository
 
@@ -139,6 +141,8 @@ Status of a backup in the sidebar and detail:
 | Status | Meaning |
 |---|---|
 | **Backing up…** | A run is in progress. |
+| **Checking…** | A check is reading the repository. |
+| **Restoring…** | A restore is running; the detail shows its progress. |
 | **Up to date** | The last backup worked. |
 | **Needs attention** | Something needs you; the card says what and has the button that fixes it. |
 | **Save the key** | An agent created this backup and you have not saved its key yet. |
