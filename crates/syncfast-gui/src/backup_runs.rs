@@ -12,11 +12,10 @@ use jiff::tz::TimeZone;
 use serde::Deserialize;
 use serde_json::Value;
 use syncfast_core::backup::state::CheckKind;
+use syncfast_core::bisync::STAMP_FORMAT;
 use syncfast_core::paths::Paths;
 use syncfast_core::runs::MESSAGES_KEPT;
 use syncfast_core::state::RUNS_KEPT;
-
-const STAMP_FORMAT: &str = "%Y%m%d-%H%M%S";
 
 /// What a round did: the backup itself or one of the checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

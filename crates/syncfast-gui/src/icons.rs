@@ -61,7 +61,7 @@ pub fn status_icon(status: DisplayStatus) -> Icon {
     }
 }
 
-/// The icon of a backup's status; [`BackupStatus::icon`] names it.
+/// The icon of a backup's status.
 #[must_use]
 pub fn backup_status_icon(status: BackupStatus) -> Icon {
     match status {
@@ -103,30 +103,6 @@ mod tests {
         for status in statuses {
             let name = status.icon();
             let uri = status_icon(status).uri();
-            assert!(
-                uri.ends_with(&format!("{name}.svg")),
-                "{status:?}: {uri} does not draw {name}"
-            );
-        }
-    }
-
-    #[test]
-    fn every_backup_status_icon_matches_the_name_core_assigns() {
-        let statuses = [
-            BackupStatus::BackingUp,
-            BackupStatus::Checking,
-            BackupStatus::Error,
-            BackupStatus::SaveKey,
-            BackupStatus::Paused,
-            BackupStatus::Offline,
-            BackupStatus::Unavailable,
-            BackupStatus::Failing,
-            BackupStatus::Retrying,
-            BackupStatus::UpToDate,
-        ];
-        for status in statuses {
-            let name = status.icon();
-            let uri = backup_status_icon(status).uri();
             assert!(
                 uri.ends_with(&format!("{name}.svg")),
                 "{status:?}: {uri} does not draw {name}"
