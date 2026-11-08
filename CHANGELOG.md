@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.2](https://github.com/raphael-soares/syncfast/compare/v0.12.1...v0.12.2) (2026-11-08)
+
+
+### Documentation
+
+* align the phase 3 spec with what phase 2 delivered ([#84](https://github.com/raphael-soares/syncfast/issues/84)) ([20a2c1b](https://github.com/raphael-soares/syncfast/commit/20a2c1b0c5b1d674a29ffae115509349483df57b))
+
 ## [0.12.1](https://github.com/raphael-soares/syncfast/compare/v0.12.0...v0.12.1) (2026-11-07)
 
 
