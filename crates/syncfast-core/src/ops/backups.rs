@@ -16,7 +16,7 @@ use crate::backup::files::{ListError, NodeView, list_files};
 use crate::backup::key::Key;
 use crate::backup::lifecycle::repository_of;
 use crate::backup::run_decision::{BackupRequest, save_request};
-use crate::backup::snapshots::SnapshotView;
+use crate::backup::snapshots::{SnapshotView, pick_snapshot};
 use crate::backup::state::{BackupState, CheckKind, LastCheck, LastRun, LastSnapshot, is_running};
 use crate::backup::status::{display_backup_status, running_step};
 use crate::bisync::Fault;
@@ -241,12 +241,17 @@ impl Ops {
         Ok((backup, repository, key))
     }
 
-    /// The snapshots of the backup `id`, newest first.
+    /// The snapshots of the backup `id`, newest first, at most `limit` of
+    /// them when it is given.
     ///
     /// # Errors
     /// [`OpError::NoBackup`]; the key is missing, restic is missing or the
     /// repository cannot be opened ([`OpError::Failed`]).
-    pub async fn snapshots(&self, id: &str) -> Result<Vec<SnapshotView>, OpError> {
+    pub async fn snapshots(
+        &self,
+        id: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<SnapshotView>, OpError> {
         let restic = self.restic().await?;
         let (_, repository, key) = self.open_backup(id).await?;
         let mut snapshots = restic
@@ -254,6 +259,7 @@ impl Ops {
             .await
             .map_err(|err| failed(&err))?;
         newest_first(&mut snapshots);
+        snapshots.truncate(limit.unwrap_or(usize::MAX));
         Ok(snapshots)
     }
 
@@ -278,7 +284,7 @@ impl Ops {
             .await
             .map_err(|err| failed(&err))?;
         newest_first(&mut snapshots);
-        let picked = pick_snapshot(&snapshots, snapshot)?;
+        let picked = pick_snapshot(&snapshots, snapshot).map_err(OpError::Invalid)?;
         let listing = list_files(restic, &repository, &key, picked, dir)
             .await
             .map_err(|err| match err {
@@ -391,40 +397,6 @@ fn newest_first(snapshots: &mut [SnapshotView]) {
     snapshots.sort_by_key(|snapshot| std::cmp::Reverse(snapshot.time));
 }
 
-/// `latest`, or the snapshot whose id is, or starts with, `wanted`.
-/// `snapshots` are newest first.
-///
-/// # Errors
-/// [`OpError::Invalid`] when there is none, or the start matches several.
-pub fn pick_snapshot<'a>(
-    snapshots: &'a [SnapshotView],
-    wanted: &str,
-) -> Result<&'a SnapshotView, OpError> {
-    if wanted == "latest" {
-        return snapshots
-            .first()
-            .ok_or_else(|| OpError::Invalid("This backup has no snapshots yet.".to_owned()));
-    }
-    let wanted = wanted.to_ascii_lowercase();
-    if wanted.is_empty() {
-        return Err(OpError::Invalid(
-            "Name a snapshot: latest or an id from `backup snapshots`.".to_owned(),
-        ));
-    }
-    let mut matches = snapshots
-        .iter()
-        .filter(|snapshot| snapshot.id.to_ascii_lowercase().starts_with(&wanted));
-    match (matches.next(), matches.next()) {
-        (Some(only), None) => Ok(only),
-        (None, _) => Err(OpError::Invalid(format!(
-            "No snapshot has the id \"{wanted}\"."
-        ))),
-        (Some(_), Some(_)) => Err(OpError::Invalid(format!(
-            "More than one snapshot starts with \"{wanted}\"; give more of the id."
-        ))),
-    }
-}
-
 /// At most `limit` of `nodes`, and whether anything was left out.
 fn cut(mut nodes: Vec<NodeView>, truncated: bool, limit: usize) -> (Vec<NodeView>, bool) {
     let over = nodes.len() > limit;
@@ -475,48 +447,6 @@ mod tests {
         let ids: Vec<String> = three().into_iter().map(|snapshot| snapshot.id).collect();
 
         assert_eq!(ids, ["ab99cc00dd11", "cc44dd55ee66", "aa11bb22cc33"]);
-    }
-
-    #[test]
-    fn latest_is_the_newest_snapshot() {
-        let all = three();
-
-        assert_eq!(pick_snapshot(&all, "latest").unwrap().id, "ab99cc00dd11");
-    }
-
-    #[test]
-    fn an_id_or_the_start_of_one_picks_the_snapshot_whatever_its_case() {
-        let all = three();
-
-        assert_eq!(pick_snapshot(&all, "cc44").unwrap().id, "cc44dd55ee66");
-        assert_eq!(
-            pick_snapshot(&all, "AA11BB22CC33").unwrap().id,
-            "aa11bb22cc33"
-        );
-    }
-
-    #[test]
-    fn a_start_that_fits_two_snapshots_or_none_is_refused() {
-        let all = three();
-
-        let ambiguous = pick_snapshot(&all, "a").unwrap_err();
-        let unknown = pick_snapshot(&all, "ff").unwrap_err();
-
-        assert!(
-            ambiguous.to_string().contains("More than one"),
-            "{ambiguous}"
-        );
-        assert!(unknown.to_string().contains("\"ff\""), "{unknown}");
-        assert_eq!(ambiguous.exit_code(), 2);
-        assert_eq!(unknown.exit_code(), 2);
-    }
-
-    #[test]
-    fn a_backup_with_no_snapshots_has_no_latest() {
-        let err = pick_snapshot(&[], "latest").unwrap_err();
-
-        assert_eq!(err.to_string(), "This backup has no snapshots yet.");
-        assert!(pick_snapshot(&three(), "").is_err());
     }
 
     #[test]

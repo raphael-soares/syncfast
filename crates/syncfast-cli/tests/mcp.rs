@@ -504,6 +504,13 @@ fn the_backup_tools_create_run_read_and_restore_without_ever_returning_the_key()
         "show_backup_job",
         json!({"id": restored["id"]}),
     ));
+    let missing = docs.join("missing.txt");
+    let failed_to = bed.root.join("failed");
+    let failed = call(
+        &mut client,
+        "restore_snapshot",
+        json!({"id": "docs", "snapshot": "latest", "to": failed_to, "paths": [missing]}),
+    );
 
     assert_eq!(created["id"], "docs");
     assert_eq!(created["key_unsaved"], true);
@@ -520,7 +527,19 @@ fn the_backup_tools_create_run_read_and_restore_without_ever_returning_the_key()
         "content of a"
     );
     assert!(again.0, "a second restore into the folder is refused");
+    assert!(
+        again.1.contains("Restore destination already exists."),
+        "{}",
+        again.1
+    );
     assert_eq!(job["status"], "done", "{job}");
+    assert!(failed.0, "a restore that fails is an error: {}", failed.1);
+    assert!(
+        failed.1.contains("Nothing in the snapshot matches"),
+        "{}",
+        failed.1
+    );
+    assert!(!failed_to.exists());
     let key = std::fs::read_to_string(bed.root.join("data/syncfast/dev-keys/docs.key")).unwrap();
     assert!(key.trim().len() >= 40);
     assert!(!transcript.contains(key.trim()), "a tool returned the key");

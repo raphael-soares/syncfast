@@ -193,6 +193,9 @@ pub enum BackupCommand {
     Snapshots {
         /// The backup id
         id: String,
+        /// The most snapshots to list (the newest); all when absent
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
     },
     /// List the files of a snapshot folder: names, sizes and dates, never
     /// content
@@ -204,9 +207,9 @@ pub enum BackupCommand {
         /// A folder of the snapshot, as `files` printed it; the top when
         /// absent
         dir: Option<String>,
-        /// The most files to list
-        #[arg(long, default_value_t = DEFAULT_FILE_LIMIT)]
-        limit: usize,
+        /// The most entries to list; more are left out and the answer says so
+        #[arg(long, value_name = "N", default_value_t = DEFAULT_FILE_LIMIT)]
+        max_entries: usize,
     },
     /// Back up now
     Run {
@@ -277,6 +280,8 @@ pub enum BackupCommand {
     Job {
         /// The restore id that `backup restore` returned
         id: String,
+        #[command(flatten)]
+        wait: Wait,
     },
 }
 
@@ -302,7 +307,7 @@ pub struct BackupAddArgs {
     /// it must be empty or new
     #[arg(long)]
     pub dest: String,
-    /// `hourly`, `daily`, `weekly` or another interval, as the GUI lists
+    /// `hourly`, `daily` or `weekly`
     #[arg(long)]
     pub every: Option<String>,
     /// How many to keep, as `daily=7,weekly=4,monthly=6,yearly=0`; what is

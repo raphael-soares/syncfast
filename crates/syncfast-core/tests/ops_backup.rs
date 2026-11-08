@@ -19,7 +19,7 @@ use syncfast_core::config::{Config, Pair};
 use syncfast_core::network::{BoxFuture, Network};
 use syncfast_core::notify::{Notice, Notifier};
 use syncfast_core::ops::{
-    BackupEdit, BackupOptions, KeepPartial, NewBackupRequest, Ops, RestoreArgs,
+    BackupEdit, BackupOptions, KeepPartial, NewBackupRequest, OpError, Ops, RestoreArgs,
 };
 use syncfast_core::paths::Paths;
 use syncfast_core::rclone::{Rclone, RcloneError};
@@ -310,7 +310,7 @@ async fn create_stores_the_key_marks_it_unsaved_and_makes_the_first_snapshot() {
     assert_eq!(view.id, created.id);
     assert_eq!((view.key, view.key_unsaved), ("stored", true));
     assert!(view.last_snapshot.is_some());
-    assert_eq!(rig.ops.snapshots(&created.id).await.unwrap().len(), 1);
+    assert_eq!(rig.ops.snapshots(&created.id, None).await.unwrap().len(), 1);
 }
 
 async fn create_into_a_destination_that_is_not_empty_is_refused_and_leaves_nothing() {
@@ -357,7 +357,7 @@ async fn no_output_holds_the_key() {
     let mut outputs = vec![
         serde_json::to_string(&rig.ops.backups().await.unwrap()).unwrap(),
         serde_json::to_string(&rig.ops.show_backup(&id).await.unwrap()).unwrap(),
-        serde_json::to_string(&rig.ops.snapshots(&id).await.unwrap()).unwrap(),
+        serde_json::to_string(&rig.ops.snapshots(&id, None).await.unwrap()).unwrap(),
         serde_json::to_string(
             &rig.ops.snapshot_files(&id, "latest", "", 50).await.unwrap(),
         )
@@ -395,7 +395,7 @@ async fn a_backup_run_by_request_makes_a_new_snapshot() {
     let run = rig.ops.backup_now(&id, WAIT).await.unwrap();
 
     assert!(run.finished);
-    let snapshots = rig.ops.snapshots(&id).await.unwrap();
+    let snapshots = rig.ops.snapshots(&id, None).await.unwrap();
     assert_eq!(snapshots.len(), 2);
     assert_eq!(
         run.backup.last_snapshot.unwrap().id,
@@ -403,6 +403,9 @@ async fn a_backup_run_by_request_makes_a_new_snapshot() {
         "newest first"
     );
     assert!(snapshots[0].time >= snapshots[1].time);
+    let newest = rig.ops.snapshots(&id, Some(1)).await.unwrap();
+    assert_eq!(newest.len(), 1);
+    assert_eq!(newest[0].id, snapshots[0].id);
 }
 
 async fn a_check_by_request_records_its_result() {
@@ -464,7 +467,7 @@ async fn a_backup_that_does_not_exist_is_refused_everywhere_with_exit_2() {
 
     let errors = [
         ops.show_backup("nope").await.map(|_| ()),
-        ops.snapshots("nope").await.map(|_| ()),
+        ops.snapshots("nope", None).await.map(|_| ()),
         ops.snapshot_files("nope", "latest", "", 5).await.map(|_| ()),
         ops.backup_now("nope", WAIT).await.map(|_| ()),
         ops.check_backup("nope", CheckKind::Quick, WAIT).await.map(|_| ()),
@@ -485,7 +488,7 @@ async fn a_backup_whose_key_is_not_stored_cannot_be_opened() {
     let id = rig.create().await;
     rig.keys.delete(&id).await.unwrap();
 
-    let err = rig.ops.snapshots(&id).await.unwrap_err();
+    let err = rig.ops.snapshots(&id, None).await.unwrap_err();
 
     assert_eq!(err.exit_code(), 1);
     assert!(err.to_string().contains("Ask the user"), "{err}");
@@ -677,7 +680,10 @@ async fn a_restore_into_a_new_folder_reports_exact_counts_and_no_contents() {
     );
     let json = serde_json::to_string(&report).unwrap();
     assert!(!json.contains("alpha"), "{json}");
-    let again = rig.ops.restore_job(report.id.as_deref().unwrap()).await.unwrap();
+    let again = rig.ops
+        .restore_job(report.id.as_deref().unwrap(), Duration::ZERO)
+        .await
+        .unwrap();
     assert_eq!(again, report);
 }
 
@@ -691,6 +697,21 @@ async fn a_dry_run_counts_and_creates_nothing() {
     assert_eq!(report.status, "dry_run");
     assert_eq!(report.total_bytes, 9);
     assert!(report.total_files >= 2);
+    assert!(!out.exists());
+}
+
+async fn a_restore_that_fails_is_an_error_and_leaves_no_folder() {
+    let Some(rig) = rig().await else { return };
+    let id = rig.create().await;
+    let out = rig.root.join("restored");
+    let mut args = restore_args(&id, &out, false);
+    args.paths = vec![format!("{}/docs/missing.txt", rig.src().display())];
+
+    let err = rig.ops.restore(args, WAIT).await.unwrap_err();
+
+    assert!(matches!(err, OpError::Failed(_)), "{err:?}");
+    assert_eq!(err.exit_code(), 1);
+    assert!(err.to_string().contains("Nothing in the snapshot matches"), "{err}");
     assert!(!out.exists());
 }
 
@@ -751,7 +772,10 @@ async fn a_restore_into_a_syncing_folder_waits_for_its_round() {
 async fn a_restore_job_that_does_not_exist_is_refused() {
     let Some(rig) = rig().await else { return };
 
-    let err = rig.ops.restore_job("20990101-000000-000").await.unwrap_err();
+    let err = rig.ops
+        .restore_job("20990101-000000-000", Duration::ZERO)
+        .await
+        .unwrap_err();
 
     assert_eq!(err.exit_code(), 2);
 }

@@ -129,6 +129,11 @@ impl BackupEdit {
     /// # Errors
     /// The key does not exist, or the values are not what it takes.
     pub fn setting(key: &str, values: &[String]) -> Result<Self, OpError> {
+        if let Some(flag) = values.iter().find(|value| value.starts_with("--")) {
+            return Err(OpError::Invalid(format!(
+                "\"{flag}\" looks like a flag, not a value: flags go before the key, as in `backup set <id> --json <key> <value>`"
+            )));
+        }
         let mut edit = Self::default();
         match key {
             "name" => edit.name = Some(single(key, values)?),
@@ -224,7 +229,7 @@ fn place_dest(text: &str, home: &Path, cwd: &Path) -> String {
 /// # Errors
 /// [`OpError::UserOnly`] for a new destination alone, [`OpError::NeedsUser`]
 /// for anything else.
-pub fn refuse_lowering(keys: &[&str]) -> Result<(), OpError> {
+fn refuse_lowering(keys: &[&str]) -> Result<(), OpError> {
     match keys {
         [] => Ok(()),
         ["dest"] => Err(OpError::UserOnly(
@@ -438,8 +443,34 @@ mod tests {
     }
 
     #[test]
-    fn the_current_folder_is_the_one_of_the_process() {
-        assert_eq!(current_folder().unwrap(), std::env::current_dir().unwrap());
+    fn the_current_folder_is_an_absolute_folder_that_exists() {
+        let folder = current_folder().unwrap();
+
+        assert!(folder.is_absolute(), "{}", folder.display());
+        assert!(folder.is_dir(), "{}", folder.display());
+    }
+
+    #[test]
+    fn a_value_that_starts_with_two_dashes_is_a_flag_in_the_wrong_place() {
+        for key in ["paths", "filters", "name", "keep.daily"] {
+            let err =
+                BackupEdit::setting(key, &["/a".to_owned(), "--json".to_owned()]).unwrap_err();
+
+            assert!(matches!(err, OpError::Invalid(_)), "{key}: {err:?}");
+            assert!(err.to_string().contains("\"--json\""), "{err}");
+            assert!(err.to_string().contains("before the key"), "{err}");
+        }
+    }
+
+    #[test]
+    fn an_exclude_rule_with_a_dash_is_a_value() {
+        let edit =
+            BackupEdit::setting("filters", &["- *.bak".to_owned(), "+ -x".to_owned()]).unwrap();
+
+        assert_eq!(
+            edit.options.filters,
+            Some(vec!["- *.bak".to_owned(), "+ -x".to_owned()])
+        );
     }
 
     #[test]

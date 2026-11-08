@@ -64,6 +64,36 @@ pub fn parse_snapshots(json: &[u8]) -> Result<Vec<SnapshotView>, serde_json::Err
     Ok(views)
 }
 
+/// `latest`, or the snapshot whose id is, or starts with, `wanted`.
+/// `snapshots` are newest first.
+///
+/// # Errors
+/// The reason, when there is none or the start matches several.
+pub fn pick_snapshot<'a>(
+    snapshots: &'a [SnapshotView],
+    wanted: &str,
+) -> Result<&'a SnapshotView, String> {
+    if wanted == "latest" {
+        return snapshots
+            .first()
+            .ok_or_else(|| "This backup has no snapshots yet.".to_owned());
+    }
+    let wanted = wanted.to_ascii_lowercase();
+    if wanted.is_empty() {
+        return Err("Name a snapshot: latest or an id from `backup snapshots`.".to_owned());
+    }
+    let mut matches = snapshots
+        .iter()
+        .filter(|snapshot| snapshot.id.to_ascii_lowercase().starts_with(&wanted));
+    match (matches.next(), matches.next()) {
+        (Some(only), None) => Ok(only),
+        (None, _) => Err(format!("No snapshot has the id \"{wanted}\".")),
+        (Some(_), Some(_)) => Err(format!(
+            "More than one snapshot starts with \"{wanted}\"; give more of the id."
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,6 +106,65 @@ mod tests {
 
         assert_eq!(views.len(), 3);
         assert!(views.windows(2).all(|pair| pair[0].time >= pair[1].time));
+    }
+
+    fn snapshot(id: &str, time: &str) -> SnapshotView {
+        SnapshotView {
+            id: id.to_owned(),
+            short_id: id[..8.min(id.len())].to_owned(),
+            time: time.parse().unwrap(),
+            host: "host".to_owned(),
+            paths: vec!["/home/user".to_owned()],
+            files: Some(1),
+            bytes: Some(1),
+            added_bytes: Some(1),
+        }
+    }
+
+    fn three() -> Vec<SnapshotView> {
+        vec![
+            snapshot("ab99cc00dd11", "2026-03-01T00:00:00Z"),
+            snapshot("cc44dd55ee66", "2026-02-01T00:00:00Z"),
+            snapshot("aa11bb22cc33", "2026-01-01T00:00:00Z"),
+        ]
+    }
+
+    #[test]
+    fn latest_is_the_newest_snapshot() {
+        assert_eq!(
+            pick_snapshot(&three(), "latest").unwrap().id,
+            "ab99cc00dd11"
+        );
+    }
+
+    #[test]
+    fn an_id_or_the_start_of_one_picks_the_snapshot_whatever_its_case() {
+        let all = three();
+
+        assert_eq!(pick_snapshot(&all, "cc44").unwrap().id, "cc44dd55ee66");
+        assert_eq!(
+            pick_snapshot(&all, "AA11BB22CC33").unwrap().id,
+            "aa11bb22cc33"
+        );
+    }
+
+    #[test]
+    fn a_start_that_fits_two_snapshots_or_none_is_refused() {
+        let all = three();
+
+        let ambiguous = pick_snapshot(&all, "a").unwrap_err();
+        let unknown = pick_snapshot(&all, "ff").unwrap_err();
+
+        assert!(ambiguous.contains("More than one"), "{ambiguous}");
+        assert!(unknown.contains("\"ff\""), "{unknown}");
+    }
+
+    #[test]
+    fn a_backup_with_no_snapshots_has_no_latest() {
+        let err = pick_snapshot(&[], "latest").unwrap_err();
+
+        assert_eq!(err, "This backup has no snapshots yet.");
+        assert!(pick_snapshot(&three(), "").is_err());
     }
 
     #[test]

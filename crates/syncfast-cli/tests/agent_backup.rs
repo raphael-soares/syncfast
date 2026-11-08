@@ -100,6 +100,7 @@ fn add_creates_the_backup_and_leaves_the_key_for_the_user_to_save() {
     assert_eq!(shown["key"], "stored");
     assert_eq!(shown["key_unsaved"], true);
     assert_eq!(shown["status"], "save_key");
+    assert_eq!(shown["one_file_system"], true);
     assert!(rig.key().len() >= 40);
 }
 
@@ -216,12 +217,136 @@ fn files_cut_at_the_limit_say_so() {
     let docs_dir = top.json()["files"][0]["path"].as_str().unwrap().to_owned();
 
     let cut = rig.bed.run(&[
-        "backup", "files", "docs", "latest", &docs_dir, "--limit", "1", "--json",
+        "backup",
+        "files",
+        "docs",
+        "latest",
+        &docs_dir,
+        "--max-entries",
+        "1",
+        "--json",
     ]);
 
     assert_eq!(cut.code, 0);
     assert_eq!(cut.json()["files"].as_array().unwrap().len(), 1);
     assert_eq!(cut.json()["truncated"], true);
+}
+
+#[test]
+fn snapshots_can_be_cut_to_the_newest() {
+    let Some(rig) = rig() else { return };
+    rig.backed_up();
+    write(&rig.docs.join("later.txt"), "later");
+    let run = rig.bed.run(&["backup", "run", "docs", "--json"]);
+    assert_eq!(run.code, 0, "{} {}", run.stdout, run.stderr);
+
+    let all = rig
+        .bed
+        .run(&["backup", "snapshots", "docs", "--json"])
+        .json();
+    let newest = rig
+        .bed
+        .run(&["backup", "snapshots", "docs", "--limit", "1", "--json"])
+        .json();
+
+    assert_eq!(all.as_array().unwrap().len(), 2);
+    assert_eq!(newest.as_array().unwrap().len(), 1);
+    assert_eq!(newest[0]["id"], all[0]["id"]);
+}
+
+#[test]
+fn job_waits_for_a_restore_and_reads_how_it_ended() {
+    let Some(rig) = rig() else { return };
+    rig.backed_up();
+    let to = rig.bed.root.join("later");
+    let started = rig.bed.run(&[
+        "backup",
+        "restore",
+        "docs",
+        "latest",
+        "--to",
+        to.to_str().unwrap(),
+        "--wait",
+        "0",
+        "--json",
+    ]);
+    assert_eq!(started.code, 0, "{} {}", started.stdout, started.stderr);
+    let id = started.json()["id"].as_str().unwrap().to_owned();
+
+    let job = rig
+        .bed
+        .run(&["backup", "job", &id, "--wait", "60", "--json"]);
+
+    assert_eq!(job.code, 0, "{} {}", job.stdout, job.stderr);
+    assert_eq!(job.json()["status"], "done");
+    assert_eq!(
+        fs::read_to_string(to.join("a.txt")).unwrap(),
+        "content of a"
+    );
+}
+
+#[test]
+fn a_restore_that_fails_exits_1_with_the_reason_and_leaves_no_folder() {
+    let Some(rig) = rig() else { return };
+    rig.backed_up();
+    let to = rig.bed.root.join("never");
+    let missing = format!("{}/missing.txt", rig.docs.display());
+
+    let run = rig.bed.run(&[
+        "backup",
+        "restore",
+        "docs",
+        "latest",
+        "--to",
+        to.to_str().unwrap(),
+        "--path",
+        &missing,
+        "--json",
+    ]);
+
+    assert_eq!(run.code, 1, "{} {}", run.stdout, run.stderr);
+    assert_eq!(run.json()["error"]["code"], "failed");
+    assert!(
+        run.stdout.contains("Nothing in the snapshot matches"),
+        "{}",
+        run.stdout
+    );
+    assert!(!to.exists());
+}
+
+#[test]
+fn a_flag_after_the_key_is_refused_and_never_saved_as_a_value() {
+    let Some(rig) = rig() else { return };
+    rig.backed_up();
+    let before = rig.show();
+    let more = rig.bed.root.join("more");
+    fs::create_dir_all(&more).unwrap();
+
+    let run = rig.bed.run(&[
+        "backup",
+        "set",
+        "docs",
+        "paths",
+        more.to_str().unwrap(),
+        "--json",
+    ]);
+
+    assert_eq!(run.code, 2, "{} {}", run.stdout, run.stderr);
+    assert!(run.stderr.contains("before the key"), "{}", run.stderr);
+    assert_eq!(rig.show(), before);
+}
+
+#[test]
+fn an_exclude_rule_that_starts_with_a_dash_is_a_value_not_a_flag() {
+    let Some(rig) = rig() else { return };
+    rig.backed_up();
+
+    let run = rig
+        .bed
+        .run(&["backup", "set", "docs", "--json", "filters", "- *.bak"]);
+
+    assert_eq!(run.code, 0, "{} {}", run.stdout, run.stderr);
+    assert_eq!(rig.show()["filters"][0], "- *.bak");
 }
 
 #[test]
@@ -382,6 +507,11 @@ fn restore_into_a_new_folder_brings_the_files_and_a_second_restore_there_exits_2
         to.to_str().unwrap(),
     ]);
     assert_eq!(again.code, 2, "{} {}", again.stdout, again.stderr);
+    assert!(
+        again.stderr.contains("Restore destination already exists."),
+        "{}",
+        again.stderr
+    );
     assert_eq!(
         fs::read_to_string(to.join("a.txt")).unwrap(),
         "content of a"

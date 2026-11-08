@@ -41,11 +41,10 @@ pub use accounts::AccountView;
 pub use activity::{RoundLog, RoundView};
 pub use backup_edit::{
     BackupCreated, BackupEdit, BackupOptions, BackupSaved, KeepPartial, NewBackupRequest,
-    refuse_lowering,
 };
 pub use backups::{
     BackupDetail, BackupGateView, BackupRun, BackupView, BackupsToggled, DEFAULT_FILE_LIMIT,
-    KeepView, SnapshotFiles, pick_snapshot,
+    KeepView, SnapshotFiles,
 };
 pub use conflicts::{ConflictView, FileView, Keep, Resolved};
 pub use error::OpError;

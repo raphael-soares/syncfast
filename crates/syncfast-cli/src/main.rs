@@ -334,17 +334,19 @@ async fn operate(operation: Operation, json: bool) -> anyhow::Result<ExitCode> {
 async fn backup(ops: &Ops, command: BackupCommand, json: bool) -> anyhow::Result<ExitCode> {
     match command {
         BackupCommand::Show { id } => emit(json, &ops.show_backup(&id).await?, render::backup_show),
-        BackupCommand::Snapshots { id } => emit(json, &ops.snapshots(&id).await?, |found| {
-            render::snapshots(found)
-        }),
+        BackupCommand::Snapshots { id, limit } => {
+            emit(json, &ops.snapshots(&id, limit).await?, |found| {
+                render::snapshots(found)
+            })
+        }
         BackupCommand::Files {
             id,
             snapshot,
             dir,
-            limit,
+            max_entries,
         } => {
             let found = ops
-                .snapshot_files(&id, &snapshot, dir.as_deref().unwrap_or(""), limit)
+                .snapshot_files(&id, &snapshot, dir.as_deref().unwrap_or(""), max_entries)
                 .await?;
             emit(json, &found, render::snapshot_files)
         }
@@ -416,8 +418,9 @@ async fn backup(ops: &Ops, command: BackupCommand, json: bool) -> anyhow::Result
             let report = ops.restore(args, Duration::from_secs(wait.wait)).await?;
             emit(json, &report, render::restore_report)
         }
-        BackupCommand::Job { id } => {
-            emit(json, &ops.restore_job(&id).await?, render::restore_report)
+        BackupCommand::Job { id, wait } => {
+            let report = ops.restore_job(&id, Duration::from_secs(wait.wait)).await?;
+            emit(json, &report, render::restore_report)
         }
     }
 }

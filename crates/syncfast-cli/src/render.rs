@@ -602,7 +602,7 @@ pub fn snapshot_files(found: &SnapshotFiles) -> String {
         );
     }
     if found.truncated {
-        out.push_str("There are more entries; raise --limit or list a folder inside.\n");
+        out.push_str("There are more entries; raise --max-entries or list a folder inside.\n");
     }
     if found.files.is_empty() {
         out.push_str("Nothing here.\n");

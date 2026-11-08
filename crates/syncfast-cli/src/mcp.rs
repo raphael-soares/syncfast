@@ -85,13 +85,17 @@ fn wait(seconds: Option<u64>) -> Duration {
 }
 
 /// One sync, or all of them: exactly one of the two must be asked for.
-fn one_or_all(id: Option<String>, all: Option<bool>) -> Result<Option<String>, OpError> {
+fn one_or_all(
+    id: Option<String>,
+    all: Option<bool>,
+    noun: &str,
+) -> Result<Option<String>, OpError> {
     match (id, all.unwrap_or(false)) {
         (Some(id), false) => Ok(Some(id)),
         (None, true) => Ok(None),
-        _ => Err(OpError::Invalid(
-            "give either id (one sync) or all = true (every sync)".to_owned(),
-        )),
+        _ => Err(OpError::Invalid(format!(
+            "give either id (one {noun}) or all = true (every {noun})"
+        ))),
     }
 }
 
@@ -284,6 +288,14 @@ struct ResetSettingArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct BackupTargetArgs {
+    /// The backup id, as `list_backups` shows it.
+    id: Option<String>,
+    /// Every backup, instead of one. Give `id` or `all`, not both.
+    all: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct BackupIdArgs {
     /// The backup id, as `list_backups` shows it.
     id: String,
@@ -293,6 +305,16 @@ struct BackupIdArgs {
 struct RestoreJobArgs {
     /// The restore id that `restore_snapshot` returned.
     id: String,
+    /// Seconds to wait for the restore to end. Default 60; 0 answers at once.
+    wait_seconds: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct SnapshotsArgs {
+    /// The backup id, as `list_backups` shows it.
+    id: String,
+    /// The most snapshots to list (the newest). All when absent.
+    limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -303,8 +325,8 @@ struct SnapshotFilesArgs {
     snapshot: String,
     /// A folder of the snapshot, as an earlier answer listed it. Absent: the top.
     dir: Option<String>,
-    /// The most files to list. Default 200.
-    limit: Option<usize>,
+    /// The most entries to list; more are left out and `truncated` says so. Default 200.
+    max_entries: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -377,7 +399,7 @@ struct CreateBackupArgs {
     paths: Vec<String>,
     /// A folder on this computer or `account:folder`. It must be empty or new.
     dest: String,
-    /// How often: `hourly`, `daily`, `weekly` or another interval the app lists. Default daily.
+    /// How often: `hourly`, `daily` or `weekly`. Default daily.
     every: Option<String>,
     /// How many snapshots to keep; what is absent has the default.
     keep: Option<KeepArgs>,
@@ -403,7 +425,7 @@ struct EditBackupArgs {
     dest: Option<String>,
     /// `true` only; turning it off is refused.
     one_file_system: Option<bool>,
-    /// How often: `hourly`, `daily`, `weekly` or another interval the app lists.
+    /// How often: `hourly`, `daily` or `weekly`.
     every: Option<String>,
     /// The snapshots to keep; raising is allowed, lowering is refused.
     keep: Option<KeepArgs>,
@@ -509,7 +531,7 @@ impl SyncfastMcp {
         )
     )]
     async fn pause_sync(&self, Parameters(args): Parameters<OneOrAllArgs>) -> CallToolResult {
-        match one_or_all(args.id, args.all) {
+        match one_or_all(args.id, args.all, "sync") {
             Ok(id) => reply(self.ops.set_enabled(id.as_deref(), false).await),
             Err(err) => reply::<()>(Err(err)),
         }
@@ -524,7 +546,7 @@ impl SyncfastMcp {
         )
     )]
     async fn resume_sync(&self, Parameters(args): Parameters<OneOrAllArgs>) -> CallToolResult {
-        match one_or_all(args.id, args.all) {
+        match one_or_all(args.id, args.all, "sync") {
             Ok(id) => reply(self.ops.set_enabled(id.as_deref(), true).await),
             Err(err) => reply::<()>(Err(err)),
         }
@@ -614,7 +636,7 @@ impl SyncfastMcp {
         annotations(read_only_hint = false, destructive_hint = false)
     )]
     async fn sync_now(&self, Parameters(args): Parameters<SyncNowArgs>) -> CallToolResult {
-        match one_or_all(args.id, args.all) {
+        match one_or_all(args.id, args.all, "sync") {
             Ok(id) => reply(
                 self.ops
                     .sync_now(id.as_deref(), wait(args.wait_seconds))
@@ -816,8 +838,8 @@ impl SyncfastMcp {
         description = "The snapshots of a backup, newest first.",
         annotations(read_only_hint = true)
     )]
-    async fn list_snapshots(&self, Parameters(args): Parameters<BackupIdArgs>) -> CallToolResult {
-        reply(self.ops.snapshots(&args.id).await)
+    async fn list_snapshots(&self, Parameters(args): Parameters<SnapshotsArgs>) -> CallToolResult {
+        reply(self.ops.snapshots(&args.id, args.limit).await)
     }
 
     #[tool(
@@ -834,7 +856,7 @@ impl SyncfastMcp {
                     &args.id,
                     &args.snapshot,
                     args.dir.as_deref().unwrap_or(""),
-                    args.limit.unwrap_or(DEFAULT_FILE_LIMIT),
+                    args.max_entries.unwrap_or(DEFAULT_FILE_LIMIT),
                 )
                 .await,
         )
@@ -873,8 +895,8 @@ impl SyncfastMcp {
             idempotent_hint = true
         )
     )]
-    async fn pause_backup(&self, Parameters(args): Parameters<OneOrAllArgs>) -> CallToolResult {
-        match one_or_all(args.id, args.all) {
+    async fn pause_backup(&self, Parameters(args): Parameters<BackupTargetArgs>) -> CallToolResult {
+        match one_or_all(args.id, args.all, "backup") {
             Ok(id) => reply(self.ops.pause_backup(id.as_deref()).await),
             Err(err) => reply::<()>(Err(err)),
         }
@@ -888,8 +910,11 @@ impl SyncfastMcp {
             idempotent_hint = true
         )
     )]
-    async fn resume_backup(&self, Parameters(args): Parameters<OneOrAllArgs>) -> CallToolResult {
-        match one_or_all(args.id, args.all) {
+    async fn resume_backup(
+        &self,
+        Parameters(args): Parameters<BackupTargetArgs>,
+    ) -> CallToolResult {
+        match one_or_all(args.id, args.all, "backup") {
             Ok(id) => reply(self.ops.resume_backup(id.as_deref()).await),
             Err(err) => reply::<()>(Err(err)),
         }
@@ -981,14 +1006,18 @@ impl SyncfastMcp {
     }
 
     #[tool(
-        description = "How a restore stands: running, done or failed, with the counts. The id is the one restore_snapshot returned.",
+        description = "How a restore stands: running or done, with the counts; a restore that failed is an error with the reason. Waits up to wait_seconds for it to end. The id is the one restore_snapshot returned.",
         annotations(read_only_hint = true)
     )]
     async fn show_backup_job(
         &self,
         Parameters(args): Parameters<RestoreJobArgs>,
     ) -> CallToolResult {
-        reply(self.ops.restore_job(&args.id).await)
+        reply(
+            self.ops
+                .restore_job(&args.id, wait(args.wait_seconds))
+                .await,
+        )
     }
 }
 

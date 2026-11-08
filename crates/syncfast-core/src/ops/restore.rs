@@ -33,7 +33,7 @@ impl Ops {
     /// [`OpError::Invalid`] for a folder that exists or a snapshot or path
     /// that does not; [`OpError::Busy`] when the folder is in a sync with a
     /// round running; [`OpError::Failed`] when restic or the key is
-    /// missing.
+    /// missing, or the restore itself failed.
     pub async fn restore(
         &self,
         args: RestoreArgs,
@@ -53,8 +53,15 @@ impl Ops {
             destination,
             dry_run: args.dry_run,
         };
-        let deadline = Instant::now() + wait;
-        let mut report = start_restore(&env, &*self.restores, &request).await?;
+        let report = start_restore(&env, &*self.restores, &request).await?;
+        self.await_restore(report, Instant::now() + wait).await
+    }
+
+    async fn await_restore(
+        &self,
+        mut report: RestoreReport,
+        deadline: Instant,
+    ) -> Result<RestoreReport, OpError> {
         while let Some(id) = report.id.as_deref()
             && !report.finished
             && Instant::now() < deadline
@@ -62,14 +69,21 @@ impl Ops {
             tokio::time::sleep(POLL).await;
             report = restore_status(&self.paths, id).await?;
         }
+        if report.status == "failed" {
+            return Err(OpError::Failed(report.error.unwrap_or_else(|| {
+                "the restore failed without saying why".to_owned()
+            })));
+        }
         Ok(report)
     }
 
-    /// How the restore job `id` stands.
+    /// How the restore job `id` stands, waiting up to `wait` for it to end.
     ///
     /// # Errors
-    /// [`OpError::Invalid`] when no restore has that id.
-    pub async fn restore_job(&self, id: &str) -> Result<RestoreReport, OpError> {
-        Ok(restore_status(&self.paths, id).await?)
+    /// [`OpError::Invalid`] when no restore has that id; [`OpError::Failed`]
+    /// with the reason when the restore failed.
+    pub async fn restore_job(&self, id: &str, wait: Duration) -> Result<RestoreReport, OpError> {
+        let report = restore_status(&self.paths, id).await?;
+        self.await_restore(report, Instant::now() + wait).await
     }
 }
