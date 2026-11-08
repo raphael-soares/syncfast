@@ -139,6 +139,12 @@ impl Sheets {
             Action::RemoveBackup(id) => {
                 self.open_backup_of(id, |facts| (BackupSheet::remove(facts), Vec::new()))
             }
+            Action::BrowseSnapshot { backup, snapshot } => {
+                self.open_backup_of(backup, |facts| BackupSheet::browse(facts, snapshot))
+            }
+            Action::RestoreSnapshot { backup, snapshot } => {
+                self.open_backup_of(backup, |facts| BackupSheet::restore_whole(facts, snapshot))
+            }
             Action::BackupSheet(action) => self.backup_action(action),
             Action::AddSyncSheet(action) => match &mut self.current {
                 Current::Backup(sheet) => sheet.dirs_action(action),
@@ -391,7 +397,13 @@ impl Sheets {
         match event {
             Event::Dirs { path, result } => sheet.on_dirs(path, result),
             Event::RemoteDirMade { path, result } => return Some(sheet.on_dir_made(path, result)),
-            Event::FolderPicked(picked) => sheet.on_picked(picked.as_ref()),
+            Event::FolderPicked(picked) => {
+                let outcome = sheet.on_picked(picked.as_ref());
+                if outcome.close {
+                    self.current = Current::Closed;
+                }
+                return Some(outcome.commands);
+            }
             Event::KeyStorage { outcome, .. } => sheet.on_key_storage(outcome),
             Event::BackupFilterTest { .. } => sheet.on_filter_test(event),
             Event::Backup(reply) => {
@@ -593,8 +605,10 @@ impl Sheets {
     /// Asks the backend again when a review waited for a running round and
     /// the wait is over. Returns when to look again, if it is waiting.
     pub fn tick(&mut self, now: Instant) -> (Vec<Command>, Option<Duration>) {
-        let Current::Review(session) = &mut self.current else {
-            return (Vec::new(), None);
+        let session = match &mut self.current {
+            Current::Review(session) => session,
+            Current::Backup(sheet) => return sheet.tick(now),
+            _ => return (Vec::new(), None),
         };
         let Some(due) = session.retry_at else {
             return (Vec::new(), None);

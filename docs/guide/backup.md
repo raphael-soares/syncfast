@@ -85,11 +85,11 @@ Changing filters does not ask for a review. They only affect future snapshots: f
 
 Open the **Snapshots** tab of the backup. Each row is a snapshot with its date, files and size.
 
-1. Press **Restore Snapshot…** to restore everything in it, or **Browse Files…** to open the snapshot, tick the files and folders you want (ticking a folder takes everything inside) and press **Restore To…**.
+1. Press **Restore Snapshot…** to restore everything in it, or **Browse Files…** to open the snapshot. The files open one folder at a time, so a large snapshot opens quickly. Tick the files and folders you want (ticking a folder takes everything inside) and press **Restore To…**, which stays disabled until something is ticked.
 2. Choose a folder. syncfast creates a new folder inside it named `<backup name> <date and time>` (with ` 2`, ` 3`… if it exists) and confirms the exact folder: **Restore to …?**
-3. Press **Restore**. A progress bar shows the files and bytes. Closing the window does not stop it. When it ends, **Open Folder** shows the result.
+3. Press **Restore**. A progress bar shows `<n> of <total> files` and the bytes restored, and **Cancel** stops it. Closing the window does not stop it: the backup shows **Restoring…** until it ends. When it ends, **Open Folder** shows the result.
 
-A restore never writes over anything and never goes into the original place: it always makes a new folder. Copy back what you need from there. A restore cannot go inside a folder of a sync that is running; try again when the round finishes.
+A restore never writes over anything and never goes into the original place: it always makes a new folder. Copy back what you need from there. It works the same if the original folders are gone, and for snapshots made by another computer. The count of files includes the folders that hold them. A restore cannot go inside a folder of a sync that is running (**This sync is running. Try again when it finishes.**); try again when the round finishes. If nothing in the snapshot matches what you ticked, the restore stops with **Nothing in the snapshot matches that path.** and leaves no folder behind.
 
 ## Restore on a new machine
 

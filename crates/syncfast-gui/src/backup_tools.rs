@@ -12,6 +12,10 @@ use syncfast_core::backup::key::Key;
 use syncfast_core::backup::keystore::{DefaultKeyStore, KeyBackend, KeyStore as _};
 use syncfast_core::backup::lifecycle::{self, LifecycleEnv};
 use syncfast_core::backup::run_decision::{BackupRequest, save_request};
+use syncfast_core::backup::files::{self, Listing};
+use syncfast_core::backup::restore_job::{
+    self, DetachedRestoreStarter, RestoreEnv, RestoreError, RestoreReport, RestoreRequest,
+};
 use syncfast_core::backup::snapshots::SnapshotView;
 use syncfast_core::backup::state::CheckKind;
 use syncfast_core::backup::test_filters::{FilterTest, run_filter_test};
@@ -98,6 +102,41 @@ impl Tools {
             .map_err(|err| err.to_string())?;
         snapshots.sort_unstable_by_key(|snapshot| std::cmp::Reverse(snapshot.time));
         Ok(snapshots.into())
+    }
+
+    /// One folder of a snapshot.
+    ///
+    /// # Errors
+    /// The backup, its key or the folder cannot be read: the reason.
+    pub async fn list_files(
+        &self,
+        backup_id: &str,
+        snapshot: &SnapshotView,
+        dir: &str,
+    ) -> Result<Listing, String> {
+        let backup = stored_backup(&self.paths, backup_id).await?;
+        let key = self.key_of(backup_id).await?;
+        let repository = repository_of(&self.paths, &backup)?;
+        files::list_files(&self.restic, &repository, &key, snapshot, dir)
+            .await
+            .map_err(|err| err.to_string())
+    }
+
+    /// Starts a restore that goes on when the window closes.
+    ///
+    /// # Errors
+    /// The restore is refused or cannot start.
+    pub async fn start_restore(
+        &self,
+        request: &RestoreRequest,
+    ) -> Result<RestoreReport, RestoreError> {
+        let env = RestoreEnv {
+            paths: &self.paths,
+            restic: &self.restic,
+            keys: &self.keys,
+        };
+        let starter = DetachedRestoreStarter::new(self.bin.clone());
+        restore_job::start_restore(&env, &starter, request).await
     }
 
     async fn key_of(&self, backup_id: &str) -> Result<Key, String> {

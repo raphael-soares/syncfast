@@ -285,6 +285,10 @@ impl App {
             restic_version: None,
         };
         self.backup_screens.fill(&mut vm);
+        vm.backup.restoring = self
+            .selected_backup_id()
+            .and_then(|id| self.snapshot.restores.iter().find(|job| job.backup == id))
+            .cloned();
         self.screens.fill(&mut vm);
         vm
     }
@@ -789,6 +793,8 @@ impl App {
             | Action::ShowBackupKey(_)
             | Action::EnterBackupKey(_)
             | Action::RemoveBackup(_)
+            | Action::BrowseSnapshot { .. }
+            | Action::RestoreSnapshot { .. }
             | Action::BackupSheet(_)
             | Action::Account(_) => {
                 self.apply_to_sheets(&action);

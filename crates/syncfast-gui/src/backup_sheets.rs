@@ -4,11 +4,14 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use syncfast_core::backup::lifecycle::NewBackup;
+use syncfast_core::backup::snapshots::SnapshotView;
 
 use crate::backend::backup_sheets::{AddFailure, BackupCommand, BackupReply};
 use crate::backend::{Command, Event};
+use crate::backup_restore::RestoreSession;
 use crate::ui::add_sync::{AddSyncAction, DirListing};
 use crate::ui::backup_keys::{self, EnterKeyView, KeyFileOutcome, KeyView, RemoveView};
 use crate::ui::backup_wizard::{
@@ -27,14 +30,14 @@ pub struct Outcome {
 }
 
 impl Outcome {
-    fn commands(commands: Vec<Command>) -> Self {
+    pub(crate) fn commands(commands: Vec<Command>) -> Self {
         Self {
             commands,
             close: false,
         }
     }
 
-    fn close(commands: Vec<Command>) -> Self {
+    pub(crate) fn close(commands: Vec<Command>) -> Self {
         Self {
             commands,
             close: true,
@@ -85,6 +88,7 @@ pub enum BackupSheet {
     Key(Box<KeySession>),
     EnterKey(Box<EnterKeySession>),
     Remove(Box<RemoveSession>),
+    Restore(Box<RestoreSession>),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -163,6 +167,20 @@ impl BackupSheet {
         }))
     }
 
+    /// `Browse Files…` of a snapshot.
+    #[must_use]
+    pub fn browse(facts: &BackupFacts, snapshot: &SnapshotView) -> (Self, Vec<Command>) {
+        let (session, commands) = RestoreSession::browse(facts, snapshot);
+        (Self::Restore(Box::new(session)), commands)
+    }
+
+    /// `Restore Snapshot…`: all of a snapshot, to a folder to choose.
+    #[must_use]
+    pub fn restore_whole(facts: &BackupFacts, snapshot: &SnapshotView) -> (Self, Vec<Command>) {
+        let (session, commands) = RestoreSession::whole(facts, snapshot);
+        (Self::Restore(Box::new(session)), commands)
+    }
+
     /// The wizard, to park it while an account is added.
     ///
     /// # Errors
@@ -194,7 +212,14 @@ impl BackupSheet {
 
     pub fn apply(&mut self, action: &BackupSheetAction, backups: &[BackupFacts]) -> Outcome {
         match action {
-            BackupSheetAction::Cancel => Outcome::close(Vec::new()),
+            BackupSheetAction::Cancel => match self {
+                Self::Restore(session) => session.cancel(),
+                _ => Outcome::close(Vec::new()),
+            },
+            BackupSheetAction::Restore(action) => match self {
+                Self::Restore(session) => session.apply(action),
+                _ => Outcome::default(),
+            },
             BackupSheetAction::ConfirmShowKey => self.confirm_show_key(),
             BackupSheetAction::MarkKeySaved => match self {
                 Self::Key(session) => Outcome::close(vec![backup(BackupCommand::MarkKeySaved(
@@ -301,17 +326,27 @@ impl BackupSheet {
         vec![Command::ListDirs(key)]
     }
 
-    pub fn on_picked(&mut self, picked: Option<&PathBuf>) {
-        let Self::Wizard(session) = self else {
-            return;
+    pub fn on_picked(&mut self, picked: Option<&PathBuf>) -> Outcome {
+        let session = match self {
+            Self::Restore(session) => return session.on_picked(picked),
+            Self::Wizard(session) => session,
+            _ => return Outcome::default(),
         };
         let target = session.pick.take();
-        let (Some(path), Some(target)) = (picked, target) else {
-            return;
-        };
-        match target {
-            PickTarget::Folder => session.state.add_folder(path.clone()),
-            PickTarget::Destination => session.state.picked_local(path),
+        if let (Some(path), Some(target)) = (picked, target) {
+            match target {
+                PickTarget::Folder => session.state.add_folder(path.clone()),
+                PickTarget::Destination => session.state.picked_local(path),
+            }
+        }
+        Outcome::default()
+    }
+
+    /// Asks a restore that runs how far it is.
+    pub fn tick(&mut self, now: Instant) -> (Vec<Command>, Option<Duration>) {
+        match self {
+            Self::Restore(session) => session.tick(now),
+            _ => (Vec::new(), None),
         }
     }
 
@@ -392,6 +427,7 @@ impl BackupSheet {
                     }
                 }
             }
+            (Self::Restore(session), _) => return session.on_reply(reply),
             (_, BackupReply::KeyFileSaved(result)) => self.key_file_saved(result),
             _ => {}
         }
@@ -431,6 +467,7 @@ impl BackupSheet {
                 };
                 backup_keys::enter_key(ctx, &view, &mut session.typed, &mut session.show)
             }
+            Self::Restore(session) => session.show(ctx),
             Self::Remove(session) => backup_keys::remove(
                 ctx,
                 &RemoveView {

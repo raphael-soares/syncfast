@@ -21,6 +21,7 @@ fastframe_icons::icons! {
         ExternalLink => lucide "external-link",
         Eye => lucide "eye",
         EyeOff => lucide "eye-off",
+        File => "file",
         Filter => "funnel",
         Folder => "folder",
         FolderPlus => "folder-plus",

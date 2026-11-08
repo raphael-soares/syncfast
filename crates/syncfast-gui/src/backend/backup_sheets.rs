@@ -4,7 +4,7 @@
 
 use std::io::Write as _;
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use syncfast_core::backup::key::Key;
@@ -12,10 +12,19 @@ use syncfast_core::backup::keystore::DefaultKeyStore;
 use syncfast_core::backup::lifecycle::{
     self, AddExistingError, DestinationTarget, ExistingBackup, NewBackup,
 };
+use jiff::Zoned;
+use syncfast_core::backup::files::Listing;
+use syncfast_core::backup::restore::new_restore_folder;
+use syncfast_core::backup::restore_job::{
+    RestoreError, RestoreReport, RestoreRequest, cancel_restore, restore_status,
+};
+use syncfast_core::backup::snapshots::SnapshotView;
+use syncfast_core::flatpak;
 use syncfast_core::restic::ResticError;
 use zeroize::Zeroizing;
 
 use super::{Context, Event, fail, guarded, load_tools};
+use crate::ui::backup_restore::BUSY_SYNC;
 use crate::ui::backup_wizard::{CheckPart, CheckRequest};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,6 +54,26 @@ pub enum BackupCommand {
         id: String,
         key: Key,
     },
+    /// Reads one folder of a snapshot.
+    ListFiles {
+        backup: String,
+        snapshot: Box<SnapshotView>,
+        dir: String,
+    },
+    /// Names the new folder a restore goes into, inside `parent`.
+    PlanRestore {
+        backup_name: String,
+        parent: PathBuf,
+    },
+    StartRestore {
+        backup: String,
+        snapshot: String,
+        /// Empty restores all of the snapshot.
+        paths: Vec<String>,
+        destination: PathBuf,
+    },
+    RestoreStatus(String),
+    CancelRestore(String),
 }
 
 /// Why `Add Backup` failed, by where the person has to go to fix it.
@@ -73,6 +102,15 @@ pub enum BackupReply {
     },
     /// `None` when the person closed the file dialog.
     KeyFileSaved(Result<Option<PathBuf>, String>),
+    FilesListed {
+        /// The id of the snapshot that was read.
+        snapshot: String,
+        dir: String,
+        result: Result<Listing, String>,
+    },
+    RestorePlanned(Result<PathBuf, String>),
+    RestoreStarted(Result<RestoreReport, String>),
+    RestoreProgress(Result<RestoreReport, String>),
 }
 
 pub(super) fn spawn(context: &Arc<Context>, command: BackupCommand) {
@@ -113,7 +151,85 @@ async fn handle(context: &Context, command: BackupCommand) {
         BackupCommand::EnterKey { id, key } => enter_key(context, id, key).await,
         BackupCommand::Remove { id, delete_key } => remove(context, &id, delete_key).await,
         BackupCommand::SaveKeyFile { id, key } => save_key_file(context, &id, key).await,
+        BackupCommand::ListFiles {
+            backup,
+            snapshot,
+            dir,
+        } => list_files(context, &backup, &snapshot, dir).await,
+        BackupCommand::PlanRestore {
+            backup_name,
+            parent,
+        } => plan_restore(context, &backup_name, &parent).await,
+        BackupCommand::StartRestore {
+            backup,
+            snapshot,
+            paths,
+            destination,
+        } => {
+            let request = RestoreRequest {
+                backup,
+                snapshot,
+                paths,
+                destination,
+                dry_run: false,
+            };
+            start_restore(context, &request).await;
+        }
+        BackupCommand::RestoreStatus(id) => {
+            let result = restore_status(&context.paths, &id)
+                .await
+                .map_err(|err| restore_text(&err));
+            reply(context, BackupReply::RestoreProgress(result));
+        }
+        BackupCommand::CancelRestore(id) => {
+            let in_flatpak = flatpak::app_id().is_some();
+            if let Err(err) = cancel_restore(&context.paths, &id, in_flatpak).await {
+                fail(context, restore_text(&err));
+            }
+        }
     }
+}
+
+fn restore_text(err: &RestoreError) -> String {
+    match err {
+        RestoreError::Busy => BUSY_SYNC.to_owned(),
+        other => other.to_string(),
+    }
+}
+
+async fn list_files(context: &Context, backup: &str, snapshot: &SnapshotView, dir: String) {
+    let result = match load_tools(context).await {
+        Ok(tools) => tools
+            .list_files(backup, snapshot, &dir)
+            .await
+            .map_err(|err| err.to_string()),
+        Err(text) => Err(text),
+    };
+    let snapshot = snapshot.id.clone();
+    reply(
+        context,
+        BackupReply::FilesListed {
+            snapshot,
+            dir,
+            result,
+        },
+    );
+}
+
+async fn plan_restore(context: &Context, backup_name: &str, parent: &Path) {
+    let result = new_restore_folder(parent, backup_name, &Zoned::now()).await;
+    reply(context, BackupReply::RestorePlanned(result));
+}
+
+async fn start_restore(context: &Context, request: &RestoreRequest) {
+    let result = match load_tools(context).await {
+        Ok(tools) => tools
+            .start_restore(request)
+            .await
+            .map_err(|err| restore_text(&err)),
+        Err(text) => Err(text),
+    };
+    reply(context, BackupReply::RestoreStarted(result));
 }
 
 async fn check(context: &Context, request: CheckRequest) {

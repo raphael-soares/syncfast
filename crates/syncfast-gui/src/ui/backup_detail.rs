@@ -9,6 +9,7 @@ use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use syncfast_core::backup::destination::Destination;
 use syncfast_core::backup::effects::retention_message;
+use syncfast_core::backup::restore_job::RestoreReport;
 use syncfast_core::backup::run::KEY_ABSENT;
 use syncfast_core::backup::snapshots::SnapshotView;
 use syncfast_core::backup::state::CheckKind;
@@ -17,6 +18,7 @@ use syncfast_core::bisync::Fault;
 use syncfast_core::restic::backup_host;
 use syncfast_core::state::{Gate, GateKind};
 
+use super::backup_restore::{fraction, restore_line};
 use super::backup_settings;
 use super::detail::padded;
 use super::format::{bytes, duration, eta, started};
@@ -35,7 +37,6 @@ use crate::theme::{self, Palette, radius, size, space};
 const WHEN_WIDTH: f32 = 140.0;
 const DURATION_WIDTH: f32 = 60.0;
 const RESULT_WIDTH: f32 = 130.0;
-const FILES_WIDTH: f32 = 170.0;
 const LOG_MAX_HEIGHT: f32 = 220.0;
 
 pub const KEY_CARD_TITLE: &str = "Save the backup key";
@@ -80,6 +81,8 @@ pub struct BackupDetailData {
     pub saved: Option<bool>,
     /// The folder the chooser of the Folders list answered.
     pub picked: Option<PathBuf>,
+    /// The restore of this backup that runs, even if its window was closed.
+    pub restoring: Option<RestoreReport>,
 }
 
 #[must_use]
@@ -98,7 +101,14 @@ pub fn detail(ui: &mut Ui, vm: &ViewModel, backup: &BackupSnapshot) -> Vec<Actio
         if backup.state.key_unsaved {
             key_card(ui, id, &palette, &mut actions);
         }
-        status_card(ui, backup, vm.now, &palette, &mut actions);
+        status_card(
+            ui,
+            backup,
+            vm.backup.restoring.as_ref(),
+            vm.now,
+            &palette,
+            &mut actions,
+        );
     });
     let tab = vm.backup.tab;
     padded(ui, |ui| {
@@ -497,6 +507,7 @@ fn key_problem(backup: &BackupSnapshot) -> bool {
 fn status_card(
     ui: &mut Ui,
     backup: &BackupSnapshot,
+    restoring: Option<&RestoreReport>,
     now: Timestamp,
     palette: &Palette,
     actions: &mut Vec<Action>,
@@ -509,6 +520,9 @@ fn status_card(
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = space::S;
             status_badge(ui, backup.status, BadgeSize::Large);
+            if let Some(restore) = restoring {
+                restoring_block(ui, restore, palette);
+            }
             if backup.status == BackupStatus::BackingUp {
                 progress_block(ui, backup.progress.as_ref(), palette);
                 return;
@@ -597,6 +611,22 @@ fn progress_block(ui: &mut Ui, progress: Option<&BackupProgressFile>, palette: &
     }
 }
 
+fn restoring_block(ui: &mut Ui, restore: &RestoreReport, palette: &Palette) {
+    ui.label(
+        RichText::new("Restoring\u{2026}")
+            .font(theme::callout())
+            .color(palette.text),
+    );
+    progress_bar(ui, "Restore progress", fraction(restore));
+    if restore.total_files > 0 {
+        ui.label(
+            RichText::new(restore_line(restore))
+                .font(theme::callout())
+                .color(palette.secondary),
+        );
+    }
+}
+
 fn cell(ui: &mut Ui, width: f32, content: impl FnOnce(&mut Ui)) {
     ui.allocate_ui_with_layout(
         Vec2::new(width, size::CONTROL_HEIGHT),
@@ -632,7 +662,9 @@ fn snapshots_tab(ui: &mut Ui, vm: &ViewModel, backup: &BackupSnapshot) -> Vec<Ac
         SnapshotsView::Loaded(list) => {
             let own_host = backup_host().ok();
             for snapshot in list.iter() {
-                snapshot_row(ui, vm.now, snapshot, own_host, &palette);
+                actions.extend(snapshot_row(
+                    ui, vm.now, &id, snapshot, own_host, &palette,
+                ));
             }
         }
     }
@@ -642,53 +674,92 @@ fn snapshots_tab(ui: &mut Ui, vm: &ViewModel, backup: &BackupSnapshot) -> Vec<Ac
 fn snapshot_row(
     ui: &mut Ui,
     now: Timestamp,
+    backup: &str,
+    snapshot: &SnapshotView,
+    own_host: Option<&str>,
+    palette: &Palette,
+) -> Vec<Action> {
+    let mut actions = Vec::new();
+    list_row(ui, size::LIST_ROW_HEIGHT, |ui| {
+        egui::containers::Sides::new().shrink_left().show(
+            ui,
+            |ui| {
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(when(now, snapshot.time))
+                                .font(theme::body())
+                                .color(palette.text),
+                        )
+                        .truncate(),
+                    );
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = space::S;
+                        snapshot_facts(ui, snapshot, own_host, palette);
+                    });
+                });
+            },
+            |ui| {
+                ui.spacing_mut().item_spacing.x = space::S;
+                let whole = Action::RestoreSnapshot {
+                    backup: backup.to_owned(),
+                    snapshot: Box::new(snapshot.clone()),
+                };
+                if button_with_icon(ui, ButtonKind::Secondary, None, "Restore Snapshot\u{2026}")
+                    .clicked()
+                {
+                    actions.push(whole);
+                }
+                let browse = Action::BrowseSnapshot {
+                    backup: backup.to_owned(),
+                    snapshot: Box::new(snapshot.clone()),
+                };
+                if button_with_icon(ui, ButtonKind::Secondary, None, "Browse Files\u{2026}")
+                    .clicked()
+                {
+                    actions.push(browse);
+                }
+            },
+        );
+    });
+    actions
+}
+
+fn snapshot_facts(
+    ui: &mut Ui,
     snapshot: &SnapshotView,
     own_host: Option<&str>,
     palette: &Palette,
 ) {
-    list_row(ui, size::LIST_ROW_HEIGHT, |ui| {
-        cell(ui, WHEN_WIDTH, |ui| {
-            ui.label(
-                RichText::new(when(now, snapshot.time))
-                    .font(theme::body())
-                    .color(palette.text),
-            );
-        });
-        cell(ui, FILES_WIDTH, |ui| {
-            let text = match (snapshot.files, snapshot.bytes) {
-                (Some(files), Some(total)) => {
-                    format!("{} \u{b7} {}", plural_files(files), bytes(total))
-                }
-                (Some(files), None) => plural_files(files),
-                (None, Some(total)) => bytes(total),
-                (None, None) => String::new(),
-            };
-            ui.label(
-                RichText::new(text)
-                    .font(theme::body())
-                    .color(palette.secondary),
-            );
-        });
-        cell(ui, DURATION_WIDTH + 20.0, |ui| {
-            if let Some(added) = snapshot.added_bytes {
-                ui.label(
-                    RichText::new(format!("+{}", bytes(added)))
-                        .font(theme::body())
-                        .color(palette.secondary),
-                );
-            }
-        });
-        if own_host != Some(snapshot.host.as_str()) {
-            ui.add(
-                egui::Label::new(
-                    RichText::new(&snapshot.host)
-                        .font(theme::body())
-                        .color(palette.dim),
-                )
-                .truncate(),
-            );
-        }
-    });
+    let text = match (snapshot.files, snapshot.bytes) {
+        (Some(files), Some(total)) => format!("{} \u{b7} {}", plural_files(files), bytes(total)),
+        (Some(files), None) => plural_files(files),
+        (None, Some(total)) => bytes(total),
+        (None, None) => String::new(),
+    };
+    let secondary = |text: String| {
+        egui::Label::new(
+            RichText::new(text)
+                .font(theme::subheadline())
+                .color(palette.secondary),
+        )
+        .truncate()
+    };
+    ui.add(secondary(text));
+    if let Some(added) = snapshot.added_bytes {
+        ui.add(secondary(format!("+{}", bytes(added))));
+    }
+    if own_host != Some(snapshot.host.as_str()) {
+        ui.add(
+            egui::Label::new(
+                RichText::new(&snapshot.host)
+                    .font(theme::subheadline())
+                    .color(palette.dim),
+            )
+            .truncate(),
+        );
+    }
 }
 
 fn activity_tab(

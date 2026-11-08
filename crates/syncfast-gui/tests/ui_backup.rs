@@ -778,6 +778,67 @@ fn snapshots_show_the_host_only_when_it_is_not_this_computer() {
 }
 
 #[test]
+fn a_snapshot_row_offers_to_browse_its_files_and_to_restore_all_of_it() {
+    let mut vm = view(backup(BackupStatus::UpToDate));
+    vm.backup.snapshots =
+        SnapshotsView::Loaded(vec![snapshot_view("aaaa", "laptop-ada")].into());
+    let mut harness = screen(vm);
+
+    harness.get_by_label("Browse Files\u{2026}").click();
+    harness.run_steps(4);
+    harness.get_by_label("Restore Snapshot\u{2026}").click();
+    harness.run_steps(4);
+
+    let snapshot = Box::new(snapshot_view("aaaa", "laptop-ada"));
+    assert_eq!(
+        harness.state().actions,
+        [
+            Action::BrowseSnapshot {
+                backup: "docs".into(),
+                snapshot: snapshot.clone()
+            },
+            Action::RestoreSnapshot {
+                backup: "docs".into(),
+                snapshot
+            },
+        ]
+    );
+}
+
+fn restore_report(done: u64) -> syncfast_core::backup::restore_job::RestoreReport {
+    syncfast_core::backup::restore_job::RestoreReport {
+        id: Some("r1".into()),
+        backup: "docs".into(),
+        snapshot: "aaaa0000".into(),
+        destination: "/tmp/out".into(),
+        files_restored: done,
+        bytes_restored: done * 1000,
+        total_files: 10,
+        total_bytes: 10 * 1000,
+        status: "running",
+        finished: false,
+        error: None,
+    }
+}
+
+#[test]
+fn a_backup_with_a_restore_running_says_so_and_counts_the_files() {
+    let mut vm = view(backup(BackupStatus::UpToDate));
+    vm.backup.restoring = Some(restore_report(4));
+    let harness = screen(vm);
+
+    harness.get_by_label("Restoring\u{2026}");
+    harness.get_by_label("4 of 10 files \u{b7} 4.0 KB");
+}
+
+#[test]
+fn a_backup_without_a_restore_does_not_say_restoring() {
+    let harness = screen(view(backup(BackupStatus::UpToDate)));
+
+    assert!(harness.query_by_label("Restoring\u{2026}").is_none());
+}
+
+#[test]
 fn a_failed_snapshot_list_shows_the_error_and_try_again_asks_for_it_again() {
     let mut vm = view(backup(BackupStatus::UpToDate));
     vm.backup.snapshots = SnapshotsView::Failed("repository is locked".into());

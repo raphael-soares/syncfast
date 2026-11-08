@@ -7,6 +7,7 @@ pub mod activity;
 pub mod add_sync;
 pub mod backup_detail;
 pub mod backup_keys;
+pub mod backup_restore;
 pub mod backup_settings;
 pub mod backup_wizard;
 pub mod conflicts;
@@ -41,6 +42,7 @@ use crate::snapshot::BackupSnapshot;
 use crate::snapshot::PairSnapshot;
 use syncfast_core::backup::config::BackupConfig;
 use syncfast_core::backup::state::CheckKind;
+use syncfast_core::backup::snapshots::SnapshotView;
 use syncfast_core::runs::RunEntry;
 
 pub use detail::DetailTab;
@@ -292,6 +294,16 @@ pub enum Action {
     EnterBackupKey(String),
     /// Asks to remove a backup (the alert decides).
     RemoveBackup(String),
+    /// Opens the files of a snapshot of a backup to choose what to restore.
+    BrowseSnapshot {
+        backup: String,
+        snapshot: Box<SnapshotView>,
+    },
+    /// Asks where to restore all of a snapshot of a backup.
+    RestoreSnapshot {
+        backup: String,
+        snapshot: Box<SnapshotView>,
+    },
     /// Leaves the welcome screen for the empty main window, for good.
     SkipWelcome,
     /// Opens the Settings dialog over the main window.
