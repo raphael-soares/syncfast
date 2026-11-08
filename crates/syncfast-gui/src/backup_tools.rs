@@ -12,10 +12,10 @@ use syncfast_core::backup::files::{self, Listing};
 use syncfast_core::backup::key::Key;
 use syncfast_core::backup::keystore::{DefaultKeyStore, KeyBackend, KeyStore as _};
 use syncfast_core::backup::lifecycle::{self, LifecycleEnv};
-use syncfast_core::backup::run_decision::{BackupRequest, save_request};
 use syncfast_core::backup::restore_job::{
     self, DetachedRestoreStarter, RestoreEnv, RestoreError, RestoreReport, RestoreRequest,
 };
+use syncfast_core::backup::run_decision::{BackupRequest, save_request};
 use syncfast_core::backup::snapshots::SnapshotView;
 use syncfast_core::backup::state::CheckKind;
 use syncfast_core::backup::test_filters::{FilterTest, run_filter_test};
