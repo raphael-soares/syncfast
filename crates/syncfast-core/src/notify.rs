@@ -378,7 +378,17 @@ pub fn attention_body(fault: Option<Fault>, detail: &str) -> &'static str {
         Some(Fault::RemoteMissing) => "The folder on Google Drive is missing.",
         Some(Fault::LocalEmpty) => "The folder is empty. If it is on a drive, mount it.",
         Some(Fault::RemoteEmpty) => "The folder on Google Drive is empty. Nothing was changed.",
-        _ => "Syncing keeps failing. Open syncfast for details.",
+        Some(
+            Fault::Auth
+            | Fault::KeyMissing
+            | Fault::WrongKey
+            | Fault::RepositoryMissing
+            | Fault::SourceMissing
+            | Fault::SourceEmpty
+            | Fault::DestinationMissing
+            | Fault::RepoDamaged,
+        )
+        | None => "Syncing keeps failing. Open syncfast for details.",
     }
 }
 

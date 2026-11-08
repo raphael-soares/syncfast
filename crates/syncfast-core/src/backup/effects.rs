@@ -1146,6 +1146,35 @@ mod tests {
     }
 
     #[test]
+    fn a_new_cleanup_message_refreshes_the_gate_without_a_new_announcement() {
+        let mut state = BackupState::default();
+        for _ in 0..3 {
+            apply_retention_result(&mut state, Err("first".to_owned()), now());
+        }
+        let since = state.gate.as_ref().unwrap().since;
+
+        let later = Timestamp::from_second(now().as_second() + HOUR).unwrap();
+        let fourth = apply_retention_result(&mut state, Err("second".to_owned()), later);
+
+        assert_eq!(fourth, []);
+        assert_eq!(state.prune_failures, 4);
+        assert_eq!(state.prune_error.as_deref(), Some("second"));
+        let gate = state.gate.clone().unwrap();
+        assert_eq!(gate.detail, retention_message("second"));
+        assert_eq!(gate.since, since);
+        assert_eq!(state.notified, ["gate:needs_attention"]);
+
+        apply_outcome(&mut state, &BackupOutcome::Ok, &ctx());
+        assert_eq!(state.gate, Some(gate));
+
+        apply_retention_result(&mut state, Ok(()), now());
+
+        assert_eq!(state.gate, None);
+        assert_eq!(state.prune_error, None);
+        assert!(state.notified.is_empty());
+    }
+
+    #[test]
     fn a_good_backup_still_clears_a_gate_that_forget_did_not_set() {
         let mut state = BackupState {
             gate: Some(attention_gate(before(HOUR), None)),
