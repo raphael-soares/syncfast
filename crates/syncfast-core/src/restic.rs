@@ -57,7 +57,7 @@ pub enum ResticError {
     NoRepository,
     #[error("That key does not open this backup.")]
     WrongKey,
-    #[error("Another backup of this folder is running: {message}")]
+    #[error("The backup repository is locked: {message}")]
     Locked { message: String },
     #[error("restic failed: {message}")]
     Failed {
@@ -147,6 +147,12 @@ fn clean_host(name: &str) -> Result<String, ResticError> {
         Ok(name.to_owned())
     }
 }
+
+const INIT_ARGS: &[&str] = &["init", "--json"];
+const VERIFY_ARGS: &[&str] = &["cat", "config"];
+const SNAPSHOTS_ARGS: &[&str] = &["snapshots", "--json"];
+/// Never `--remove-all`, which would break a run that is alive.
+const UNLOCK_ARGS: &[&str] = &["unlock"];
 
 fn takes_host(subcommand: &str) -> bool {
     matches!(subcommand, "backup" | "forget")
@@ -497,9 +503,7 @@ impl Restic {
         repository: &Repository,
         key: &Key,
     ) -> Result<InitResult, ResticError> {
-        let output = self
-            .run(repository, key, &["init", "--json"], false)
-            .await?;
+        let output = self.run(repository, key, INIT_ARGS, false).await?;
         serde_json::from_slice(&output.stdout).map_err(|_| ResticError::BadOutput("init"))
     }
 
@@ -509,7 +513,7 @@ impl Restic {
     /// [`ResticError::NoRepository`], [`ResticError::WrongKey`] or any other
     /// failure.
     pub async fn verify(&self, repository: &Repository, key: &Key) -> Result<(), ResticError> {
-        self.run(repository, key, &["cat", "config"], false)
+        self.run(repository, key, VERIFY_ARGS, false)
             .await
             .map(|_| ())
     }
@@ -524,9 +528,7 @@ impl Restic {
         repository: &Repository,
         key: &Key,
     ) -> Result<Vec<SnapshotView>, ResticError> {
-        let output = self
-            .run(repository, key, &["snapshots", "--json"], false)
-            .await?;
+        let output = self.run(repository, key, SNAPSHOTS_ARGS, false).await?;
         parse_snapshots(&output.stdout).map_err(|_| ResticError::BadOutput("snapshots"))
     }
 
@@ -536,7 +538,7 @@ impl Restic {
     /// # Errors
     /// restic fails.
     pub async fn unlock(&self, repository: &Repository, key: &Key) -> Result<(), ResticError> {
-        self.run(repository, key, &["unlock"], false)
+        self.run(repository, key, UNLOCK_ARGS, false)
             .await
             .map(|_| ())
     }
@@ -681,6 +683,86 @@ mod tests {
                 assert_eq!(args[args.len() - 2..], ["--host", "laptop"]);
             }
         }
+    }
+
+    #[test]
+    fn init_verify_snapshots_and_unlock_have_their_exact_argv() {
+        let account_head = [
+            "-r",
+            "rclone:gdrive:Backups/laptop",
+            "-o",
+            "rclone.program=/usr/bin/rclone",
+            "-o",
+            "rclone.args=serve restic --stdio --b2-hard-delete --drive-use-trash=false",
+            "--password-file",
+            "/dev/stdin",
+        ];
+
+        for (subcommand, tail) in [
+            (INIT_ARGS, &["init", "--json"][..]),
+            (VERIFY_ARGS, &["cat", "config"]),
+            (SNAPSHOTS_ARGS, &["snapshots", "--json"]),
+            (UNLOCK_ARGS, &["unlock"]),
+        ] {
+            let args = build_args(
+                Path::new("/usr/bin/rclone"),
+                &account(),
+                "laptop",
+                subcommand,
+            );
+
+            assert_eq!(text(&args), [&account_head[..], tail].concat());
+        }
+    }
+
+    #[test]
+    fn limits_reach_every_call_in_kib_per_second() {
+        let rate = |text: &str| Bandwidth::parse(text).unwrap();
+        let head = ["-r", "/mnt/usb/repo", "--password-file", "/dev/stdin"];
+
+        for (upload, download, flags) in [
+            (Bandwidth::Off, Bandwidth::Off, vec![]),
+            (rate("500K"), Bandwidth::Off, vec!["--limit-upload", "500"]),
+            (Bandwidth::Off, rate("2M"), vec!["--limit-download", "2048"]),
+            (
+                rate("1G"),
+                rate("3K"),
+                vec!["--limit-upload", "1048576", "--limit-download", "3"],
+            ),
+        ] {
+            let repository = local().with_limits(upload, download);
+            for (subcommand, tail) in [
+                (INIT_ARGS, &["init", "--json"][..]),
+                (VERIFY_ARGS, &["cat", "config"]),
+                (SNAPSHOTS_ARGS, &["snapshots", "--json"]),
+                (UNLOCK_ARGS, &["unlock"]),
+            ] {
+                let args = build_args(Path::new("r"), &repository, "laptop", subcommand);
+
+                assert_eq!(text(&args), [&head[..], &flags, tail].concat());
+            }
+        }
+    }
+
+    #[test]
+    fn no_call_but_backup_and_forget_carries_the_host() {
+        for subcommand in [INIT_ARGS, VERIFY_ARGS, SNAPSHOTS_ARGS, UNLOCK_ARGS] {
+            let args = build_args(Path::new("r"), &local(), "laptop", subcommand);
+
+            assert!(!text(&args).contains(&"--host"), "{subcommand:?}");
+        }
+    }
+
+    #[test]
+    fn a_lock_is_reported_without_saying_who_holds_it() {
+        let err = ResticError::Locked {
+            message: "repository is already locked".to_owned(),
+        };
+
+        assert_eq!(
+            err.to_string(),
+            "The backup repository is locked: repository is already locked"
+        );
     }
 
     #[test]
