@@ -19,7 +19,7 @@ fn workflow_value(key: &str) -> String {
     let prefix = format!("{key}: ");
     text.lines()
         .find_map(|line| line.trim().strip_prefix(&prefix).map(str::to_owned))
-        .unwrap_or_else(|| panic!("ci.yml has no {key}"))
+        .expect("ci.yml has the key")
 }
 
 fn restic_sources() -> Vec<(String, String)> {

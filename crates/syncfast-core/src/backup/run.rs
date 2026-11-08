@@ -24,8 +24,8 @@ use crate::backup::excludes::{render_excludes_live, write_excludes};
 use crate::backup::key::Key;
 use crate::backup::keystore::KeyStore;
 use crate::backup::run_decision::{
-    BackupDecision, DecisionInput, RunKind, SkipReason, decide_backup, save_request, source_check,
-    take_request,
+    BackupDecision, BackupRequest, DecisionInput, RunKind, SkipReason, decide_backup, save_request,
+    source_check, take_request,
 };
 use crate::backup::state::{BackupState, BackupSummary, CheckKind};
 use crate::backup::status::{BackupProgressFile, RunningStep};
@@ -168,20 +168,7 @@ pub async fn run_backup(
     remove_or_warn(&env.paths.backup_progress_file(backup_id));
     let mut state = load_state(env, backup_id).await?;
     let policy = config.defaults().notifications;
-    let accounts = if matches!(
-        Destination::parse(&backup.dest),
-        Ok(Destination::Account { .. })
-    ) {
-        env.restic.rclone().listremotes().await?
-    } else {
-        Vec::new()
-    };
-    let problem = config
-        .validate_backups(env.paths, &accounts)
-        .errors
-        .into_iter()
-        .find(|error| error.backup_id == backup_id)
-        .map(|error| error.message);
+    let problem = config_problem(env, &config, &backup).await?;
     let behavior = match problem.map_or_else(|| backup.behavior(), Err) {
         Ok(behavior) => behavior,
         Err(message) => {
@@ -223,14 +210,7 @@ pub async fn run_backup(
     });
     let (events, report, save) = match decision {
         BackupDecision::Skip(reason) => {
-            if matches!(
-                reason,
-                SkipReason::Offline | SkipReason::DestinationUnavailable
-            ) && let Some(request) = request
-                && let Err(err) = save_request(env.paths, backup_id, request).await
-            {
-                log::warn!("cannot keep the request of {backup_id} for the next round: {err}");
-            }
+            keep_request(env, backup_id, reason, request).await;
             let events = apply_skip(
                 &mut state,
                 reason,
@@ -268,6 +248,45 @@ pub async fn run_backup(
     };
     conclude(env, &backup, &policy, &mut state, lock, &events, save).await?;
     Ok(report)
+}
+
+/// The first thing wrong with this backup's configuration, if anything.
+async fn config_problem(
+    env: &BackupRunEnv<'_>,
+    config: &Config,
+    backup: &BackupConfig,
+) -> Result<Option<String>, BackupRunError> {
+    let accounts = if matches!(
+        Destination::parse(&backup.dest),
+        Ok(Destination::Account { .. })
+    ) {
+        env.restic.rclone().listremotes().await?
+    } else {
+        Vec::new()
+    };
+    Ok(config
+        .validate_backups(env.paths, &accounts)
+        .errors
+        .into_iter()
+        .find(|error| error.backup_id == backup.id)
+        .map(|error| error.message))
+}
+
+/// A request waits for a round that can reach the destination.
+async fn keep_request(
+    env: &BackupRunEnv<'_>,
+    backup_id: &str,
+    reason: SkipReason,
+    request: Option<BackupRequest>,
+) {
+    if matches!(
+        reason,
+        SkipReason::Offline | SkipReason::DestinationUnavailable
+    ) && let Some(request) = request
+        && let Err(err) = save_request(env.paths, backup_id, request).await
+    {
+        log::warn!("cannot keep the request of {backup_id} for the next round: {err}");
+    }
 }
 
 /// Whether the destination is remote, the network is up, and a local
@@ -346,6 +365,37 @@ fn repository_of(env: &BackupRunEnv<'_>, round: &Round<'_>) -> Repository {
     .with_limits(round.behavior.limit_upload, round.behavior.limit_download)
 }
 
+/// Runs restic's backup and classifies how it went. A restic that cannot
+/// start is a transient failure of the round, not an error of syncfast.
+async fn stream_outcome(
+    env: &BackupRunEnv<'_>,
+    backup_id: &str,
+    repository: &Repository,
+    key: &Key,
+    args: &[&str],
+    log: &mut RunLog,
+) -> Result<(Streamed, BackupOutcome), BackupRunError> {
+    match stream_backup_unlocking(env, backup_id, repository, key, args, log).await {
+        Ok(streamed) => {
+            let outcome = classify_backup(
+                streamed.exit_code,
+                streamed.summary.as_ref(),
+                &streamed.stderr,
+            );
+            Ok((streamed, outcome))
+        }
+        Err(BackupRunError::Restic(err @ (ResticError::Spawn(_) | ResticError::Host(_)))) => {
+            let detail = err.to_string();
+            log.line(&detail).await;
+            Ok((Streamed::default(), BackupOutcome::Transient { detail }))
+        }
+        Err(err) => {
+            remove_or_warn(&env.paths.backup_progress_file(backup_id));
+            Err(err)
+        }
+    }
+}
+
 async fn backup_round(
     env: &BackupRunEnv<'_>,
     round: &Round<'_>,
@@ -387,27 +437,8 @@ async fn backup_round(
     )
     .await;
 
-    let streamed =
-        stream_backup_unlocking(env, &backup.id, &repository, &key, &args, &mut log).await;
-    let (streamed, outcome) = match streamed {
-        Ok(streamed) => {
-            let outcome = classify_backup(
-                streamed.exit_code,
-                streamed.summary.as_ref(),
-                &streamed.stderr,
-            );
-            (streamed, outcome)
-        }
-        Err(BackupRunError::Restic(err @ (ResticError::Spawn(_) | ResticError::Host(_)))) => {
-            let detail = err.to_string();
-            log.line(&detail).await;
-            (Streamed::default(), BackupOutcome::Transient { detail })
-        }
-        Err(err) => {
-            remove_or_warn(&env.paths.backup_progress_file(&backup.id));
-            return Err(err);
-        }
-    };
+    let (streamed, outcome) =
+        stream_outcome(env, &backup.id, &repository, &key, &args, &mut log).await?;
     let finished = env.now();
     let ctx = RunContext {
         started: started.timestamp(),
