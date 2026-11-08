@@ -828,6 +828,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_plain_store_reports_an_io_error_that_is_not_a_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("docs.key")).unwrap();
+        let store = PlainKeyStore::new(dir.path().to_owned());
+
+        assert!(matches!(
+            store.get("docs").await,
+            Err(KeyError::Unavailable(_))
+        ));
+        assert!(matches!(
+            store.delete("docs").await,
+            Err(KeyError::Unavailable(_))
+        ));
+        assert_eq!(store.backend(), Some(KeyBackend::Plain));
+        assert_eq!(store.probe().await.unwrap(), KeyBackend::Plain);
+    }
+
+    #[tokio::test]
     async fn the_memory_store_keeps_replaces_and_forgets() {
         let store = MemoryKeyStore::default();
         assert_eq!(store.get("docs").await.unwrap(), None);
