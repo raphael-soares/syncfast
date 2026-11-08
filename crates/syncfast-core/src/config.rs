@@ -372,6 +372,44 @@ impl Config {
         )
     }
 
+    /// The first problem `draft` would have as a backup of this config, or
+    /// `None`. A stored backup with the same id is left out of the
+    /// comparison, so the draft of a backup that exists is checked against
+    /// the others.
+    #[must_use]
+    pub fn validate_backup_draft(
+        &self,
+        draft: &BackupConfig,
+        paths: &Paths,
+        accounts: &[String],
+    ) -> Option<String> {
+        let accounts: HashSet<&str> = accounts
+            .iter()
+            .map(|account| account.trim_end_matches(':'))
+            .collect();
+        let mut backups: Vec<BackupConfig> = self
+            .backups
+            .iter()
+            .filter(|backup| backup.id != draft.id)
+            .cloned()
+            .collect();
+        backups.push(draft.clone());
+        validate_backups(
+            &backups,
+            &Surroundings {
+                paths,
+                accounts: &accounts,
+                pairs: &self.pairs,
+                defaults: &self.defaults(),
+                sandboxed: flatpak::app_id().is_some(),
+            },
+        )
+        .errors
+        .into_iter()
+        .find(|error| error.backup_id == draft.id)
+        .map(|error| error.message)
+    }
+
     /// Checks every pair. `accounts` are the rclone remote names (a trailing
     /// `:` is accepted, so the output of `rclone listremotes` can be passed
     /// as is). Touches the filesystem only to canonicalize local folders.

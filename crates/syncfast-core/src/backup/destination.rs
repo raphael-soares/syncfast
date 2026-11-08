@@ -81,7 +81,12 @@ pub enum RepositoryError {
     Io(#[source] std::io::Error),
 }
 
-async fn is_empty(rclone: &Rclone, destination: &Destination) -> Result<bool, RepositoryError> {
+/// Whether `destination` holds nothing; a folder that does not exist
+/// counts as empty.
+///
+/// # Errors
+/// The folder cannot be looked at.
+pub async fn is_empty(rclone: &Rclone, destination: &Destination) -> Result<bool, RepositoryError> {
     match destination {
         Destination::Account { .. } => Ok(!rclone.has_entries(&destination.rclone_path()).await?),
         Destination::Local(path) => local_is_empty(path).await,

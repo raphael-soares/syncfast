@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::process::{Child, Command};
 
+use crate::backup::config::Keep;
 use crate::backup::destination::Destination;
 use crate::backup::key::Key;
 use crate::backup::snapshots::{SnapshotView, parse_snapshots};
@@ -153,6 +154,47 @@ const VERIFY_ARGS: &[&str] = &["cat", "config"];
 const SNAPSHOTS_ARGS: &[&str] = &["snapshots", "--json"];
 /// Never `--remove-all`, which would break a run that is alive.
 const UNLOCK_ARGS: &[&str] = &["unlock"];
+
+/// The subcommand of one backup run. `--host` comes with [`build_args`].
+#[must_use]
+pub fn backup_args(
+    folders: &[PathBuf],
+    one_file_system: bool,
+    excludes_file: &Path,
+) -> Vec<String> {
+    let mut args = vec!["backup".to_owned(), "--json".to_owned()];
+    if one_file_system {
+        args.push("--one-file-system".to_owned());
+    }
+    args.push("--exclude-file".to_owned());
+    args.push(excludes_file.to_string_lossy().into_owned());
+    args.extend(
+        folders
+            .iter()
+            .map(|folder| folder.to_string_lossy().into_owned()),
+    );
+    args
+}
+
+/// The retention call that follows a backup. A value of 0 leaves its flag
+/// out, which is how a period is turned off.
+#[must_use]
+pub fn forget_args(keep: Keep) -> Vec<String> {
+    let mut args = ["forget", "--group-by", "host"].map(str::to_owned).to_vec();
+    for (flag, count) in [
+        ("--keep-daily", keep.daily),
+        ("--keep-weekly", keep.weekly),
+        ("--keep-monthly", keep.monthly),
+        ("--keep-yearly", keep.yearly),
+    ] {
+        if count > 0 {
+            args.push(flag.to_owned());
+            args.push(count.to_string());
+        }
+    }
+    args.extend(["--prune", "--json"].map(str::to_owned));
+    args
+}
 
 fn takes_host(subcommand: &str) -> bool {
     matches!(subcommand, "backup" | "forget")
@@ -694,6 +736,114 @@ mod tests {
                 assert_eq!(args[args.len() - 2..], ["--host", "laptop"]);
             }
         }
+    }
+
+    fn folders() -> Vec<PathBuf> {
+        vec!["/home/ada/Documents".into(), "/home/ada/Pictures".into()]
+    }
+
+    #[test]
+    fn backup_args_list_the_excludes_then_the_absolute_folders() {
+        let args = backup_args(&folders(), true, Path::new("/state/excludes.txt"));
+
+        assert_eq!(
+            args,
+            [
+                "backup",
+                "--json",
+                "--one-file-system",
+                "--exclude-file",
+                "/state/excludes.txt",
+                "/home/ada/Documents",
+                "/home/ada/Pictures",
+            ]
+        );
+    }
+
+    #[test]
+    fn backup_args_without_one_file_system_leave_the_flag_out() {
+        let args = backup_args(&folders(), false, Path::new("/state/excludes.txt"));
+
+        assert!(!args.iter().any(|arg| arg == "--one-file-system"));
+        assert_eq!(args[..2], ["backup", "--json"]);
+    }
+
+    #[test]
+    fn a_backup_call_ends_with_the_host_after_the_folders() {
+        let args = backup_args(&folders(), true, Path::new("/state/excludes.txt"));
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+
+        let full = build_args(Path::new("r"), &local(), "laptop", &args);
+        let full = text(&full);
+
+        assert_eq!(
+            full[full.len() - 3..],
+            ["/home/ada/Pictures", "--host", "laptop"]
+        );
+    }
+
+    #[test]
+    fn forget_args_group_by_host_keep_every_period_and_prune() {
+        let keep = Keep {
+            daily: 7,
+            weekly: 4,
+            monthly: 6,
+            yearly: 2,
+        };
+
+        assert_eq!(
+            forget_args(keep),
+            [
+                "forget",
+                "--group-by",
+                "host",
+                "--keep-daily",
+                "7",
+                "--keep-weekly",
+                "4",
+                "--keep-monthly",
+                "6",
+                "--keep-yearly",
+                "2",
+                "--prune",
+                "--json",
+            ]
+        );
+    }
+
+    #[test]
+    fn forget_args_omit_each_period_that_is_zero() {
+        let cases = [
+            (0, 4, 6, 1, "--keep-daily"),
+            (7, 0, 6, 1, "--keep-weekly"),
+            (7, 4, 0, 1, "--keep-monthly"),
+            (7, 4, 6, 0, "--keep-yearly"),
+        ];
+
+        for (daily, weekly, monthly, yearly, left_out) in cases {
+            let args = forget_args(Keep {
+                daily,
+                weekly,
+                monthly,
+                yearly,
+            });
+
+            assert!(!args.iter().any(|arg| arg == left_out), "{left_out}");
+            assert_eq!(
+                args.iter().filter(|arg| arg.starts_with("--keep-")).count(),
+                3
+            );
+        }
+    }
+
+    #[test]
+    fn a_forget_call_ends_with_the_host() {
+        let args = forget_args(Keep::default());
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+
+        let full = build_args(Path::new("r"), &local(), "laptop", &args);
+
+        assert_eq!(text(&full)[full.len() - 2..], ["--host", "laptop"]);
     }
 
     #[test]

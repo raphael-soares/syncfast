@@ -7,6 +7,8 @@ pub mod effects;
 pub mod excludes;
 pub mod key;
 pub mod keystore;
+pub mod lifecycle;
+pub mod run;
 pub mod run_decision;
 pub mod snapshots;
 pub mod state;
