@@ -25,8 +25,8 @@ use super::format::{bytes, duration, eta, started};
 use super::menu::{self, Tone};
 use super::widgets::{
     AlertButton, AnyStatus, BadgeSize, ButtonKind, alert, button_with_icon, empty_state,
-    icon_button, inline_error, list_row, progress_bar, secondary_button, segmented, status_badge,
-    toolbar,
+    icon_button, inline_error, list_row, primary_button, progress_bar, secondary_button, segmented,
+    status_badge, toolbar,
 };
 use super::{Action, ViewModel, filters};
 use crate::backup_runs::{BackupRunEntry, RunKind, RunResult};
@@ -294,7 +294,7 @@ fn key_card(ui: &mut Ui, id: &str, palette: &Palette, actions: &mut Vec<Action>)
                     .font(theme::callout())
                     .color(palette.secondary),
             );
-            if secondary_button(ui, "Show Key…").clicked() {
+            if primary_button(ui, "Show Key…").clicked() {
                 actions.push(Action::ShowBackupKey(id.to_owned()));
             }
         });
@@ -572,7 +572,7 @@ fn status_card(
                 actions.push(Action::OpenUrl(DAMAGED_HELP_URL.to_owned()));
             }
             if let Some((label, action)) = text.button
-                && super::widgets::primary_button(ui, label).clicked()
+                && primary_button(ui, label).clicked()
             {
                 actions.push(action);
             }
