@@ -134,7 +134,7 @@ Restart `xdg-desktop-portal` (or log out and in) and check it:
 busctl --user introspect org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop org.freedesktop.portal.Secret
 ```
 
-Then press **Test Key Storage**: it should say **Secret portal**. A backup created with the host keyring keeps finding its key after the portal appears, and the other way round.
+Then press **Test Key Storage**: it should say **Secret portal**. A backup created with the host keyring keeps finding its key after the portal appears. A backup whose key went to the portal does not find it while the portal is off: its next run says the key is missing, and the first run after the portal is back finds it and clears the message.
 
 ## Common errors
 
