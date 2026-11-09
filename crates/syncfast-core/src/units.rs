@@ -910,17 +910,10 @@ impl Applier<'_, '_> {
                 return;
             }
         };
-        if state
-            .gate
-            .as_ref()
-            .is_some_and(|gate| gate.kind != GateKind::ConfigError)
-        {
+        let current = state.gate.as_ref();
+        if current.is_some_and(|gate| gate.kind != GateKind::ConfigError) {
             return;
         }
-        let current = state
-            .gate
-            .as_ref()
-            .filter(|gate| gate.kind == GateKind::ConfigError);
         if current.is_some_and(|gate| gate.detail == message) {
             return;
         }

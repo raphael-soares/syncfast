@@ -356,7 +356,7 @@ pub fn keep_reduced(before: &BackupConfig, after: &BackupConfig) -> Vec<&'static
 
 /// `one_file_system` went from on to off.
 #[must_use]
-pub fn one_file_system_turned_off(before: &BackupConfig, after: &BackupConfig) -> bool {
+fn one_file_system_turned_off(before: &BackupConfig, after: &BackupConfig) -> bool {
     before.one_file_system && !after.one_file_system
 }
 
