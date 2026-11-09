@@ -533,23 +533,21 @@ pub async fn save_backup_settings(
     let config = Config::load(env.paths())
         .await
         .map_err(|err| SaveSettingsError::Config(err.to_string()))?;
-    let stored = config
+    if !config
         .backups()
         .iter()
-        .find(|backup| backup.id == replacement.id)
-        .ok_or_else(|| SaveSettingsError::Unknown(replacement.id.clone()))?;
-    let candidate = BackupConfig {
-        dest: stored.dest.clone(),
-        ..replacement.clone()
-    };
-    if let Some(problem) = content_problems(&candidate).first() {
+        .any(|backup| backup.id == replacement.id)
+    {
+        return Err(SaveSettingsError::Unknown(replacement.id.clone()));
+    }
+    if let Some(problem) = content_problems(replacement).first() {
         return Err(SaveSettingsError::Invalid(problem.to_owned()));
     }
-    let replaced = Config::edit(env.paths(), |config| config.replace_backup(&candidate))
+    let replaced = Config::edit(env.paths(), |config| config.replace_backup(replacement))
         .await
         .map_err(|err| SaveSettingsError::Config(err.to_string()))?;
     if !replaced {
-        return Err(SaveSettingsError::Unknown(candidate.id));
+        return Err(SaveSettingsError::Unknown(replacement.id.clone()));
     }
     Ok(Applied {
         warnings: apply_warnings(&apply(&env.apply, &[]).await),
