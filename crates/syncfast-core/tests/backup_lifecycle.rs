@@ -673,6 +673,44 @@ async fn saving_settings_replaces_everything_but_the_destination() {
     let missing = save_backup_settings(&env, &unknown).await.unwrap_err();
     assert!(matches!(missing, SaveSettingsError::Unknown(_)));
 }
+
+async fn saving_settings_with_a_blank_name_is_refused_and_changes_nothing() {
+    let Some(bed) = bed().await else { return };
+    bed.create("docs").await;
+    let stored = bed.config().await.backups()[0].clone();
+    let env = bed.env(&bed.keys);
+
+    let mut blank = stored.clone();
+    blank.name = "  ".to_owned();
+    let refused = save_backup_settings(&env, &blank).await.unwrap_err();
+
+    assert!(matches!(refused, SaveSettingsError::Invalid(_)), "{refused}");
+    assert_eq!(bed.config().await.backups()[0].name, stored.name);
+}
+
+async fn saving_settings_reports_what_applying_could_not_do() {
+    let Some(bed) = bed().await else { return };
+    bed.create("docs").await;
+    let stored = bed.config().await.backups()[0].clone();
+    let mut other = stored.clone();
+    other.id = "other".to_owned();
+    other.name = "Other".to_owned();
+    other.dest = bed.account_dest("repo-other");
+    other.every = "monthly".to_owned();
+    Config::edit(&bed.paths, |config| config.add_backup(&other).unwrap())
+        .await
+        .unwrap();
+    let env = bed.env(&bed.keys);
+
+    let saved = save_backup_settings(&env, &stored).await.unwrap();
+
+    assert_eq!(saved.warnings.len(), 1, "{:?}", saved.warnings);
+    assert!(
+        saved.warnings[0].starts_with("backup other: not applied:"),
+        "{:?}",
+        saved.warnings
+    );
+}
 }
 
 fn backup(keep: (u16, u16, u16, u16), one_file_system: bool) -> BackupConfig {

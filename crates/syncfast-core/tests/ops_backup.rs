@@ -155,6 +155,35 @@ impl RestoreStarter for InlineRestore {
     }
 }
 
+/// Starts the restore job a little later, in the background, so the
+/// operation finds it running.
+struct DelayedRestore {
+    paths: Paths,
+    restic: Restic,
+    keys: Arc<dyn KeyStore>,
+}
+
+impl RestoreStarter for DelayedRestore {
+    fn start<'a>(&'a self, job_id: &'a str) -> BoxFuture<'a, Result<(), String>> {
+        let paths = self.paths.clone();
+        let restic = self.restic.clone();
+        let keys = self.keys.clone();
+        let id = job_id.to_owned();
+        Box::pin(async move {
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(700)).await;
+                let env = RestoreEnv {
+                    paths: &paths,
+                    restic: &restic,
+                    keys: &*keys,
+                };
+                run_restore(&env, &id, false).await.unwrap();
+            });
+            Ok(())
+        })
+    }
+}
+
 struct Rig {
     _dir: tempfile::TempDir,
     root: PathBuf,
@@ -700,6 +729,53 @@ async fn a_restore_into_a_new_folder_reports_exact_counts_and_no_contents() {
         .await
         .unwrap();
     assert_eq!(again, report);
+}
+
+async fn a_restore_that_is_still_running_is_waited_for_only_as_long_as_asked() {
+    let Some(mut rig) = rig().await else { return };
+    let id = rig.create().await;
+    rig.ops.restores = Arc::new(DelayedRestore {
+        paths: rig.ops.paths.clone(),
+        restic: rig.ops.restic.clone().unwrap(),
+        keys: rig.ops.keys.clone(),
+    });
+
+    let started = rig
+        .ops
+        .restore(restore_args(&id, &rig.root.join("first"), false), Duration::ZERO)
+        .await
+        .unwrap();
+    assert_eq!((started.status, started.finished), ("running", false));
+    let job = started.id.as_deref().unwrap();
+    let still = rig.ops.restore_job(job, Duration::ZERO).await.unwrap();
+    assert_eq!(still.status, "running");
+    let ended = rig.ops.restore_job(job, WAIT).await.unwrap();
+    assert_eq!((ended.status, ended.finished), ("done", true));
+
+    let waited = rig
+        .ops
+        .restore(restore_args(&id, &rig.root.join("second"), false), WAIT)
+        .await
+        .unwrap();
+    assert_eq!((waited.status, waited.finished), ("done", true));
+}
+
+async fn asking_for_one_backup_among_several_gives_that_backup() {
+    let Some(rig) = rig().await else { return };
+    let first = rig.create().await;
+    let mut request = rig.request();
+    request.name = "Second".to_owned();
+    request.paths = vec![rig.root.join("src2").display().to_string()];
+    request.dest = rig.root.join("repo2").display().to_string();
+    write(&rig.root.join("src2/c.txt"), "gamma");
+    let second = rig.ops.create_backup(request).await.unwrap().id;
+    assert_ne!(first, second);
+
+    for id in [&first, &second] {
+        let detail = rig.ops.show_backup(id).await.unwrap();
+        assert_eq!(&detail.backup.id, id);
+    }
+    assert_eq!(rig.ops.backups().await.unwrap().len(), 2);
 }
 
 async fn a_dry_run_counts_and_creates_nothing() {

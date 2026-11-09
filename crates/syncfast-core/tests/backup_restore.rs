@@ -4,7 +4,12 @@
 #![allow(clippy::unwrap_used)]
 
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::fs;
+use std::io::Write;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -18,8 +23,8 @@ use syncfast_core::backup::key::Key;
 use syncfast_core::backup::keystore::{KeyStore, MemoryKeyStore};
 use syncfast_core::backup::restore::{DESTINATION_EXISTS, NOTHING_MATCHES};
 use syncfast_core::backup::restore_job::{
-    RestoreEnv, RestoreError, RestoreReport, RestoreRequest, RestoreStarter, restore_status,
-    run_restore, start_restore,
+    RestoreEnv, RestoreError, RestoreReport, RestoreRequest, RestoreStarter, cancel_restore,
+    restore_status, run_restore, start_restore,
 };
 use syncfast_core::backup::snapshots::SnapshotView;
 use syncfast_core::config::{Config, Pair};
@@ -258,6 +263,35 @@ impl Rig {
             .join(name)
             .to_string_lossy()
             .into_owned()
+    }
+}
+
+/// Leaves the job as `running`: nothing ever starts it.
+struct Parked;
+
+impl RestoreStarter for Parked {
+    fn start<'a>(&'a self, _job_id: &'a str) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+impl Rig {
+    /// Makes `restic restore` close its output, wait, and fail with one
+    /// long line on stderr; every other call goes to the real restic.
+    fn use_restic_failing_to_restore(&mut self) {
+        let real = syncfast_core::restic::locate_binary().unwrap();
+        let script = self.root.join("restic-failing-restore");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nfor arg in \"$@\"; do\n  if [ \"$arg\" = restore ]; then\n    exec 1>&-\n    sleep 0.3\n    printf 'Fatal: %02000d\\n' 0 >&2\n    exit 1\n  fi\ndone\nexec '{}' \"$@\"\n",
+                real.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let rclone = self.restic.rclone().clone();
+        self.restic = Restic::new(script, rclone, &self.paths);
     }
 }
 
@@ -581,5 +615,140 @@ async fn a_folder_that_is_not_in_the_snapshot_is_refused() {
     let relative = list_files(&rig.restic, &rig.repository(), &rig.key, &snapshot, "docs").await;
 
     assert!(matches!(relative, Err(ListError::Invalid(_))));
+}
+
+async fn a_destination_that_is_relative_or_holds_a_nul_byte_is_refused() {
+    let Some(rig) = rig().await else { return };
+    rig.make_source();
+    rig.snapshot(&[&rig.root.join("src")]).await;
+    let relative = rig.request(Path::new("relative-restore"), &[]);
+    let nul = rig.request(Path::new(OsStr::from_bytes(b"/tmp/one\0two")), &[]);
+
+    for request in [relative, nul] {
+        let err = rig.restore(&request).await.unwrap_err();
+        assert!(
+            matches!(&err, RestoreError::Invalid(text) if text == "The destination must be an absolute path."),
+            "{err}"
+        );
+    }
+    assert!(!Path::new("relative-restore").exists());
+    assert!(!rig.paths.restores_dir().exists());
+}
+
+async fn a_destination_in_a_folder_that_does_not_exist_is_refused_and_nothing_is_made() {
+    let Some(rig) = rig().await else { return };
+    rig.make_source();
+    rig.snapshot(&[&rig.root.join("src")]).await;
+    let missing = rig.root.join("no-such-folder");
+
+    let err = rig
+        .restore(&rig.request(&missing.join("out"), &[]))
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(&err, RestoreError::Invalid(text) if text == "The folder to restore into does not exist."),
+        "{err}"
+    );
+    assert!(!missing.exists());
+    assert!(!rig.paths.restores_dir().exists());
+}
+
+async fn a_destination_in_a_folder_that_cannot_be_written_is_refused() {
+    let Some(rig) = rig().await else { return };
+    rig.make_source();
+    rig.snapshot(&[&rig.root.join("src")]).await;
+    let locked = rig.root.join("locked");
+    fs::create_dir(&locked).unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+    if fs::File::create(locked.join("probe")).is_ok() {
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        skipping("the folder stays writable at mode 555");
+        return;
+    }
+
+    let result = rig.restore(&rig.request(&locked.join("out"), &[])).await;
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let err = result.unwrap_err();
+    let expected = format!("syncfast cannot write in {}.", locked.display());
+    assert!(matches!(&err, RestoreError::Invalid(text) if *text == expected), "{err}");
+    assert!(!rig.paths.restores_dir().exists());
+}
+
+async fn a_restore_file_that_cannot_be_read_is_not_a_missing_restore() {
+    let Some(rig) = rig().await else { return };
+    let id = "20990101-000000-000";
+    fs::create_dir_all(rig.paths.restore_file(id)).unwrap();
+
+    let err = restore_status(&rig.paths, id).await.unwrap_err();
+
+    assert!(matches!(err, RestoreError::Failed(_)), "{err}");
+}
+
+async fn a_failed_restore_says_the_whole_last_line_restic_wrote_to_stderr() {
+    let Some(mut rig) = rig().await else { return };
+    rig.make_source();
+    rig.snapshot(&[&rig.root.join("src")]).await;
+    rig.use_restic_failing_to_restore();
+    let destination = rig.root.join("out");
+
+    let report = rig.restore(&rig.request(&destination, &[])).await.unwrap();
+
+    assert_eq!((report.status, report.finished), ("failed", true));
+    assert_eq!(report.error, Some(format!("Fatal: {}", "0".repeat(2000))));
+}
+
+async fn a_restore_that_is_not_running_cannot_be_cancelled() {
+    let Some(rig) = rig().await else { return };
+    rig.make_source();
+    rig.snapshot(&[&rig.root.join("src")]).await;
+    let report = rig
+        .restore(&rig.request(&rig.root.join("out"), &[]))
+        .await
+        .unwrap();
+
+    let err = cancel_restore(&rig.paths, report.id.as_deref().unwrap(), false)
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(&err, RestoreError::Invalid(text) if text == "That restore is not running."),
+        "{err}"
+    );
+}
+
+async fn cancelling_a_running_restore_sends_sigint_to_the_process_that_holds_its_lock() {
+    let Some(rig) = rig().await else { return };
+    rig.make_source();
+    rig.snapshot(&[&rig.root.join("src")]).await;
+    let env = RestoreEnv {
+        paths: &rig.paths,
+        restic: &rig.restic,
+        keys: &rig.keys,
+    };
+    let started = start_restore(&env, &Parked, &rig.request(&rig.root.join("out"), &[]))
+        .await
+        .unwrap();
+    let id = started.id.unwrap();
+    let mut holder = std::process::Command::new("sleep")
+        .arg("30")
+        .stdin(Stdio::null())
+        .spawn()
+        .unwrap();
+    fs::create_dir_all(rig.paths.runtime_subdir()).unwrap();
+    let mut lock = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(rig.paths.restore_lock_file(&id))
+        .unwrap();
+    lock.try_lock().unwrap();
+    write!(lock, "{}", holder.id()).unwrap();
+
+    cancel_restore(&rig.paths, &id, false).await.unwrap();
+
+    let status = holder.wait().unwrap();
+    assert_eq!(status.signal(), Some(2), "{status}");
 }
 }
