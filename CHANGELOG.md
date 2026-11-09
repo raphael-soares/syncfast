@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.1](https://github.com/raphael-soares/syncfast/compare/v0.17.0...v0.17.1) (2026-11-09)
+
+
+### Bug fixes
+
+* phase 3 review fixes, round 2 ([#98](https://github.com/raphael-soares/syncfast/issues/98)) ([6ab1d15](https://github.com/raphael-soares/syncfast/commit/6ab1d15d8dc12ffe93290461091d9ad6bf211208))
+
 ## [0.17.0](https://github.com/raphael-soares/syncfast/compare/v0.16.1...v0.17.0) (2026-11-08)
 
 
