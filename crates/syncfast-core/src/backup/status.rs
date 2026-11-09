@@ -43,22 +43,6 @@ impl BackupStatus {
         }
     }
 
-    /// Lucide icon name. Colour is never the only signal.
-    #[must_use]
-    pub fn icon(self) -> &'static str {
-        match self {
-            Self::BackingUp => "refresh-cw",
-            Self::Checking => "shield-check",
-            Self::Error | Self::Failing => "circle-alert",
-            Self::SaveKey => "key-round",
-            Self::Paused => "pause",
-            Self::Offline => "cloud-off",
-            Self::Unavailable => "hard-drive",
-            Self::Retrying => "clock",
-            Self::UpToDate => "check",
-        }
-    }
-
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
@@ -402,64 +386,27 @@ mod tests {
     }
 
     #[test]
-    fn the_table_gives_each_status_its_text_colour_and_icon() {
+    fn the_table_gives_each_status_its_text_and_colour() {
         let rows = [
-            (
-                BackupStatus::BackingUp,
-                "Backing up…",
-                Tone::Accent,
-                "refresh-cw",
-            ),
-            (
-                BackupStatus::Checking,
-                "Checking…",
-                Tone::Accent,
-                "shield-check",
-            ),
-            (
-                BackupStatus::Error,
-                "Needs attention",
-                Tone::Danger,
-                "circle-alert",
-            ),
-            (
-                BackupStatus::SaveKey,
-                "Save the key",
-                Tone::Accent,
-                "key-round",
-            ),
-            (BackupStatus::Paused, "Paused", Tone::Dim, "pause"),
-            (BackupStatus::Offline, "Offline", Tone::Dim, "cloud-off"),
+            (BackupStatus::BackingUp, "Backing up…", Tone::Accent),
+            (BackupStatus::Checking, "Checking…", Tone::Accent),
+            (BackupStatus::Error, "Needs attention", Tone::Danger),
+            (BackupStatus::SaveKey, "Save the key", Tone::Accent),
+            (BackupStatus::Paused, "Paused", Tone::Dim),
+            (BackupStatus::Offline, "Offline", Tone::Dim),
             (
                 BackupStatus::Unavailable,
                 "Destination not available",
                 Tone::Dim,
-                "hard-drive",
             ),
-            (
-                BackupStatus::Failing,
-                "Backup failing",
-                Tone::Danger,
-                "circle-alert",
-            ),
-            (
-                BackupStatus::Retrying,
-                "Will retry",
-                Tone::Secondary,
-                "clock",
-            ),
-            (
-                BackupStatus::UpToDate,
-                "Up to date",
-                Tone::Secondary,
-                "check",
-            ),
+            (BackupStatus::Failing, "Backup failing", Tone::Danger),
+            (BackupStatus::Retrying, "Will retry", Tone::Secondary),
+            (BackupStatus::UpToDate, "Up to date", Tone::Secondary),
         ];
 
-        for (status, label, tone, icon) in rows {
+        for (status, label, tone) in rows {
             assert_eq!(status.label(), label, "{status:?}");
             assert_eq!(status.tone(), tone, "{status:?}");
-            assert_eq!(status.icon(), icon, "{status:?}");
         }
     }
 

@@ -40,7 +40,11 @@ use tokio::signal::unix::{SignalKind, signal};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
-    if let Err(err) = fastframe_log::Logging::new("syncfast", env!("CARGO_PKG_VERSION")).init() {
+    // ashpd's Request proxy warns on every portal call; agents read stderr as errors.
+    if let Err(err) = fastframe_log::Logging::new("syncfast", env!("CARGO_PKG_VERSION"))
+        .filter("warn,zbus=error")
+        .init()
+    {
         eprintln!("syncfast: cannot start logging: {err}");
     }
     let cli = Cli::parse();

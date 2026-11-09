@@ -12,7 +12,7 @@ use syncfast_gui::instance::{self, Inbox};
 use syncfast_gui::theme::{Themes, size};
 
 const WINDOW_ICON: &[u8] = include_bytes!("../assets/app-icon/syncfast-256.png");
-const LOG_FILTER: &str = "warn,syncfast_gui=info,syncfast_core=info";
+const LOG_FILTER: &str = "warn,zbus=error,syncfast_gui=info,syncfast_core=info";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Launch {

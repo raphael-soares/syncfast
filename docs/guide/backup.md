@@ -33,7 +33,9 @@ For a backup on a disk, **Open Destination Folder** in the same menu shows the f
 
 ### Backups created by an agent
 
-An AI agent can create a backup through the command line or MCP ([agent guide](../agents.md)). syncfast generates and stores the key inside that process and never hands it to the agent. The backup runs, and syncfast shows **Save the backup key** at the top of the backup, with a notification the first time. Press **Show Key…**, write the key down and press **I Saved the Key**. Until then you cannot restore on another computer.
+An AI agent can create a backup through the command line or MCP ([agent guide](../agents.md)). syncfast generates and stores the key inside that process and never hands it to the agent. The backup runs, and syncfast shows **Save the backup key** at the top of the backup, with a notification the first time. Press **Show Key…**, write the key down and press **I Saved the Key**. Until then you cannot restore on another computer. The destination must be empty or new.
+
+An agent can also run a backup, check it, pause and resume it, list snapshots and files, and restore a snapshot into a folder that does not exist yet. It never restores over existing files.
 
 An agent cannot lower the safety of a backup: it cannot reduce any **Keep** value, remove a folder from the backup, remove the backup, change its destination or turn off **Stay on one file system**. Those changes are yours to make in syncfast.
 
@@ -132,7 +134,7 @@ Restart `xdg-desktop-portal` (or log out and in) and check it:
 busctl --user introspect org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop org.freedesktop.portal.Secret
 ```
 
-Then press **Test Key Storage**: it should say **Secret portal**. A backup created with the host keyring keeps finding its key after the portal appears, and the other way round.
+Then press **Test Key Storage**: it should say **Secret portal**. A backup created with the host keyring keeps finding its key after the portal appears. A backup whose key went to the portal does not find it while the portal is off: its next run says the key is missing, and the first run after the portal is back finds it and clears the message.
 
 ## Common errors
 

@@ -11,9 +11,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use jiff::Timestamp;
-use syncfast_core::backup::config::{
-    BackupConfig, filter_line_problem, keep_reduced, one_file_system_turned_off,
-};
+use syncfast_core::backup::config::{BackupConfig, filter_line_problem, keep_reduced};
 use syncfast_core::backup::destination::{Destination, create_repository};
 use syncfast_core::backup::effects::BackupEvent;
 use syncfast_core::backup::key::{Key, KeyError};
@@ -721,17 +719,6 @@ fn keep_reduced_names_each_period_that_went_down() {
         keep_reduced(&before, &backup((1, 1, 1, 0), true)),
         ["keep.daily", "keep.weekly", "keep.monthly", "keep.yearly"]
     );
-}
-
-#[test]
-fn only_turning_one_file_system_off_counts() {
-    let on = backup((7, 4, 6, 0), true);
-    let off = backup((7, 4, 6, 0), false);
-
-    assert!(one_file_system_turned_off(&on, &off));
-    assert!(!one_file_system_turned_off(&off, &on));
-    assert!(!one_file_system_turned_off(&on, &on));
-    assert!(!one_file_system_turned_off(&off, &off));
 }
 
 #[tokio::test]

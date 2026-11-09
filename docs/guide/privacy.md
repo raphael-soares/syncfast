@@ -23,7 +23,7 @@ The sandbox is granted: your home folder (the folders you sync and the configs a
 
 An agent you connect through MCP or the CLI runs as you and can read what you can read, so connect only agents you trust. Exploring reads names, sizes and dates, never file contents. An agent cannot sign in, change credentials or confirm a review that deletes files.
 
-Agents never see a backup key. An agent can create a backup, but syncfast generates and stores the key itself and the agent gets only `stored`; no command or tool shows, accepts or returns it, and you are asked to save it. An agent also cannot lower a backup's safety (shorter retention, fewer folders, another destination) or remove a backup, and it restores only into a new folder. The limit is honest: an agent runs as you, so with the host keyring any process of your session can read the keyring. See the [agent guide](../agents.md).
+Agents never see a backup key. An agent can create a backup, but syncfast generates and stores the key itself and the agent gets only `stored`; no command or tool shows, accepts or returns it, and you are asked to save it. An agent also cannot lower a backup's safety (shorter retention, fewer folders, another destination, turning off **Stay on one file system**) or remove a backup, and it restores only into a new folder. The limit is honest: an agent runs as you, so with the host keyring any process of your session can read the keyring. See the [agent guide](../agents.md).
 
 ## Removing everything
 

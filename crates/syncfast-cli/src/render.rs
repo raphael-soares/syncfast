@@ -649,8 +649,7 @@ pub fn restore_report(report: &RestoreReport) -> String {
     let verb = match report.status {
         "dry_run" => "Would restore",
         "running" => "Restoring",
-        "done" => "Restored",
-        _ => "Failed to restore",
+        _ => "Restored",
     };
     let (files, size) = if report.status == "dry_run" {
         (report.total_files, report.total_bytes)

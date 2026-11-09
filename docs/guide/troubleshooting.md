@@ -41,7 +41,7 @@ A backup stops by itself, and does not delete anything, when it cannot run safel
 
 ## Backups are paused after a check
 
-Each month a backup reads a sample of the data it stored, and after a series of failed backups it checks the structure of the repository. A check can also be run by hand from the **...** menu, **Check Now**: **Quick Check** reads no data, **Check Sample** reads about 5%, and **Full Check…** reads everything and can take hours on Google Drive.
+Each month a backup reads a sample of the data it stored, and after a series of failed backups it checks the structure of the repository. A check can also be run by hand from the **…** menu, **Check Now**: **Quick Check** reads no data, **Check Sample** reads about 5%, and **Full Check…** reads everything and can take hours on Google Drive.
 
 When a check finds damaged data, the backup shows **Needs attention** with the number of damaged files. syncfast then stops backing up and cleaning old snapshots, because a new snapshot on top of a damaged pack would spread the damage. Nothing is deleted.
 
