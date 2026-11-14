@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.0](https://github.com/raphael-soares/syncfast/compare/v0.19.0...v0.20.0) (2026-11-14)
+
+
+### Features
+
+* **gui:** mover a Activity para Settings › Advanced ([#109](https://github.com/raphael-soares/syncfast/issues/109)) ([e011cd4](https://github.com/raphael-soares/syncfast/commit/e011cd44819e8a5877e72c4a924016c6fb889f14)), closes [#107](https://github.com/raphael-soares/syncfast/issues/107)
+
 ## [0.19.0](https://github.com/raphael-soares/syncfast/compare/v0.18.0...v0.19.0) (2026-11-14)
 
 
