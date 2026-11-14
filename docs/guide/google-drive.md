@@ -4,18 +4,20 @@ syncfast reaches Drive through rclone, and Google requires each app to identify 
 
 ## Create your own client ID
 
-The canonical steps are in [rclone's guide](https://rclone.org/drive/#making-your-own-client-id). In short:
+Open **Settings…**, **Accounts**, **Add Google Drive Account…**, or use **Get Started** on the welcome screen. The **Connect Google Drive** sheet walks through the steps, each with an **Open** link to the right Google Cloud page:
 
-1. Open the [Google Cloud console](https://console.cloud.google.com/) and create a project (any name).
-2. Enable the **Google Drive API** for it (APIs and Services, Library).
-3. Configure the **OAuth consent screen**. Choose **External**, fill in the app name and your email, and add your own Google account as a test user if asked.
-4. Set the publishing status to **In production**. While it stays in **Testing**, Google expires the access every 7 days and syncs stop asking you to reconnect. You do not need Google's verification for personal use; the sign-in page shows an "unverified app" warning that you can continue past.
-5. Under **Credentials**, create an **OAuth client ID** of type **Desktop app**.
-6. Copy the **Client ID** (it ends in `.apps.googleusercontent.com`) and the **Client secret**.
+1. Create a Google Cloud project (any name).
+2. Turn on the **Google Drive API**.
+3. Set up the sign-in screen: choose **External**, then under **Branding** paste the home page and privacy policy addresses the sheet shows (each has a **Copy** button).
+4. Under **Audience**, press **Publish App**. While the app stays in **Testing**, Google expires the access every 7 days and syncs stop asking you to reconnect. You do not need Google's verification for personal use; the sign-in page shows an "unverified app" warning that you can continue past.
+5. Create a client of type **Desktop app** and download its JSON file.
+6. Press **Choose Client File…** and pick the downloaded file, or drop it on the window. The sheet reads the client ID and secret from it.
+
+If you would rather type them, open **Enter Manually** and paste the **Client ID** (it ends in `.apps.googleusercontent.com`) and the **Client secret**. rclone's [own guide](https://rclone.org/drive/#making-your-own-client-id) covers the same steps.
 
 ## Connect it in syncfast
 
-Open **Settings…**, **Accounts**, **Add Google Drive Account…**, or use **Get Started** on the welcome screen. Enter an account name, the client ID and the secret, press **Connect** and approve access in the browser.
+Press **Connect** and approve access in the browser. You do not name the account: the first one is called `drive`, the next `drive-2`, and so on. Once signed in, syncfast shows the account by its Google address.
 
 An account that still uses rclone's shared client ID shows a warning. Press **Use My Client ID…** next to it and enter yours; the sign-in is repeated. An account that already has its own client ID offers **Change Client ID…** instead.
 
@@ -23,7 +25,7 @@ If the sign-in works but Google Drive then refuses the account (for example the 
 
 ## Account status
 
-Every time you open **Settings…**, **Accounts**, syncfast asks each account whether it can reach its files. The line under the name says:
+Every time you open **Settings…**, **Accounts**, syncfast asks each account whether it can reach its files. Each account shows its Google address with its name below, and a status line that says:
 
 - **Checking…** while it asks.
 - **Signed in** when it works.
@@ -45,4 +47,4 @@ Press **Remove…** and confirm. syncfast forgets the account; files on Google D
 
 ## Several accounts
 
-Add each account with its own name. A sync belongs to one account. You can reuse one client ID for all of them.
+Add each account the same way; syncfast names them `drive`, `drive-2` and so on, and **Rename…** changes the name. A sync belongs to one account. You can reuse one client file for all of them.

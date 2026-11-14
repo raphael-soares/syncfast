@@ -109,6 +109,46 @@ pub async fn forget_email(paths: &Paths, name: &str) {
     }
 }
 
+const NOT_A_CLIENT_FILE: &str = "This is not a Google client file.";
+
+/// The client ID and secret of a Google client file, as Google Cloud
+/// downloads it (`installed` for a Desktop app, `web` for the other kind).
+///
+/// # Errors
+/// The text is not a Google client file, or it has no secret.
+pub fn parse_client_json(text: &str) -> Result<(String, Secret), String> {
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|_| NOT_A_CLIENT_FILE.to_owned())?;
+    let client = value
+        .get("installed")
+        .or_else(|| value.get("web"))
+        .ok_or_else(|| NOT_A_CLIENT_FILE.to_owned())?;
+    let field = |key: &str| {
+        client
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+    };
+    let client_id = field("client_id").ok_or_else(|| NOT_A_CLIENT_FILE.to_owned())?;
+    let secret = field("client_secret").ok_or_else(|| {
+        "This client file has no secret. Download it again from Google Cloud.".to_owned()
+    })?;
+    Ok((client_id.to_owned(), Secret::new(secret.to_owned())))
+}
+
+/// Reads and parses the Google client file at `path`.
+///
+/// # Errors
+/// See [`parse_client_json`]; a file that cannot be read is not a client
+/// file either.
+pub async fn read_client_json(path: &Path) -> Result<(String, Secret), String> {
+    let text = tokio::fs::read_to_string(path)
+        .await
+        .map_err(|_| NOT_A_CLIENT_FILE.to_owned())?;
+    parse_client_json(&text)
+}
+
 /// The folder names directly inside `remote_path`, sorted.
 ///
 /// # Errors
@@ -567,6 +607,47 @@ mod tests {
             root.join("data"),
             root.join("run"),
         )
+    }
+
+    #[test]
+    fn a_desktop_or_web_client_file_gives_its_id_and_secret() {
+        for kind in ["installed", "web"] {
+            let text = format!(
+                r#"{{"{kind}":{{"client_id":"123-abc.apps.googleusercontent.com","project_id":"p","client_secret":"GOCSPX-s","redirect_uris":["http://localhost"]}}}}"#
+            );
+
+            let (id, secret) = parse_client_json(&text).unwrap();
+
+            assert_eq!(id, "123-abc.apps.googleusercontent.com", "{kind}");
+            assert_eq!(secret.expose(), "GOCSPX-s", "{kind}");
+        }
+    }
+
+    #[test]
+    fn a_client_file_without_a_secret_asks_to_download_it_again() {
+        let refused = parse_client_json(
+            r#"{"installed":{"client_id":"123-abc.apps.googleusercontent.com"}}"#,
+        );
+
+        assert_eq!(
+            refused.unwrap_err(),
+            "This client file has no secret. Download it again from Google Cloud."
+        );
+    }
+
+    #[test]
+    fn any_other_file_is_not_a_google_client_file() {
+        for text in [
+            "not json",
+            r#"{"type":"service_account","client_id":"1"}"#,
+            r#"{"installed":{"client_secret":"s"}}"#,
+        ] {
+            assert_eq!(
+                parse_client_json(text).unwrap_err(),
+                "This is not a Google client file.",
+                "{text}"
+            );
+        }
     }
 
     fn write_config(paths: &Paths, text: &str) {

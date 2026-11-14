@@ -3,10 +3,12 @@
 use egui::{Key, Ui};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
+use syncfast_gui::backend::Event;
+use syncfast_gui::sheets::{Sheets, Surroundings};
 use syncfast_gui::theme::{self, Palette};
 use syncfast_gui::ui::account_sheet::{
-    AccountAction, AccountMode, AccountState, AccountView, ConnectRequest, Secret, name_problem,
-    show,
+    AccountAction, AccountMode, AccountState, AccountView, ConnectRequest, GUIDE, HOMEPAGE_URL,
+    PRIVACY_URL, Secret, name_problem, next_account_name, show,
 };
 use syncfast_gui::ui::{Action, RemoteRow};
 
@@ -76,21 +78,103 @@ fn filled(screen: &mut Screen) {
 }
 
 #[test]
-fn sheet_explains_the_oauth_client_and_links_to_the_rclone_guide() {
+fn adding_an_account_walks_through_the_google_client_and_asks_for_no_name() {
     let harness = harness(AccountMode::Add, |_| {});
 
-    harness.get_by_label("Add Google Drive Account");
-    harness.get_by_label(
-        "Create an OAuth client of type \"Desktop app\" in Google Cloud, enable the Google Drive API, and set the consent screen to \"In production\" so access does not expire every 7 days.",
+    harness.get_by_label("Connect Google Drive");
+    for (index, (text, _)) in GUIDE.iter().enumerate() {
+        harness.get_by_label(&format!("{}. {text}", index + 1));
+    }
+    harness.get_by_label(HOMEPAGE_URL);
+    harness.get_by_label(PRIVACY_URL);
+    harness.get_by_label("Choose Client File\u{2026}");
+    assert!(harness.query_by_label("Account name").is_none());
+    assert!(harness.query_by_label("Client ID").is_none());
+}
+
+#[test]
+fn the_guide_opens_each_google_cloud_page_through_the_backend() {
+    let mut harness = harness(AccountMode::Add, |_| {});
+    let links = harness.get_all_by_label("Open").count();
+
+    for index in 0..links {
+        harness.get_all_by_label("Open").nth(index).unwrap().click();
+        harness.run();
+    }
+
+    let expected: Vec<Action> = GUIDE
+        .iter()
+        .filter_map(|(_, url)| url.map(|url| Action::OpenUrl(url.to_owned())))
+        .collect();
+    assert_eq!(expected.len(), 5);
+    assert_eq!(harness.state().actions, expected);
+}
+
+fn click(harness: &mut Harness<'_, Screen>, label: &str) {
+    harness.get_by_label(label).scroll_to_me();
+    harness.run_steps(4);
+    harness.run();
+    harness.get_by_label(label).click();
+    harness.run();
+}
+
+#[test]
+fn choose_client_file_asks_the_backend_for_the_file() {
+    let mut harness = harness(AccountMode::Add, |_| {});
+
+    click(&mut harness, "Choose Client File\u{2026}");
+
+    assert_eq!(
+        harness.state().actions,
+        [Action::Account(AccountAction::PickJson)]
     );
-    harness.get_by_label("Making your own client ID");
-    harness.get_by_label("Account name");
+}
+
+#[derive(Debug)]
+struct Dropped(std::path::PathBuf);
+
+impl egui::DroppedFile for Dropped {
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        Err("not read in tests".into())
+    }
+}
+
+#[test]
+fn a_file_dropped_on_the_window_is_sent_to_the_backend() {
+    let mut harness = harness(AccountMode::Add, |_| {});
+
+    harness
+        .input_mut()
+        .dropped_files
+        .push(std::sync::Arc::new(Dropped(
+            "/home/ada/Downloads/client.json".into(),
+        )));
+    harness.run();
+
+    assert_eq!(
+        harness.state().actions,
+        [Action::Account(AccountAction::JsonDropped(
+            "/home/ada/Downloads/client.json".into()
+        ))]
+    );
+}
+
+#[test]
+fn the_client_fields_stay_folded_under_enter_manually() {
+    let mut harness = harness(AccountMode::Add, |_| {});
+
+    click(&mut harness, "Enter Manually");
+
     harness.get_by_label("Client ID");
     harness.get_by_label("Client secret");
 }
 
 #[test]
-fn connect_is_disabled_until_name_client_id_and_secret_are_filled() {
+fn connect_is_disabled_until_client_id_and_secret_are_filled() {
     let empty = harness(AccountMode::Add, |_| {});
     let no_secret = harness(AccountMode::Add, |screen| {
         filled(screen);
@@ -114,35 +198,29 @@ fn connect_is_disabled_until_name_client_id_and_secret_are_filled() {
 }
 
 #[test]
-fn a_name_that_breaks_the_rule_shows_why_and_blocks_connect() {
-    let harness = harness(AccountMode::Add, |screen| {
-        filled(screen);
-        screen.state.name = "-bad name".into();
-    });
-
-    harness.get_by_label_contains("Use letters, numbers");
-    assert!(
-        harness
-            .get_by_label("Connect")
-            .accesskit_node()
-            .is_disabled()
+fn a_new_account_is_named_drive_then_the_first_free_drive_number() {
+    assert_eq!(next_account_name(["gdrive"]), "drive");
+    assert_eq!(next_account_name(["drive"]), "drive-2");
+    assert_eq!(
+        next_account_name(["drive", "drive-2", "drive-4"]),
+        "drive-3"
     );
 }
 
 #[test]
-fn a_name_that_an_account_already_has_is_refused_by_name() {
-    let harness = harness(AccountMode::Add, |screen| {
+fn the_second_account_is_connected_as_drive_2() {
+    let mut harness = harness(AccountMode::Add, |screen| {
         filled(screen);
-        screen.state.name = "gdrive".into();
+        screen.existing = vec![remote("drive")];
     });
 
-    harness.get_by_label("An account named \"gdrive\" already exists.");
-    assert!(
-        harness
-            .get_by_label("Connect")
-            .accesskit_node()
-            .is_disabled()
-    );
+    harness.get_by_label("Connect").click();
+    harness.run();
+
+    assert!(matches!(
+        harness.state().actions.as_slice(),
+        [Action::Account(AccountAction::Connect(ConnectRequest { name, .. }))] if name == "drive-2"
+    ));
 }
 
 #[test]
@@ -158,25 +236,15 @@ fn name_rule_accepts_letters_digits_underscore_dot_and_dash_after_the_first_char
 }
 
 #[test]
-fn the_client_id_link_asks_the_backend_to_open_it() {
-    let mut harness = harness(AccountMode::Add, |_| {});
-
-    harness.get_by_label("Making your own client ID").click();
-    harness.run();
-
-    assert_eq!(
-        harness.state().actions,
-        [Action::OpenUrl(
-            "https://rclone.org/drive/#making-your-own-client-id".into()
-        )]
-    );
-}
-
-#[test]
 fn the_sheet_is_centered_in_the_window() {
-    let harness = harness(AccountMode::Add, |_| {});
+    let harness = harness(
+        AccountMode::Update {
+            name: "gdrive".into(),
+        },
+        |_| {},
+    );
 
-    let title = harness.get_by_label("Add Google Drive Account").rect();
+    let title = harness.get_by_label("Reconnect \"gdrive\"").rect();
     let button = harness.get_by_label("Connect").rect();
     let top = title.min.y;
     let bottom = button.max.y;
@@ -200,7 +268,7 @@ fn connect_emits_the_request_with_trimmed_credentials() {
         harness.state().actions,
         [Action::Account(AccountAction::Connect(ConnectRequest {
             mode: AccountMode::Add,
-            name: "trabalho".into(),
+            name: "drive".into(),
             client_id: "123.apps.googleusercontent.com".into(),
             client_secret: Secret::new("hunter2".into()),
         }))]
@@ -215,7 +283,7 @@ fn a_secret_never_shows_in_debug_output() {
 }
 
 #[test]
-fn reconnecting_names_the_account_and_needs_no_new_credentials() {
+fn reconnecting_names_the_account_folds_the_guide_and_needs_no_new_credentials() {
     let harness = harness(
         AccountMode::Update {
             name: "gdrive".into(),
@@ -231,6 +299,24 @@ fn reconnecting_names_the_account_and_needs_no_new_credentials() {
             .is_disabled()
     );
     assert!(harness.query_by_label("Account name").is_none());
+    assert!(harness.query_by_label(HOMEPAGE_URL).is_none());
+}
+
+#[test]
+fn reconnecting_titles_the_account_by_its_email_when_known() {
+    let harness = harness(
+        AccountMode::Update {
+            name: "gdrive".into(),
+        },
+        |screen| {
+            screen.existing = vec![RemoteRow {
+                email: Some("ada@example.com".into()),
+                ..remote("gdrive")
+            }];
+        },
+    );
+
+    harness.get_by_label("Reconnect \"ada@example.com\"");
 }
 
 #[test]
@@ -394,5 +480,60 @@ fn renaming_sends_the_rename_mode_with_the_new_name() {
             client_id: "123.apps.googleusercontent.com".into(),
             client_secret: Secret::new("hunter2".into()),
         }))]
+    );
+}
+
+fn sheets_with(event: &Event) -> Harness<'static, Sheets> {
+    let mut sheets = Sheets::new("/home/ada".into(), "/home/ada/.local/share/syncfast".into());
+    sheets.apply(
+        &Action::AddAccount,
+        &Surroundings {
+            pairs: &[],
+            welcome: false,
+        },
+    );
+    sheets.handle_event(event);
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(960.0, 640.0))
+        .build_ui_state(
+            |ui, sheets: &mut Sheets| {
+                if ready(ui) {
+                    let _ = sheets.show(ui.ctx(), &[], None);
+                }
+            },
+            sheets,
+        );
+    harness.run_ok();
+    harness
+}
+
+#[test]
+fn a_client_file_read_by_the_backend_fills_the_client_and_allows_connect() {
+    let harness = sheets_with(&Event::ClientJson(Ok((
+        "123.apps.googleusercontent.com".into(),
+        Secret::new("hunter2".into()),
+    ))));
+
+    harness.get_by_label("Client ready: 123.apps.googleusercontent.com");
+    assert!(
+        !harness
+            .get_by_label("Connect")
+            .accesskit_node()
+            .is_disabled()
+    );
+}
+
+#[test]
+fn a_refused_client_file_says_why_and_keeps_connect_disabled() {
+    let harness = sheets_with(&Event::ClientJson(Err(
+        "This is not a Google client file.".into()
+    )));
+
+    harness.get_by_label("This is not a Google client file.");
+    assert!(
+        harness
+            .get_by_label("Connect")
+            .accesskit_node()
+            .is_disabled()
     );
 }

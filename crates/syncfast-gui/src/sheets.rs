@@ -322,6 +322,8 @@ impl Sheets {
                 session.error = None;
                 vec![Command::ConnectAccount(request.clone())]
             }
+            AccountAction::PickJson => vec![Command::PickClientJson],
+            AccountAction::JsonDropped(path) => vec![Command::ReadClientJson(path.clone())],
             AccountAction::Cancel => {
                 let was_connecting = session.connecting;
                 let back = session.back_to_add_sync;
@@ -469,6 +471,21 @@ impl Sheets {
                     client_secret
                         .expose()
                         .clone_into(&mut session.state.client_secret);
+                }
+                Vec::new()
+            }
+            Event::ClientJson(result) => {
+                if let Current::Account(session) = &mut self.current {
+                    match result {
+                        Ok((client_id, client_secret)) => {
+                            session.state.client_id.clone_from(client_id);
+                            client_secret
+                                .expose()
+                                .clone_into(&mut session.state.client_secret);
+                            session.error = None;
+                        }
+                        Err(text) => session.error = Some(text.clone()),
+                    }
                 }
                 Vec::new()
             }

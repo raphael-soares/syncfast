@@ -14,7 +14,7 @@ The window closes to the tray: syncfast keeps running so syncs continue. Use **Q
 
 ## Connect Google Drive
 
-Press **Get Started** and **Add Google Drive Account…**. syncfast needs an OAuth client ID and secret of your own; [Google Drive](google-drive.md) shows how to create them. After you press **Connect**, finish signing in in your browser. The account is saved in rclone's config under the name you chose (`gdrive` by default).
+Press **Get Started**. syncfast needs a Google client of your own; the **Connect Google Drive** sheet walks through creating it and reads the file Google gives you ([Google Drive](google-drive.md) has the details). After you press **Connect**, finish signing in in your browser. syncfast then shows the account by its Google address.
 
 ## Create a sync
 

@@ -415,6 +415,27 @@ fn cancelling_the_account_of_the_welcome_screen_closes_everything() {
 }
 
 #[test]
+fn the_client_file_is_picked_or_read_by_the_backend() {
+    let mut sheets = sheets();
+    sheets.apply(&Action::AddAccount, &around(&[], true));
+
+    let picked = sheets.apply(
+        &Action::Account(AccountAction::PickJson),
+        &around(&[], true),
+    );
+    let dropped = sheets.apply(
+        &Action::Account(AccountAction::JsonDropped("/tmp/client.json".into())),
+        &around(&[], true),
+    );
+
+    assert_eq!(picked, [Command::PickClientJson]);
+    assert_eq!(
+        dropped,
+        [Command::ReadClientJson("/tmp/client.json".into())]
+    );
+}
+
+#[test]
 fn reconnecting_an_account_asks_the_backend_for_its_saved_client() {
     let mut sheets = sheets();
 
