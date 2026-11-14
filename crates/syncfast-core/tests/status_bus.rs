@@ -105,6 +105,20 @@ async fn wait_for_roots(proxy: &zbus::Proxy<'_>) -> Vec<(String, String)> {
     Vec::new()
 }
 
+/// Asks `Roots` until the one root reads `state`, since the file events
+/// make the watcher publish `pending` first; the last answer otherwise.
+async fn wait_for_state(proxy: &zbus::Proxy<'_>, state: &str) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    for _ in 0..100 {
+        found = roots(proxy).await;
+        if found.iter().all(|(_, read)| read == state) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    found
+}
+
 #[tokio::test]
 async fn roots_conflicts_sync_now_and_changed_over_the_bus() {
     let Some(bus) = PrivateBus::start() else {
@@ -161,7 +175,10 @@ async fn roots_conflicts_sync_now_and_changed_over_the_bus() {
         .is_ok();
 
     assert!(signalled);
-    assert_eq!(roots(&proxy).await, [(root.clone(), "conflict".to_owned())]);
+    assert_eq!(
+        wait_for_state(&proxy, "conflict").await,
+        [(root.clone(), "conflict".to_owned())]
+    );
     assert_eq!(
         conflicts(&proxy).await,
         [format!("{root}/a.txt"), format!("{root}/a.txt.conflict1")]
@@ -175,7 +192,10 @@ async fn roots_conflicts_sync_now_and_changed_over_the_bus() {
         .is_ok();
 
     assert!(signalled);
-    assert_eq!(roots(&proxy).await, [(root, "syncing".to_owned())]);
+    assert_eq!(
+        wait_for_state(&proxy, "syncing").await,
+        [(root, "syncing".to_owned())]
+    );
     assert!(conflicts(&proxy).await.is_empty());
     drop(held);
     let _ = stop.send(());

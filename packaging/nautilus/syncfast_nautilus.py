@@ -65,10 +65,21 @@ def changed_paths(old: StatusCache, new: StatusCache) -> List[str]:
     return sorted(path for path in candidates if old.emblem(path) != new.emblem(path))
 
 
+def _require_nautilus(gi) -> None:
+    """Older Nautilus ships the 4.0 typelib; Nautilus 51 ships only 4.1."""
+    for version in ("4.1", "4.0"):
+        try:
+            gi.require_version("Nautilus", version)
+            return
+        except ValueError:
+            continue
+    raise ValueError("no Nautilus 4 typelib")
+
+
 try:
     import gi
 
-    gi.require_version("Nautilus", "4.0")
+    _require_nautilus(gi)
     from gi.repository import Gio, GLib, GObject, Nautilus
 except (ImportError, ValueError):
     Nautilus = None
