@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.0](https://github.com/raphael-soares/syncfast/compare/v0.18.0...v0.19.0) (2026-11-14)
+
+
+### Features
+
+* desfazer exclusões em vez de pedir revisão ([#108](https://github.com/raphael-soares/syncfast/issues/108)) ([ba5883c](https://github.com/raphael-soares/syncfast/commit/ba5883cdc6a4e1c89f7b45f4cf616f8efa0ef191)), closes [#107](https://github.com/raphael-soares/syncfast/issues/107)
+
 ## [0.18.0](https://github.com/raphael-soares/syncfast/compare/v0.17.2...v0.18.0) (2026-11-14)
 
 
