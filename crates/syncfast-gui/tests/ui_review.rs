@@ -200,7 +200,7 @@ fn the_summary_of_an_upload_says_where_files_go_and_that_nothing_is_deleted() {
 
     assert_eq!(
         summary(&preview, "a@b.com"),
-        "3 files will be copied to a@b.com; Nothing will be deleted."
+        "3 files will be copied to a@b.com. Nothing will be deleted."
     );
 }
 
@@ -216,7 +216,7 @@ fn the_summary_counts_each_kind_and_ends_with_the_deletions() {
     assert_eq!(
         summary(&ready_preview(all), "a@b.com"),
         "1 file will be copied to this computer; 2 files will be replaced; \
-         2 files will be renamed; 2 files will be deleted."
+         2 files will be renamed. 2 files will be deleted."
     );
 }
 
@@ -227,7 +227,7 @@ fn the_sheet_shows_the_summary_above_the_sections() {
     let harness = ready_sheet(all);
 
     let line = harness
-        .get_by_label("1 file will be copied to devremote; 2 files will be deleted.")
+        .get_by_label("1 file will be copied to devremote. 2 files will be deleted.")
         .rect();
     let section = harness.get_by_label("Would upload to devremote (1)").rect();
 
@@ -791,7 +791,7 @@ fn the_review_names_the_account_by_its_email() {
 
     assert!(
         harness
-            .query_by_label("2 files will be copied to ada@example.com; Nothing will be deleted.")
+            .query_by_label("2 files will be copied to ada@example.com. Nothing will be deleted.")
             .is_some()
     );
 }
