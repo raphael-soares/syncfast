@@ -15,6 +15,7 @@ pub mod ops;
 pub mod paths;
 pub mod preview;
 pub mod rclone;
+pub mod recently_deleted;
 pub mod restic;
 pub mod run;
 pub mod run_decision;

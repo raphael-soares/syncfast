@@ -458,13 +458,13 @@ async fn more_deletions_than_max_delete_stops_at_too_many_deletes_and_the_confir
 }
 
 /// Ten files synced, eight deleted at the source: past the default cap.
-async fn mirror_up_past_the_cap(level: &str) -> Option<Bed> {
+async fn mirror_up_past_the_cap(level: &str, own: &str) -> Option<Bed> {
     let bed = bed("mirror_up")?;
     for name in numbered(10) {
         write(&bed.local, &name, &name);
     }
     bed.first_sync().await;
-    bed.set_mode("mirror_up", level, "");
+    bed.set_mode("mirror_up", level, own);
     for name in numbered(8) {
         fs::remove_file(bed.local.join(name)).unwrap();
     }
@@ -473,7 +473,7 @@ async fn mirror_up_past_the_cap(level: &str) -> Option<Bed> {
 
 #[tokio::test]
 async fn a_mirror_past_max_delete_confirms_itself_in_the_same_run_at_automatic() {
-    let Some(bed) = mirror_up_past_the_cap("automatic").await else {
+    let Some(bed) = mirror_up_past_the_cap("automatic", "").await else {
         return;
     };
 
@@ -494,12 +494,42 @@ async fn a_mirror_past_max_delete_confirms_itself_in_the_same_run_at_automatic()
 }
 
 #[tokio::test]
-async fn a_mirror_past_max_delete_still_waits_at_deletions_and_manual() {
-    for (level, checked) in [
-        ("manual", None),
-        ("deletions", Some(ReviewLevel::Deletions)),
+async fn a_mirror_past_max_delete_that_keeps_versions_goes_through_at_deletions() {
+    let Some(bed) = mirror_up_past_the_cap("deletions", "").await else {
+        return;
+    };
+
+    let report = bed.run().await;
+
+    assert_eq!(report, ran_ok(RoundMode::Force));
+    assert_eq!(names(&bed.remote), ["file-08.txt", "file-09.txt"]);
+    let mut kept: Vec<String> = names(&bed.remote_versions())
+        .iter()
+        .flat_map(|stamp| names(&bed.remote_versions().join(stamp)))
+        .collect();
+    kept.sort();
+    assert_eq!(kept, numbered(8));
+    let reviewed = bed
+        .state()
+        .await
+        .last_run
+        .and_then(|last| last.auto_reviewed)
+        .unwrap();
+    assert_eq!(reviewed.level, ReviewLevel::Deletions);
+    assert!(reviewed.recoverable);
+}
+
+#[tokio::test]
+async fn a_mirror_past_max_delete_with_no_way_back_still_waits_at_deletions_and_manual() {
+    for (level, own, checked) in [
+        ("manual", "", None),
+        (
+            "deletions",
+            "versions = false\n",
+            Some(ReviewLevel::Deletions),
+        ),
     ] {
-        let Some(bed) = mirror_up_past_the_cap(level).await else {
+        let Some(bed) = mirror_up_past_the_cap(level, own).await else {
             return;
         };
 

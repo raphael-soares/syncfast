@@ -16,7 +16,7 @@ use crate::bisync::{
     Fault, Outcome, RoundMode, bisync_args, classify, is_empty_prior_listing, log_file, stamp,
 };
 use crate::bisync_log::{LogLine, RunSummary, read_log, summarize};
-use crate::config::{Config, GlobalConfigError, Pair, PairError};
+use crate::config::{Config, GlobalConfigError, Pair, PairError, split_remote};
 use crate::conflicts::{Naming, find_conflicts};
 use crate::filters::{self, DirMatcher, FiltersError, FiltersFile};
 use crate::network::Network;
@@ -27,7 +27,7 @@ use crate::oneway::{
 use crate::ops::views::review_kind;
 use crate::paths::Paths;
 use crate::preview::{ChangeCounts, PreviewError, preview_locked};
-use crate::rclone::{Rclone, RcloneError};
+use crate::rclone::{DRIVE_TYPE, Rclone, RcloneError};
 use crate::run_decision::{
     AutoReview, DecideInput, Decision, SkipReason, auto_review, decide, may_confirm,
 };
@@ -646,7 +646,9 @@ async fn check_review(
         }
     };
     let counts = ChangeCounts::of(&preview.summary.changes);
-    if auto_review(level, kind, &counts) == AutoReview::Hold {
+    let recoverable =
+        counts.deletes() && deletions_recoverable(env, pair, round.behavior, &counts).await;
+    if auto_review(level, kind, &counts, recoverable) == AutoReview::Hold {
         return Ok(Checked::Held);
     }
     let saved = ConfirmMarker {
@@ -661,8 +663,42 @@ async fn check_review(
             gate: kind,
             level,
             counts,
+            recoverable,
         },
     })
+}
+
+/// Whether every file `counts` deletes can come back: local deletions from
+/// the versions folder, remote ones from the Drive trash or, in `mirror_up`,
+/// from the versions folder on the account. An account whose type cannot be
+/// read counts as one without a trash.
+async fn deletions_recoverable(
+    env: &RunEnv<'_>,
+    pair: &Pair,
+    behavior: &Behavior,
+    counts: &ChangeCounts,
+) -> bool {
+    if counts.delete_local > 0 && !behavior.versions {
+        return false;
+    }
+    if counts.delete_remote == 0 || (behavior.mode == SyncMode::MirrorUp && behavior.versions) {
+        return true;
+    }
+    let Some((account, _)) = split_remote(&pair.remote) else {
+        return false;
+    };
+    match env.rclone.remote_types().await {
+        Ok(types) => types
+            .iter()
+            .any(|(name, kind)| name == account && kind == DRIVE_TYPE),
+        Err(err) => {
+            log::warn!(
+                "{}: cannot tell whether {account} has a trash: {err}",
+                pair.id
+            );
+            false
+        }
+    }
 }
 
 struct Attempt {
@@ -880,9 +916,11 @@ impl Round<'_> {
             .chain(Alert::synced(&summary))
             .chain(
                 auto_reviewed
-                    .map(|reviewed| reviewed.counts.deleted())
-                    .filter(|deleted| *deleted > 0)
-                    .map(|deleted| Alert::AutoReviewed { deleted }),
+                    .filter(|reviewed| reviewed.counts.deletes())
+                    .map(|reviewed| Alert::AutoReviewed {
+                        deleted: reviewed.counts.deleted(),
+                        recoverable: reviewed.recoverable,
+                    }),
             )
             .collect();
         summary.changes.truncate(STORED_CHANGES);

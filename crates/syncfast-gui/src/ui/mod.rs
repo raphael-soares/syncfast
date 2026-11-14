@@ -16,6 +16,7 @@ pub mod filters;
 pub mod format;
 pub mod menu;
 pub mod options;
+pub mod recently_deleted;
 pub mod relative;
 pub mod remove;
 pub mod remove_account;
@@ -34,6 +35,7 @@ use syncfast_core::bisync::Fault;
 use syncfast_core::bisync_log::Progress;
 use syncfast_core::config::SettingScope;
 use syncfast_core::conflicts::{Conflict, Resolution};
+use syncfast_core::recently_deleted::{DeletedList, DeletedSide};
 use syncfast_core::settings::{Effective, Overrides, lowered_safety};
 use syncfast_core::state::{DisplayStatus, GateKind};
 
@@ -180,6 +182,9 @@ pub struct ViewModel {
     pub settings_pane: SettingsPane,
     /// The conflicts of the selected sync.
     pub conflicts: Vec<Conflict>,
+    /// What the selected sync deleted that can still come back; `None`
+    /// until it is read.
+    pub deleted: Option<Result<Arc<DeletedList>, String>>,
     /// The last `Test Filters` of the selected sync.
     pub filter_test: Option<filters::FilterTest>,
     /// The filters of the selected sync were just saved.
@@ -359,6 +364,13 @@ pub enum Action {
         id: String,
         path: std::path::PathBuf,
         resolution: Resolution,
+    },
+    /// Read what a sync deleted again.
+    RefreshDeleted(String),
+    RestoreDeleted {
+        id: String,
+        key: String,
+        side: DeletedSide,
     },
     TestFilters {
         id: String,

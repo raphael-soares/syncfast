@@ -161,10 +161,16 @@ pub fn may_confirm(level: ReviewLevel, gate: GateKind) -> bool {
 }
 
 /// The review table of the spec (step 4), over the preview of the review
-/// `gate` waits for.
+/// `gate` waits for. At `deletions`, a preview that deletes holds only when
+/// what it deletes cannot come back (`recoverable` is false).
 #[must_use]
-pub fn auto_review(level: ReviewLevel, gate: GateKind, counts: &ChangeCounts) -> AutoReview {
-    let deletes_block = level == ReviewLevel::Deletions && counts.deletes();
+pub fn auto_review(
+    level: ReviewLevel,
+    gate: GateKind,
+    counts: &ChangeCounts,
+    recoverable: bool,
+) -> AutoReview {
+    let deletes_block = level == ReviewLevel::Deletions && counts.deletes() && !recoverable;
     if may_confirm(level, gate) && !deletes_block {
         AutoReview::Confirm
     } else {
@@ -743,9 +749,37 @@ mod tests {
 
         for (level, gate, counts, expected) in table {
             assert_eq!(
-                auto_review(level, gate, &counts),
+                auto_review(level, gate, &counts, false),
                 expected,
                 "{level:?} {gate:?} {counts:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn deletions_that_can_come_back_are_confirmed_at_the_deletions_level() {
+        use AutoReview::{Confirm, Hold};
+        use GateKind::{
+            AllFilesChanged, NeedsReviewCriticalError, NeedsReviewFirstRun, TooManyDeletes,
+        };
+        use ReviewLevel::{Automatic, Deletions, Manual};
+        let deletes = counts(1, 1);
+        let table = [
+            (Deletions, TooManyDeletes, true, Confirm),
+            (Deletions, TooManyDeletes, false, Hold),
+            (Deletions, AllFilesChanged, true, Confirm),
+            (Deletions, NeedsReviewFirstRun, true, Hold),
+            (Manual, TooManyDeletes, true, Hold),
+            (Manual, NeedsReviewCriticalError, true, Hold),
+            (Deletions, NeedsReviewCriticalError, true, Hold),
+            (Automatic, NeedsReviewCriticalError, true, Hold),
+        ];
+
+        for (level, gate, recoverable, expected) in table {
+            assert_eq!(
+                auto_review(level, gate, &deletes, recoverable),
+                expected,
+                "{level:?} {gate:?} {recoverable}"
             );
         }
     }
@@ -757,15 +791,15 @@ mod tests {
         let deletes = counts(0, 1);
 
         assert_eq!(
-            auto_review(ReviewLevel::Manual, gate, &counts(0, 0)),
+            auto_review(ReviewLevel::Manual, gate, &counts(0, 0), false),
             AutoReview::Hold
         );
         assert_eq!(
-            auto_review(ReviewLevel::Deletions, gate, &counts(0, 0)),
+            auto_review(ReviewLevel::Deletions, gate, &counts(0, 0), false),
             AutoReview::Confirm
         );
         assert_eq!(
-            auto_review(ReviewLevel::Deletions, gate, &deletes),
+            auto_review(ReviewLevel::Deletions, gate, &deletes, false),
             AutoReview::Hold
         );
         assert!(may_confirm(ReviewLevel::Automatic, gate));
@@ -779,7 +813,12 @@ mod tests {
             ReviewLevel::Automatic,
         ] {
             assert_eq!(
-                auto_review(level, GateKind::NeedsReviewCriticalError, &counts(0, 0)),
+                auto_review(
+                    level,
+                    GateKind::NeedsReviewCriticalError,
+                    &counts(0, 0),
+                    false
+                ),
                 AutoReview::Hold,
                 "{level:?}"
             );
@@ -801,7 +840,7 @@ mod tests {
                 GateKind::LocalMissing,
             ] {
                 assert_eq!(
-                    auto_review(level, gate, &counts(0, 0)),
+                    auto_review(level, gate, &counts(0, 0), false),
                     AutoReview::Hold,
                     "{level:?} {gate:?}"
                 );

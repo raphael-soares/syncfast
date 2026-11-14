@@ -514,6 +514,25 @@ fn the_tabs_are_activity_conflicts_and_filters_and_picking_one_asks_to_switch() 
 }
 
 #[test]
+fn recently_deleted_is_a_tab_of_every_mode_but_the_mirror_of_drive() {
+    for (mode, shown) in [
+        (SyncMode::Bisync, true),
+        (SyncMode::Upload, true),
+        (SyncMode::Download, true),
+        (SyncMode::MirrorUp, true),
+        (SyncMode::MirrorDown, false),
+    ] {
+        let harness = harness(view(mirrored(mode, "/home/ada/Drive")));
+
+        assert_eq!(
+            harness.query_by_label("Recently Deleted").is_some(),
+            shown,
+            "{mode:?}"
+        );
+    }
+}
+
+#[test]
 fn the_selected_tab_decides_what_the_detail_shows() {
     let mut vm = view(pair(DisplayStatus::UpToDate));
     vm.tab = DetailTab::Conflicts;
@@ -587,6 +606,7 @@ fn activity_says_when_a_round_was_reviewed_automatically_beside_its_counters() {
             delete_remote: 3,
             ..ChangeCounts::default()
         },
+        recoverable: false,
     });
     let plain = run("b", "2026-11-03T11:50:00Z", DisplayStatus::UpToDate);
     let harness = harness(with_runs(vec![reviewed, plain]));

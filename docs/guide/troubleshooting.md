@@ -4,11 +4,11 @@
 
 syncfast stops a sync and waits for you when the first sync is pending, the filters changed, many files would be deleted, every file of one side changed at once, or rclone hit a critical error. Open the sync and press **Review…**. The preview is a dry run and may list deletions the real round would not do. Confirm only when the list is what you expect.
 
-How much waits for you is the **Review** option. At the default, **Ask only for deletions**, syncfast confirms a review itself when its preview deletes nothing (the first sync of a folder always waits). **Ask every time** never confirms by itself; **Never ask** also confirms deletions. The Activity tab marks a round confirmed that way as **Reviewed automatically**.
+How much waits for you is the **Review** option. At the default, **Ask for the first sync and for deletions that cannot be undone**, syncfast confirms a review itself when everything its preview deletes can be restored from **Recently Deleted** (the first sync of a folder always waits). **Ask every time** never confirms by itself; **Never ask** also confirms deletions that cannot be undone. The Activity tab marks a round confirmed that way as **Reviewed automatically**.
 
 ## Many files would be deleted
 
-By default, a round that would delete more than half of the files is refused (the limit is **Stop when more than this share would be deleted** in the **Options** tab). This usually means a folder is empty, unmounted or moved. Check the local folder and the Drive folder, then review. **Delete and Sync** goes ahead; to undo a mass delete on Drive, use the Drive trash.
+By default, a round that would delete more than half of the files is refused (the limit is **Stop when more than this share would be deleted** in the **Options** tab). This usually means a folder is empty, unmounted or moved. When every deleted file can come back, syncfast goes ahead and the files show in the sync's **Recently Deleted** tab, where **Restore** puts each one back. Otherwise check the local folder and the Drive folder, then review. **Delete and Sync** goes ahead.
 
 ## Signed out
 

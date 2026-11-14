@@ -151,6 +151,9 @@ pub struct AutoReviewed {
     pub gate: GateKind,
     pub level: ReviewLevel,
     pub counts: ChangeCounts,
+    /// Every file the round deleted can come back from Recently Deleted.
+    #[serde(default)]
+    pub recoverable: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -729,6 +732,7 @@ mod tests {
                         delete_remote: 3,
                         ..ChangeCounts::default()
                     },
+                    recoverable: false,
                 }),
             }),
             notified: vec!["gate:too_many_deletes".into(), "failures".into()],

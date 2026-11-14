@@ -11,8 +11,8 @@ use jiff::Zoned;
 
 use crate::behavior::{Behavior, GoogleDocs, SyncMode};
 use crate::bisync::{
-    EXIT_CRITICAL, EXIT_USAGE, Fault, Outcome, RoundMode, bwlimit_args, dir_arg, failure_msgs,
-    fault_of, log_file, stamp,
+    EXIT_CRITICAL, EXIT_USAGE, Fault, Outcome, RoundMode, USE_TRASH, bwlimit_args, dir_arg,
+    failure_msgs, fault_of, log_file, stamp,
 };
 use crate::bisync_log::{Change, ChangeKind, LogLine, RunSummary, renamed_from};
 use crate::config::{Pair, split_remote};
@@ -133,6 +133,7 @@ pub fn oneway_args(
     ]);
     args.extend(bwlimit_args(behavior));
     args.extend([
+        USE_TRASH.into(),
         "--retries".into(),
         "1".into(),
         "--stats".into(),
@@ -475,6 +476,7 @@ mod tests {
         args.extend(strings(before_combined));
         args.extend(strings(&["--combined", changes]));
         args.extend(strings(&[
+            "--drive-use-trash",
             "--retries",
             "1",
             "--stats",

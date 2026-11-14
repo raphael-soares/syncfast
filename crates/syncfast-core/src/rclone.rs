@@ -474,6 +474,89 @@ impl Rclone {
         serde_json::from_slice(&stdout).map_err(|_| RcloneError::BadOutput("lsjson"))
     }
 
+    /// The files under `path` that are in the Drive trash, with their ids.
+    ///
+    /// # Errors
+    /// rclone cannot run or fails.
+    pub async fn list_trashed(&self, path: &str) -> Result<Vec<TrashedEntry>, RcloneError> {
+        let stdout = self
+            .output(
+                "lsjson",
+                [
+                    "lsjson",
+                    "-R",
+                    "--files-only",
+                    "--no-mimetype",
+                    "--drive-trashed-only",
+                    "--",
+                    path,
+                ]
+                .map(OsString::from)
+                .to_vec(),
+                true,
+            )
+            .await?;
+        serde_json::from_slice(&stdout).map_err(|_| RcloneError::BadOutput("lsjson"))
+    }
+
+    /// Copies the Drive file `id` of `account` to the local file
+    /// `destination`, trashed or not.
+    ///
+    /// # Errors
+    /// rclone cannot run or fails.
+    pub async fn copy_id(
+        &self,
+        account: &str,
+        id: &str,
+        destination: &Path,
+    ) -> Result<(), RcloneError> {
+        let args: Vec<OsString> = vec![
+            "backend".into(),
+            "copyid".into(),
+            format!("{account}:").into(),
+            id.into(),
+            destination.into(),
+        ];
+        self.copy_unbounded("backend copyid", args).await
+    }
+
+    /// Copies the remote file `source` (`gdrive:dir/a.txt`) to the local
+    /// file `destination`.
+    ///
+    /// # Errors
+    /// rclone cannot run or fails.
+    pub async fn copy_file(&self, source: &str, destination: &Path) -> Result<(), RcloneError> {
+        let args: Vec<OsString> = vec![
+            "copyto".into(),
+            "--".into(),
+            source.into(),
+            destination.into(),
+        ];
+        self.copy_unbounded("copyto", args).await
+    }
+
+    /// A copy with no time limit: the file may be large.
+    async fn copy_unbounded(
+        &self,
+        name: &'static str,
+        args: Vec<OsString>,
+    ) -> Result<(), RcloneError> {
+        let output = self
+            .command(args)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(RcloneError::Spawn)?;
+        if output.status.success() {
+            return Ok(());
+        }
+        Err(RcloneError::Failed {
+            command: name,
+            detail: last_line(&output.stderr).unwrap_or_else(|| exit_detail(output.status)),
+        })
+    }
+
     /// What `path` is (a file or a folder, with its size), or `None` when
     /// nothing is there. Never the content.
     ///
@@ -718,6 +801,17 @@ pub struct TreeEntry {
     pub modified: Option<String>,
     #[serde(rename = "IsDir", default)]
     pub is_dir: bool,
+}
+
+/// One line of `rclone lsjson --drive-trashed-only`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct TrashedEntry {
+    #[serde(rename = "Path")]
+    pub path: String,
+    #[serde(rename = "Size", default)]
+    pub size: i64,
+    #[serde(rename = "ID", default)]
+    pub id: String,
 }
 
 #[derive(Deserialize)]

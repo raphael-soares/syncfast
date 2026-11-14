@@ -22,6 +22,7 @@ use syncfast_core::ops::{
 };
 use syncfast_core::paths::Paths;
 use syncfast_core::rclone::Rclone;
+use syncfast_core::recently_deleted::{DeletedKind, DeletedSide};
 use syncfast_core::run::{RunEnv, run};
 use syncfast_core::run_decision::{AutoReview, auto_review};
 use syncfast_core::state::{GateKind, try_lock_pair};
@@ -641,6 +642,127 @@ async fn a_path_that_is_not_a_conflict_is_not_settled() {
 
     assert!(bed.local().join("a.txt").exists());
     assert!(err.to_string().contains("cannot settle a.txt"), "{err}");
+}
+
+/// A synced `docs` whose next round deleted `names` on this computer,
+/// because they were deleted on the remote.
+async fn deleted_on_the_remote(bed: &Bed, names: &[&str]) -> syncfast_core::ops::SyncRounds {
+    bed.synced_docs().await;
+    for name in names {
+        fs::remove_file(bed.remote().join(name)).unwrap();
+    }
+    bed.ops.sync_now(Some("docs"), WAIT).await.unwrap()
+}
+
+#[tokio::test]
+async fn a_file_deleted_by_a_round_is_listed_and_restoring_it_brings_it_back() {
+    let Some(bed) = bed() else { return };
+    deleted_on_the_remote(&bed, &["a.txt"]).await;
+
+    let listed = bed.ops.recently_deleted("docs").await.unwrap();
+    let item = &listed.items[0];
+    let restored = bed
+        .ops
+        .restore_deleted("docs", &item.key, item.side)
+        .await
+        .unwrap();
+
+    assert_eq!(listed.items.len(), 1);
+    assert_eq!(listed.warning, None);
+    assert_eq!(
+        (item.side, item.kind, item.path.as_str()),
+        (DeletedSide::Local, DeletedKind::Deleted, "a.txt")
+    );
+    assert!(item.when.is_some());
+    assert_eq!(restored.path, "a.txt");
+    assert!(restored.sync_started);
+    assert_eq!(
+        fs::read_to_string(bed.local().join("a.txt")).unwrap(),
+        "content of a.txt"
+    );
+}
+
+#[tokio::test]
+async fn restoring_where_a_file_is_keeps_both() {
+    let Some(bed) = bed() else { return };
+    deleted_on_the_remote(&bed, &["a.txt"]).await;
+    write(&bed.local().join("a.txt"), "new a");
+    let listed = bed.ops.recently_deleted("docs").await.unwrap();
+    let item = &listed.items[0];
+
+    let restored = bed
+        .ops
+        .restore_deleted("docs", &item.key, item.side)
+        .await
+        .unwrap();
+
+    assert_eq!(item.kind, DeletedKind::Replaced);
+    assert!(
+        restored.path.starts_with("a (restored ") && restored.path.ends_with(").txt"),
+        "{}",
+        restored.path
+    );
+    assert_eq!(
+        fs::read_to_string(bed.local().join(&restored.path)).unwrap(),
+        "content of a.txt"
+    );
+    assert_eq!(
+        fs::read_to_string(bed.local().join("a.txt")).unwrap(),
+        "new a"
+    );
+}
+
+#[tokio::test]
+async fn a_key_that_climbs_out_of_the_versions_folder_restores_nothing() {
+    let Some(bed) = bed() else { return };
+    bed.synced_docs().await;
+    fs::write(bed.root.join("secret.txt"), "secret").unwrap();
+
+    let err = bed
+        .ops
+        .restore_deleted(
+            "docs",
+            "20260301-120000/../../../secret.txt",
+            DeletedSide::Local,
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.exit_code(), 2);
+    assert!(!bed.local().join("secret.txt").exists());
+}
+
+#[tokio::test]
+async fn a_mass_deletion_that_can_come_back_syncs_without_a_review() {
+    let Some(bed) = bed() else { return };
+
+    let synced = deleted_on_the_remote(&bed, &["b.txt", "c.txt", "d.txt"]).await;
+    let listed = bed.ops.recently_deleted("docs").await.unwrap();
+
+    assert!(synced.rounds[0].sync.gate.is_none());
+    assert_eq!(synced.rounds[0].sync.status, "UpToDate");
+    assert!(!bed.local().join("b.txt").exists());
+    let mut paths: Vec<_> = listed.items.iter().map(|item| item.path.as_str()).collect();
+    paths.sort_unstable();
+    assert_eq!(paths, ["b.txt", "c.txt", "d.txt"]);
+}
+
+#[tokio::test]
+async fn a_mass_deletion_with_no_way_back_still_waits_for_the_user() {
+    let Some(bed) = bed() else { return };
+    user_sets(&bed, &SettingScope::Defaults, "versions", "false").await;
+
+    let held = deleted_on_the_remote(&bed, &["b.txt", "c.txt", "d.txt"]).await;
+
+    assert_eq!(
+        held.rounds[0]
+            .sync
+            .gate
+            .as_ref()
+            .map(|gate| gate.kind.as_str()),
+        Some("too_many_deletes")
+    );
+    assert!(bed.local().join("b.txt").exists());
 }
 
 #[tokio::test]
@@ -1576,7 +1698,8 @@ async fn confirm_review_and_the_automatic_check_use_the_same_deletes_rule() {
             auto_review(
                 ReviewLevel::Deletions,
                 GateKind::TooManyDeletes,
-                &review.counts
+                &review.counts,
+                false
             ),
             by_level
         );

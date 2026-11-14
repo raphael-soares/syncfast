@@ -9,10 +9,11 @@ use syncfast_core::bisync_log::ChangeKind;
 use syncfast_core::ops::{
     AccountView, AddedSync, BackupCreated, BackupDetail, BackupRun, BackupSaved, BackupView,
     BackupsToggled, ConfirmedReview, ConflictView, Exploration, FilterTestView, FiltersSaved,
-    FolderList, FolderMade, PairDetail, PairView, RemovedSync, Resolved, ReviewView, RoundLog,
-    RoundView, SettingChanged, SettingView, SettingsView, SnapshotFiles, SyncRounds, ThemeInfo,
-    ThemeSet, Toggled, TransferReport,
+    FolderList, FolderMade, PairDetail, PairView, RemovedSync, Resolved, Restored, ReviewView,
+    RoundLog, RoundView, SettingChanged, SettingView, SettingsView, SnapshotFiles, SyncRounds,
+    ThemeInfo, ThemeSet, Toggled, TransferReport,
 };
+use syncfast_core::recently_deleted::{DeletedKind, DeletedList, DeletedSide};
 
 fn day(at: Timestamp) -> String {
     at.strftime("%Y-%m-%d").to_string()
@@ -404,6 +405,52 @@ pub fn resolved(resolved: &Resolved) -> String {
         }
     );
     if let Some(warning) = &resolved.warning {
+        warnings(&mut out, std::slice::from_ref(warning));
+    }
+    out
+}
+
+pub fn deleted(list: &DeletedList) -> String {
+    let mut out = String::new();
+    for item in &list.items {
+        let side = match item.side {
+            DeletedSide::Local => "local",
+            DeletedSide::Remote => "remote",
+            DeletedSide::Drive => "drive",
+        };
+        let kind = match item.kind {
+            DeletedKind::Deleted => "deleted",
+            DeletedKind::Replaced => "replaced",
+        };
+        let _ = writeln!(
+            out,
+            "{side}\t{}\t{kind}\t{}\t{}",
+            item.when
+                .map_or_else(|| "-".to_owned(), |at| at.to_string()),
+            item.path,
+            item.key
+        );
+    }
+    if list.items.is_empty() {
+        out.push_str("Nothing deleted recently.\n");
+    }
+    if let Some(warning) = &list.warning {
+        warnings(&mut out, std::slice::from_ref(warning));
+    }
+    out
+}
+
+pub fn restored(restored: &Restored) -> String {
+    let mut out = format!(
+        "Restored to {}.{}\n",
+        restored.path,
+        if restored.sync_started {
+            " A sync was started."
+        } else {
+            ""
+        }
+    );
+    if let Some(warning) = &restored.warning {
         warnings(&mut out, std::slice::from_ref(warning));
     }
     out
