@@ -71,6 +71,7 @@ fn new_sync() -> NewSync {
         remote: "devremote:".into(),
         presets: vec!["system_junk".into()],
         filters: Vec::new(),
+        mode: SyncMode::Bisync,
     }
 }
 
@@ -318,6 +319,77 @@ fn a_sync_the_config_refuses_keeps_the_sheet_open_for_another_try() {
     assert!(sheets.is_open());
 }
 
+fn new_sync_in(remote: &str) -> NewSync {
+    NewSync {
+        remote: remote.into(),
+        ..new_sync()
+    }
+}
+
+#[test]
+fn a_missing_drive_folder_is_made_before_the_sync_is_created() {
+    let mut sheets = sheets();
+    sheets.apply(&Action::AddSync, &around(&[], false));
+    let new = new_sync_in("devremote:Docs/Notes");
+
+    let made = sheets.apply(
+        &Action::AddSyncSheet(AddSyncAction::Create(new.clone())),
+        &around(&[], false),
+    );
+    let created = sheets.handle_event(&Event::RemoteDirMade {
+        path: "devremote:Docs/Notes".into(),
+        result: Ok(()),
+    });
+
+    assert_eq!(
+        made,
+        [Command::MakeRemoteDir("devremote:Docs/Notes".into())]
+    );
+    assert_eq!(created, [Command::CreateSync(new)]);
+}
+
+#[test]
+fn a_drive_folder_the_listing_showed_is_not_made_again() {
+    let mut sheets = sheets();
+    sheets.apply(&Action::AddSync, &around(&[], false));
+    sheets.handle_event(&Event::Dirs {
+        path: "devremote:".into(),
+        result: Ok(vec!["Docs".into()]),
+    });
+    let new = new_sync_in("devremote:Docs");
+
+    let commands = sheets.apply(
+        &Action::AddSyncSheet(AddSyncAction::Create(new.clone())),
+        &around(&[], false),
+    );
+
+    assert_eq!(commands, [Command::CreateSync(new)]);
+}
+
+#[test]
+fn a_failed_mkdir_creates_nothing_and_lets_the_user_try_again() {
+    let mut sheets = sheets();
+    sheets.apply(&Action::AddSync, &around(&[], false));
+    let new = new_sync_in("devremote:Docs");
+    sheets.apply(
+        &Action::AddSyncSheet(AddSyncAction::Create(new.clone())),
+        &around(&[], false),
+    );
+
+    let failed = sheets.handle_event(&Event::RemoteDirMade {
+        path: "devremote:Docs".into(),
+        result: Err("permission denied".into()),
+    });
+    let again = sheets.apply(
+        &Action::AddSyncSheet(AddSyncAction::Create(new)),
+        &around(&[], false),
+    );
+
+    assert_eq!(failed, []);
+    assert_eq!(again, [Command::MakeRemoteDir("devremote:Docs".into())]);
+    assert!(sheets.is_open());
+}
+
 #[test]
 fn get_started_without_an_account_chains_account_then_add_sync_then_review() {
     let mut sheets = sheets();
@@ -331,6 +403,7 @@ fn get_started_without_an_account_chains_account_then_add_sync_then_review() {
         name: "gdrive".into(),
         kind: "drive".into(),
         own_client_id: true,
+        email: None,
     }]));
     let wizard = sheets.handle_event(&Event::Connected(Ok("gdrive".into())));
     let created = sheets.apply(
@@ -411,6 +484,27 @@ fn cancelling_the_account_of_the_welcome_screen_closes_everything() {
 
     assert_eq!(commands, []);
     assert!(!sheets.is_open());
+}
+
+#[test]
+fn the_client_file_is_picked_or_read_by_the_backend() {
+    let mut sheets = sheets();
+    sheets.apply(&Action::AddAccount, &around(&[], true));
+
+    let picked = sheets.apply(
+        &Action::Account(AccountAction::PickJson),
+        &around(&[], true),
+    );
+    let dropped = sheets.apply(
+        &Action::Account(AccountAction::JsonDropped("/tmp/client.json".into())),
+        &around(&[], true),
+    );
+
+    assert_eq!(picked, [Command::PickClientJson]);
+    assert_eq!(
+        dropped,
+        [Command::ReadClientJson("/tmp/client.json".into())]
+    );
 }
 
 #[test]

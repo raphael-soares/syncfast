@@ -258,7 +258,9 @@ fn picking_the_choice_already_set_asks_for_nothing() {
         .get_by_role_and_label(Role::ComboBox, "The losing version")
         .click();
     harness.run();
-    harness.get_by_label("Rename as .conflictN").click();
+    harness
+        .get_by_label("Keep it with a number in its name")
+        .click();
     harness.run();
 
     assert!(harness.state().actions.is_empty());

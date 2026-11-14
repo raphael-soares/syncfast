@@ -40,9 +40,9 @@ impl StepState {
 }
 
 const STEPS: [&str; 3] = [
-    "Connect your Google account",
+    "Connect Google Drive",
     "Choose a folder",
-    "Review the first sync",
+    "Check what will happen",
 ];
 
 const REVIEWED_AUTOMATICALLY: &str = "Review confirmed automatically, so syncing started.";

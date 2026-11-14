@@ -2,16 +2,19 @@
 //! folder checks and the files the confirmation leaves for the next round.
 //! The backend runs these and turns the results into events.
 
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::path::Path;
 use std::time::Duration;
 
 use jiff::Zoned;
+use syncfast_core::account_labels;
 use syncfast_core::backup::destination::Destination;
 use syncfast_core::backup::state::BackupState;
 use syncfast_core::behavior::{Behavior, ReviewLevel, SyncMode};
 use syncfast_core::bisync::{Fault, ReviewKind, fault_of};
-use syncfast_core::config::{Config, Pair, expand_tilde, split_remote};
+use syncfast_core::config::{Config, Pair, SettingScope, expand_tilde, split_remote};
+use syncfast_core::drive_changes::account_email;
 use syncfast_core::network::NetworkManager;
 use syncfast_core::notify::NativeNotifier;
 use syncfast_core::paths::Paths;
@@ -34,24 +37,116 @@ pub enum PreviewFailure {
     Failed(String),
 }
 
-/// Every remote with its type and whether a Drive one has its own client ID.
+/// Every remote with its type, its email when known, and whether a Drive one
+/// has its own client ID.
 ///
 /// # Errors
 /// rclone cannot list the remotes or read its config.
-pub async fn load_remotes(rclone: &Rclone) -> Result<Vec<RemoteRow>, String> {
+pub async fn load_remotes(paths: &Paths, rclone: &Rclone) -> Result<Vec<RemoteRow>, String> {
     let kinds = rclone.remote_types().await.map_err(|e| e.to_string())?;
     let shared = rclone
         .drive_remotes_without_own_client_id()
         .await
         .map_err(|e| e.to_string())?;
+    let mut emails = load_emails(paths).await;
     Ok(kinds
         .into_iter()
         .map(|(name, kind)| RemoteRow {
             own_client_id: !shared.contains(&name),
+            email: emails.remove(&name),
             name,
             kind,
         })
         .collect())
+}
+
+async fn load_emails(paths: &Paths) -> BTreeMap<String, String> {
+    let paths = paths.clone();
+    tokio::task::spawn_blocking(move || account_labels::load(&paths))
+        .await
+        .unwrap_or_default()
+}
+
+/// Whether the email of `name` is already known.
+pub async fn knows_email(paths: &Paths, name: &str) -> bool {
+    load_emails(paths).await.contains_key(name)
+}
+
+/// Asks Google for the email of `name` and keeps it. The email only labels
+/// the account, so a failure is logged and the sign-in goes on.
+pub async fn remember_email(paths: &Paths, rclone: &Rclone, name: &str) {
+    let found = match rclone.drive_token(name).await {
+        Ok(Some(token)) => tokio::task::spawn_blocking(move || account_email(&token.access_token))
+            .await
+            .map_err(|err| err.to_string())
+            .and_then(|found| found.map_err(|err| err.to_string())),
+        Ok(None) => Ok(None),
+        Err(err) => Err(err.to_string()),
+    };
+    let email = match found {
+        Ok(Some(email)) => email,
+        Ok(None) => return,
+        Err(text) => {
+            log::debug!("cannot read the email of \"{name}\": {text}");
+            return;
+        }
+    };
+    let (paths, name) = (paths.clone(), name.to_owned());
+    let saved =
+        tokio::task::spawn_blocking(move || account_labels::save(&paths, &name, &email)).await;
+    if let Ok(Err(err)) = saved {
+        log::debug!("cannot keep the email of an account: {err}");
+    }
+}
+
+/// Forgets the email of `name`; the account is gone or renamed.
+pub async fn forget_email(paths: &Paths, name: &str) {
+    let (paths, name) = (paths.clone(), name.to_owned());
+    let forgotten =
+        tokio::task::spawn_blocking(move || account_labels::forget(&paths, &name)).await;
+    if let Ok(Err(err)) = forgotten {
+        log::debug!("cannot forget the email of an account: {err}");
+    }
+}
+
+const NOT_A_CLIENT_FILE: &str = "This is not a Google client file.";
+
+/// The client ID and secret of a Google client file, as Google Cloud
+/// downloads it (`installed` for a Desktop app, `web` for the other kind).
+///
+/// # Errors
+/// The text is not a Google client file, or it has no secret.
+pub fn parse_client_json(text: &str) -> Result<(String, Secret), String> {
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|_| NOT_A_CLIENT_FILE.to_owned())?;
+    let client = value
+        .get("installed")
+        .or_else(|| value.get("web"))
+        .ok_or_else(|| NOT_A_CLIENT_FILE.to_owned())?;
+    let field = |key: &str| {
+        client
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+    };
+    let client_id = field("client_id").ok_or_else(|| NOT_A_CLIENT_FILE.to_owned())?;
+    let secret = field("client_secret").ok_or_else(|| {
+        "This client file has no secret. Download it again from Google Cloud.".to_owned()
+    })?;
+    Ok((client_id.to_owned(), Secret::new(secret.to_owned())))
+}
+
+/// Reads and parses the Google client file at `path`.
+///
+/// # Errors
+/// See [`parse_client_json`]; a file that cannot be read is not a client
+/// file either.
+pub async fn read_client_json(path: &Path) -> Result<(String, Secret), String> {
+    let text = tokio::fs::read_to_string(path)
+        .await
+        .map_err(|_| NOT_A_CLIENT_FILE.to_owned())?;
+    parse_client_json(&text)
 }
 
 /// The folder names directly inside `remote_path`, sorted.
@@ -113,6 +208,7 @@ pub async fn create_sync(
 ) -> Result<ReviewLevel, String> {
     let mut config = Config::load(paths).await.map_err(|e| e.to_string())?;
     let id = new.id.clone();
+    let mode = new.mode;
     let pair = Pair {
         id: new.id,
         name: new.name,
@@ -123,17 +219,25 @@ pub async fn create_sync(
         filters: new.filters,
         overrides: syncfast_core::settings::Overrides::default(),
     };
-    config.add_pair(pair.clone()).map_err(|e| e.to_string())?;
+    let add = |config: &mut Config| -> Result<(), String> {
+        config.add_pair(pair.clone()).map_err(|e| e.to_string())?;
+        if mode != SyncMode::Bisync {
+            config
+                .set_setting(&SettingScope::Sync(id.clone()), "mode", mode.name())
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    };
+    add(&mut config)?;
     let accounts = rclone.listremotes().await.map_err(|e| e.to_string())?;
     let validation = config.validate(paths, &accounts);
     if let Some(error) = validation.errors.iter().find(|error| error.pair_id == id) {
         return Err(error.message.clone());
     }
     let review = Behavior::for_pair(&config.defaults(), &pair).review;
-    Config::edit(paths, |config| config.add_pair(pair))
+    Config::edit(paths, add)
         .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())??;
     Ok(review)
 }
 
@@ -514,6 +618,47 @@ mod tests {
         )
     }
 
+    #[test]
+    fn a_desktop_or_web_client_file_gives_its_id_and_secret() {
+        for kind in ["installed", "web"] {
+            let text = format!(
+                r#"{{"{kind}":{{"client_id":"123-abc.apps.googleusercontent.com","project_id":"p","client_secret":"GOCSPX-s","redirect_uris":["http://localhost"]}}}}"#
+            );
+
+            let (id, secret) = parse_client_json(&text).unwrap();
+
+            assert_eq!(id, "123-abc.apps.googleusercontent.com", "{kind}");
+            assert_eq!(secret.expose(), "GOCSPX-s", "{kind}");
+        }
+    }
+
+    #[test]
+    fn a_client_file_without_a_secret_asks_to_download_it_again() {
+        let refused = parse_client_json(
+            r#"{"installed":{"client_id":"123-abc.apps.googleusercontent.com"}}"#,
+        );
+
+        assert_eq!(
+            refused.unwrap_err(),
+            "This client file has no secret. Download it again from Google Cloud."
+        );
+    }
+
+    #[test]
+    fn any_other_file_is_not_a_google_client_file() {
+        for text in [
+            "not json",
+            r#"{"type":"service_account","client_id":"1"}"#,
+            r#"{"installed":{"client_secret":"s"}}"#,
+        ] {
+            assert_eq!(
+                parse_client_json(text).unwrap_err(),
+                "This is not a Google client file.",
+                "{text}"
+            );
+        }
+    }
+
     fn write_config(paths: &Paths, text: &str) {
         let file = paths.config_file();
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -571,6 +716,7 @@ mod tests {
             remote: remote.into(),
             presets: vec!["system_junk".into()],
             filters: vec!["- *.bak".into()],
+            mode: SyncMode::Bisync,
         }
     }
 
@@ -834,19 +980,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remotes_come_with_their_type_and_drive_remotes_say_whether_the_client_is_their_own() {
+    async fn remotes_come_with_their_type_their_email_and_whether_the_client_is_their_own() {
         let dir = tempfile::tempdir().unwrap();
         let config = "[dev]\ntype = local\n\n[shared]\ntype = drive\n\n[own]\ntype = drive\nclient_id = 1.apps\nclient_secret = x\n";
         let Some(rclone) = rclone_with(dir.path(), config) else {
             return;
         };
+        let paths = paths_in(dir.path());
+        account_labels::save(&paths, "own", "ada@example.com").unwrap();
 
-        let remotes = load_remotes(&rclone).await.unwrap();
+        let remotes = load_remotes(&paths, &rclone).await.unwrap();
 
         let row = |name: &str| remotes.iter().find(|r| r.name == name).unwrap().clone();
         assert_eq!(remotes.len(), 3);
         assert!(row("dev").kind == "local" && !row("dev").shares_client_id());
         assert!(row("shared").shares_client_id());
+        assert_eq!(row("own").email.as_deref(), Some("ada@example.com"));
+        assert_eq!(row("dev").email, None);
         assert!(row("own").is_drive() && !row("own").shares_client_id());
     }
 
@@ -896,6 +1046,29 @@ mod tests {
         );
         assert_eq!(saved.presets, ["system_junk"]);
         assert_eq!(saved.filters, ["- *.bak"]);
+    }
+
+    #[tokio::test]
+    async fn a_copy_to_drive_sync_is_saved_with_the_upload_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        let Some(rclone) = rclone_with(dir.path(), "[dev]\ntype = local\n") else {
+            return;
+        };
+        let local = dir.path().join("local");
+        std::fs::create_dir_all(&local).unwrap();
+        let new = NewSync {
+            mode: SyncMode::Upload,
+            ..new_sync("dev", local, "dev:")
+        };
+
+        create_sync(&paths, &rclone, new).await.unwrap();
+
+        let config = Config::load(&paths).await.unwrap();
+        let behavior = Behavior::for_pair(&config.defaults(), &config.pairs()[0]);
+        assert_eq!(behavior.mode, SyncMode::Upload);
+        let text = std::fs::read_to_string(paths.config_file()).unwrap();
+        assert!(text.contains("mode = \"upload\""), "{text}");
     }
 
     #[tokio::test]

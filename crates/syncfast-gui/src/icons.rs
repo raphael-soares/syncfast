@@ -28,6 +28,7 @@ fastframe_icons::icons! {
         FolderSync => "folder-sync",
         HardDrive => "hard-drive",
         History => "history",
+        Info => lucide "info",
         KeyRound => "key-round",
         LogOut => lucide "log-out",
         Palette => "palette",

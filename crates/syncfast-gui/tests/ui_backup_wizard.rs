@@ -133,17 +133,21 @@ fn no_key_storage_blocks_the_first_step_and_says_why() {
 }
 
 #[test]
-fn the_host_keyring_comes_with_a_note() {
+fn the_host_keyring_comes_with_a_note_and_the_guide() {
     let (sheet, _) = BackupSheet::wizard(Flow::New);
     let mut rig = Rig::new(sheet);
     rig.sheet
         .borrow_mut()
         .on_key_storage(&Ok(KeyBackend::HostKeyring));
-
     settle(&mut rig.harness);
 
-    rig.harness
-        .get_by_label("Using the host keyring. See docs/guide/backup.md.");
+    rig.harness.get_by_label("Using the host keyring.");
+    rig.harness.get_by_label("Backup Guide").click();
+    settle(&mut rig.harness);
+
+    assert!(rig.harness.state().actions.contains(&Action::OpenUrl(
+        "https://github.com/raphael-soares/syncfast/blob/main/docs/guide/backup.md".into()
+    )));
 }
 
 #[test]

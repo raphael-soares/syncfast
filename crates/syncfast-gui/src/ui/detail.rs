@@ -3,6 +3,7 @@
 use egui::{Frame, Id, Margin, RichText, Ui};
 use syncfast_core::behavior::SyncMode;
 use syncfast_core::bisync_log::Progress;
+use syncfast_core::config::split_remote;
 use syncfast_core::notify::attention_body;
 use syncfast_core::state::{DisplayStatus, GateKind};
 use syncfast_core::watch::WATCH_LIMIT_NOTICE;
@@ -24,10 +25,10 @@ const SIDE: i8 = 20;
 /// What the detail shows under the status card.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum DetailTab {
-    #[default]
     RecentlyDeleted,
     Conflicts,
     Filters,
+    #[default]
     Options,
 }
 
@@ -106,6 +107,35 @@ pub(super) fn just_opened(ctx: &egui::Context, tab: DetailTab, pair_id: &str) ->
     previous.is_none_or(|previous| previous.saturating_add(1) < frame)
 }
 
+fn local_label(vm: &ViewModel, pair: &PairRow) -> String {
+    match pair.local.strip_prefix(&vm.home) {
+        Ok(rest) if !vm.home.as_os_str().is_empty() => {
+            if rest.as_os_str().is_empty() {
+                "~".to_owned()
+            } else {
+                format!("~/{}", rest.display())
+            }
+        }
+        _ => pair.local.display().to_string(),
+    }
+}
+
+fn remote_label(vm: &ViewModel, pair: &PairRow) -> String {
+    let drive = split_remote(&pair.remote).and_then(|(account, folder)| {
+        let row = vm
+            .remotes
+            .iter()
+            .find(|remote| remote.name == account && remote.kind == "drive")?;
+        let drive = format!("Google Drive ({})", row.label());
+        Some(if folder.is_empty() {
+            drive
+        } else {
+            format!("{drive}/{folder}")
+        })
+    });
+    drive.unwrap_or_else(|| pair.remote.clone())
+}
+
 fn pair_detail(ui: &mut Ui, vm: &ViewModel, pair: &PairRow, palette: &Palette) -> Vec<Action> {
     let mut actions = Vec::new();
     let sync_mode = pair.effective.behavior.mode;
@@ -114,7 +144,11 @@ fn pair_detail(ui: &mut Ui, vm: &ViewModel, pair: &PairRow, palette: &Palette) -
         SyncMode::Upload | SyncMode::MirrorUp => "\u{2192}",
         SyncMode::Download | SyncMode::MirrorDown => "\u{2190}",
     };
-    let subtitle = format!("{} {arrow} {}", pair.local.display(), pair.remote);
+    let subtitle = format!(
+        "{} {arrow} {}",
+        local_label(vm, pair),
+        remote_label(vm, pair)
+    );
     toolbar(ui, &pair.name, &subtitle, |ui| {
         let more = icon_button(ui, Icon::Ellipsis, "More");
         more_menu(&more, pair, palette, &mut actions);

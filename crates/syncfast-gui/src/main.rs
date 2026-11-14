@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::Context as _;
@@ -8,26 +9,35 @@ use syncfast_gui::app::{App, app_id};
 use syncfast_gui::app_settings;
 use syncfast_gui::backend;
 use syncfast_gui::gui_state::{self, GuiState};
-use syncfast_gui::instance::{self, Inbox};
+use syncfast_gui::instance::{self, Inbox, Request};
 use syncfast_gui::theme::{Themes, size};
 
 const WINDOW_ICON: &[u8] = include_bytes!("../assets/app-icon/syncfast-256.png");
 const LOG_FILTER: &str = "warn,zbus=error,syncfast_gui=info,syncfast_core=info";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+const USAGE: &str = "usage: syncfast-gui [--start-hidden | reload-themes | add-sync <folder>]";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Launch {
     Open,
     StartHidden,
     ReloadThemes,
+    AddSync(PathBuf),
 }
 
-/// `syncfast-gui [--start-hidden | reload-themes]`.
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Launch, String> {
     let mut args = args.into_iter();
     let launch = match args.next().as_deref() {
         None => Launch::Open,
         Some("--start-hidden") => Launch::StartHidden,
         Some("reload-themes") => Launch::ReloadThemes,
+        Some("add-sync") => {
+            let folder = PathBuf::from(args.next().ok_or("add-sync needs a folder")?);
+            if !folder.is_absolute() {
+                return Err(format!("\"{}\" is not an absolute path", folder.display()));
+            }
+            Launch::AddSync(folder)
+        }
         Some(other) => return Err(format!("unknown argument \"{other}\"")),
     };
     match args.next() {
@@ -44,20 +54,20 @@ fn main() -> ExitCode {
     let launch = match parse_args(std::env::args().skip(1)) {
         Ok(launch) => launch,
         Err(message) => {
-            log::error!("{message}; usage: syncfast-gui [--start-hidden | reload-themes]");
+            log::error!("{message}; {USAGE}");
             return ExitCode::from(2);
         }
     };
-    match launch {
-        Launch::ReloadThemes => reload_themes(),
-        Launch::Open | Launch::StartHidden => match run(launch == Launch::StartHidden) {
-            Ok(code) => code,
-            Err(err) => {
-                log::error!("{err:#}");
-                ExitCode::FAILURE
-            }
-        },
-    }
+    let result = match launch {
+        Launch::ReloadThemes => return reload_themes(),
+        Launch::Open => run(false, None),
+        Launch::StartHidden => run(true, None),
+        Launch::AddSync(folder) => run(false, Some(folder)),
+    };
+    result.unwrap_or_else(|err| {
+        log::error!("{err:#}");
+        ExitCode::FAILURE
+    })
 }
 
 fn reload_themes() -> ExitCode {
@@ -79,11 +89,15 @@ fn reload_themes() -> ExitCode {
     }
 }
 
-fn run(start_hidden: bool) -> anyhow::Result<ExitCode> {
+fn run(start_hidden: bool, add_sync: Option<PathBuf>) -> anyhow::Result<ExitCode> {
     let paths = Paths::from_env().context("cannot find the user's folders")?;
     let waker = Waker::default();
     let inbox = Inbox::default();
-    let _claim = match instance::claim(&inbox, &waker) {
+    let message = add_sync.as_ref().map_or_else(
+        || "show".to_owned(),
+        |folder| format!("add-sync {}", folder.display()),
+    );
+    let _claim = match instance::claim(&message, &inbox, &waker) {
         Claim::First(guard) => guard,
         Claim::Running(_) => return Ok(ExitCode::SUCCESS),
         Claim::Declined | Claim::Unanswered => {
@@ -91,6 +105,9 @@ fn run(start_hidden: bool) -> anyhow::Result<ExitCode> {
             return Ok(ExitCode::FAILURE);
         }
     };
+    if let Some(folder) = add_sync {
+        inbox.push(Request::AddSync(folder));
+    }
     let gui = GuiState::load(&gui_state::file(&paths));
     let theme = app_settings::migrate_theme(&paths);
     // Read before the frame loop starts; reloads go through the backend.
@@ -191,6 +208,17 @@ mod tests {
     fn start_hidden_and_reload_themes_are_recognised() {
         assert_eq!(parse(&["--start-hidden"]), Ok(Launch::StartHidden));
         assert_eq!(parse(&["reload-themes"]), Ok(Launch::ReloadThemes));
+    }
+
+    #[test]
+    fn add_sync_takes_one_absolute_folder() {
+        assert_eq!(
+            parse(&["add-sync", "/home/ada/My Notes"]),
+            Ok(Launch::AddSync("/home/ada/My Notes".into()))
+        );
+        assert!(parse(&["add-sync"]).is_err());
+        assert!(parse(&["add-sync", "Notes"]).is_err());
+        assert!(parse(&["add-sync", "/a", "/b"]).is_err());
     }
 
     #[test]

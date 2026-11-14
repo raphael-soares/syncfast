@@ -14,20 +14,21 @@ The window closes to the tray: syncfast keeps running so syncs continue. Use **Q
 
 ## Connect Google Drive
 
-Press **Get Started** and **Add Google Drive Account…**. syncfast needs an OAuth client ID and secret of your own; [Google Drive](google-drive.md) shows how to create them. After you press **Connect**, finish signing in in your browser. The account is saved in rclone's config under the name you chose (`gdrive` by default).
+Press **Get Started**. syncfast needs a Google client of your own; the **Connect Google Drive** sheet walks through creating it and reads the file Google gives you ([Google Drive](google-drive.md) has the details). After you press **Connect**, finish signing in in your browser. syncfast then shows the account by its Google address.
 
 ## Create a sync
 
-1. Press **+** next to **Syncs**, or continue from the welcome screen.
-2. Pick the **Account**, then the folder on Drive (or **Entire gdrive**). **New Folder…** creates one.
-3. Pick the **Folder on This Computer**, or create it.
-4. Name the sync and press **Create Sync**.
+1. Press **+** next to **Syncs**, or continue from the welcome screen. The **New Sync** sheet opens. You can also drop a folder on it.
+2. Pick the **Folder on this computer** with **Choose…**, or type it and create it.
+3. **Folder on Google Drive** takes the same name as that folder; change it, leave it empty for the entire Drive, or **Browse…** your folders. A folder that does not exist yet is created on Drive. With more than one account, pick it first.
+4. Under **Keep**, choose **Both the same** (changes and deletions go both ways) or **A copy on Google Drive** (files go up; nothing on this computer is changed or deleted).
+5. Press **Create Sync**. **Options** holds the filters and the sync's name if you want to change them.
 
 Pick folders that are not inside each other: two syncs cannot overlap, and a synced folder cannot contain syncfast's versions folder.
 
 ## Review the first sync
 
-A new sync is held until you review it. **Review changes** shows, from a dry run, what would be uploaded, downloaded, replaced, renamed or deleted on each side. Nothing is copied before you press **Sync**. When the review would delete files, the button reads **Delete and Sync**; read that list first. A review after an error can bring back files you deleted or renamed since the last sync; they are listed under **Would come back**.
+A new sync is held until you check it. **Check Before Syncing** opens with one line that says how many files would be copied, replaced, renamed and deleted, and lists them by kind below; deletions are listed open, the rest opens on a click. It comes from a dry run, and nothing is copied before you press **Sync**. When the review would delete files, the button reads **Delete and Sync**; read that list first. A review after an error can bring back files you deleted or renamed since the last sync; they are listed under **Would come back**.
 
 Afterwards the status reads **Up to date** and syncfast runs a round seconds after files change on this computer, within a minute of a change on Drive, after the computer wakes or the network comes back, and as a safety net every hour by default. **Sync Now** runs one immediately. Change these in the **Options** tab of a sync, or for all syncs in **Settings › Defaults**.
 

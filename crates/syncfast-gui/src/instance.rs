@@ -3,6 +3,7 @@
 
 use std::collections::VecDeque;
 use std::io;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use fastframe_instance::{Claim, Slot};
@@ -20,6 +21,9 @@ pub enum Request {
     Notify(Notice),
     /// The user clicked the notification of this sync.
     Opened(String),
+    /// `Sync with Google Drive…` in the file manager: a new sync of this
+    /// folder.
+    AddSync(PathBuf),
 }
 
 impl Request {
@@ -30,6 +34,10 @@ impl Request {
         match text {
             "show" => Some(Self::Show),
             "reload-themes" => Some(Self::ReloadThemes),
+            _ if text.starts_with("add-sync ") => {
+                let path = PathBuf::from(&text["add-sync ".len()..]);
+                path.is_absolute().then_some(Self::AddSync(path))
+            }
             _ => {
                 let notice: Notice = serde_json::from_str(text.strip_prefix("notify ")?).ok()?;
                 let id = notice
@@ -65,17 +73,18 @@ impl Inbox {
     }
 }
 
-/// Becomes the running copy, or hands "show" to the one already running.
-/// While the claim lives, later requests land in `inbox` and wake the app.
+/// Becomes the running copy, or hands `message` ("show" or "add-sync
+/// <path>") to the one already running. While the claim lives, later
+/// requests land in `inbox` and wake the app.
 #[must_use]
-pub fn claim(inbox: &Inbox, waker: &Waker) -> Claim {
-    claim_on(&Slot::new(SLOT), inbox, waker)
+pub fn claim(message: &str, inbox: &Inbox, waker: &Waker) -> Claim {
+    claim_on(&Slot::new(SLOT), message, inbox, waker)
 }
 
-fn claim_on(slot: &Slot, inbox: &Inbox, waker: &Waker) -> Claim {
+fn claim_on(slot: &Slot, message: &str, inbox: &Inbox, waker: &Waker) -> Claim {
     let inbox = inbox.clone();
     let waker = waker.clone();
-    slot.claim("show", move |text| {
+    slot.claim(message, move |text| {
         let request = Request::parse(text)?;
         inbox.push(request);
         waker.wake();
@@ -145,6 +154,16 @@ mod tests {
     }
 
     #[test]
+    fn add_sync_takes_an_absolute_folder_and_refuses_a_relative_one() {
+        assert_eq!(
+            Request::parse("add-sync /home/ada/My Notes"),
+            Some(Request::AddSync("/home/ada/My Notes".into()))
+        );
+        assert_eq!(Request::parse("add-sync Notes"), None);
+        assert_eq!(Request::parse("add-sync "), None);
+    }
+
+    #[test]
     fn unknown_verbs_and_invalid_sync_ids_are_declined() {
         assert_eq!(Request::parse("quit"), None);
         assert_eq!(Request::parse("notify"), None);
@@ -172,7 +191,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let slot = Slot::at(dir.path(), "syncfast-test");
         let inbox = Inbox::default();
-        let first = claim_on(&slot, &inbox, &Waker::default());
+        let first = claim_on(&slot, "show", &inbox, &Waker::default());
         assert!(matches!(first, Claim::First(_)));
 
         let reply = slot.send(&request("drive")).unwrap();

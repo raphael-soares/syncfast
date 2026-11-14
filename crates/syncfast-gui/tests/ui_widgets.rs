@@ -8,9 +8,9 @@ use syncfast_gui::icons::Icon;
 use syncfast_gui::theme::{self, Palette, ThemeChoice, Themes};
 use syncfast_gui::ui::widgets::{
     AlertButton, BadgeSize, FolderNode, FolderTree, NodeState, PrimaryKind, SheetAction,
-    SheetButtons, SidebarRow, TreeAction, alert, destructive_button, folder_tree, icon_button,
-    inline_error, progress_bar, segmented, setting_row, sheet, sidebar_row, status_badge, switch,
-    text_field,
+    SheetButtons, SidebarRow, TreeAction, alert, destructive_button, error_with_details,
+    folder_tree, friendly, icon_button, inline_error, progress_bar, segmented, setting_row, sheet,
+    sidebar_row, status_badge, switch, text_field,
 };
 
 /// Installs the theme, and tells whether fonts are usable: `set_fonts` takes
@@ -415,6 +415,56 @@ fn inline_error_shows_its_message() {
             .query_by_label("remote folder overlaps \"Google Drive\"")
             .is_some()
     );
+}
+
+#[test]
+fn known_google_errors_get_plain_words() {
+    let cases = [
+        (
+            "googleapi: Error 403: Google Drive API has not been used in project 123 before or it is disabled., accessNotConfigured",
+            "The Google Drive API is off in your Google Cloud project. Turn it on and try again.",
+        ),
+        (
+            "oauth2: cannot fetch token: 401 Unauthorized Response: {\"error\": \"invalid_client\"}",
+            "Google did not accept this client. Choose the client file again.",
+        ),
+        (
+            "Error 403: access_denied",
+            "Google did not grant access. If your Google Cloud app is in testing, add your account as a test user.",
+        ),
+        (
+            "Get \"https://www.googleapis.com/drive/v3/files\": dial tcp: lookup www.googleapis.com: no such host",
+            "Could not reach Google. Check the network and try again.",
+        ),
+    ];
+
+    for (detail, text) in cases {
+        assert_eq!(friendly(detail), Some(text), "{detail}");
+    }
+    assert_eq!(friendly("directory not found"), None);
+}
+
+#[test]
+fn a_known_error_keeps_the_raw_text_under_details() {
+    let raw = "dial tcp: lookup www.googleapis.com: no such host";
+    let mut harness = harness(|ui, ()| error_with_details(ui, raw), ());
+    harness.run();
+    assert!(harness.query_by_label(raw).is_none());
+
+    harness.get_by_label("Details").click();
+    harness.run();
+
+    harness.get_by_label("Could not reach Google. Check the network and try again.");
+    harness.get_by_label(raw);
+}
+
+#[test]
+fn an_unknown_error_is_shown_as_it_is_without_details() {
+    let mut harness = harness(|ui, ()| error_with_details(ui, "directory not found"), ());
+    harness.run();
+
+    harness.get_by_label("directory not found");
+    assert!(harness.query_by_label("Details").is_none());
 }
 
 #[test]

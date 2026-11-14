@@ -9,6 +9,7 @@ from syncfast_nautilus import (  # noqa: E402
     MAX_DIRECTORIES,
     DirectoryCache,
     StatusCache,
+    add_sync_target,
     ago,
     changed_paths,
     column_text,
@@ -66,6 +67,31 @@ class EmblemTest(unittest.TestCase):
 
         self.assertIsNone(gone.emblem("/home/u/Drive"))
         self.assertIsNone(gone.sync_target(["/home/u/Drive/a"]))
+
+
+class AddSyncTargetTest(unittest.TestCase):
+    def test_one_folder_outside_every_sync_is_offered(self):
+        self.assertEqual(
+            add_sync_target(cache(), [("/home/u/Photos", True)]), "/home/u/Photos"
+        )
+
+    def test_a_folder_inside_a_sync_or_holding_one_is_not(self):
+        for path in ["/home/u/Drive", "/home/u/Drive/sub", "/home/u", "/home/u/Notes"]:
+            with self.subTest(path=path):
+                self.assertIsNone(add_sync_target(cache(), [(path, True)]))
+
+    def test_a_file_two_items_or_a_remote_location_are_not(self):
+        self.assertIsNone(add_sync_target(cache(), [("/home/u/a.txt", False)]))
+        self.assertIsNone(
+            add_sync_target(cache(), [("/home/u/A", True), ("/home/u/B", True)])
+        )
+        self.assertIsNone(add_sync_target(cache(), [(None, True)]))
+
+    def test_without_the_service_a_folder_is_still_offered(self):
+        self.assertEqual(
+            add_sync_target(StatusCache(), [("/home/u/Drive", True)]),
+            "/home/u/Drive",
+        )
 
 
 class SyncTargetTest(unittest.TestCase):

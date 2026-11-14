@@ -27,6 +27,7 @@ pub mod welcome;
 pub mod widgets;
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use jiff::Timestamp;
@@ -136,9 +137,17 @@ pub struct RemoteRow {
     pub kind: String,
     /// Only meaningful for `drive`: the remote has its own `client_id`.
     pub own_client_id: bool,
+    /// The Google account's address, once read after a sign-in.
+    pub email: Option<String>,
 }
 
 impl RemoteRow {
+    /// How the screens name the account: its email, else its rclone name.
+    #[must_use]
+    pub fn label(&self) -> &str {
+        self.email.as_deref().unwrap_or(&self.name)
+    }
+
     #[must_use]
     pub fn is_drive(&self) -> bool {
         self.kind == "drive"
@@ -209,6 +218,8 @@ pub struct ViewModel {
     /// The version of the restic that runs the backups; `None` when it is
     /// not found.
     pub restic_version: Option<String>,
+    /// Shown as `~` in paths.
+    pub home: PathBuf,
 }
 
 impl ViewModel {
@@ -290,6 +301,8 @@ pub enum Action {
     ResizeSidebar(f32),
     /// Opens the Add Sync sheet.
     AddSync,
+    /// Opens the Add Sync sheet on this folder.
+    AddSyncAt(PathBuf),
     NewBackup,
     AddExistingBackup,
     /// Asks to show the key of a backup (the alert decides; a backup whose

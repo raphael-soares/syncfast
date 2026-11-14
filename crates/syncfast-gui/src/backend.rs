@@ -48,7 +48,7 @@ use crate::pair_tools;
 use crate::sheet_io::{self, PreviewFailure};
 use crate::snapshot::{self, Snapshot};
 use crate::theme::Themes;
-use crate::ui::account_sheet::{AccountMode, ConnectRequest, Secret};
+use crate::ui::account_sheet::{AccountMode, ConnectRequest, Secret, next_account_name};
 use crate::ui::add_sync::{LocalFacts, NewSync};
 use crate::ui::{AccountStatus, RemoteRow};
 use syncfast_core::runs::{self, RunEntry};
@@ -148,6 +148,10 @@ pub enum Command {
     CreateLocalDir(String),
     /// Open the portal's folder dialog.
     PickFolder,
+    /// Open the file dialog for a Google client file.
+    PickClientJson,
+    /// Read a Google client file dropped on the window.
+    ReadClientJson(PathBuf),
     /// Write a new sync into the config and `apply` it.
     CreateSync(NewSync),
     /// Dry run for the Review sheet. A new one replaces a running one.
@@ -262,6 +266,9 @@ pub enum Event {
         client_id: String,
         client_secret: Secret,
     },
+    /// The client ID and secret read from a Google client file, or why the
+    /// file was refused. A dismissed dialog sends nothing.
+    ClientJson(Result<(String, Secret), String>),
     /// The sign-in ended: the account's name, or rclone's last error line.
     /// A cancelled sign-in sends nothing.
     Connected(Result<String, String>),
@@ -530,6 +537,8 @@ async fn run(
                     Command::CheckLocal(typed) => spawn_check_local(&context, typed),
                     Command::CreateLocalDir(typed) => spawn_create_local(&context, typed),
                     Command::PickFolder => spawn_pick_folder(&context),
+                    Command::PickClientJson => spawn_pick_client_json(&context),
+                    Command::ReadClientJson(path) => spawn_read_client_json(&context, path),
                     Command::CreateSync(new) => spawn_create_sync(&context, new),
                     Command::Preview { pair_id, kind } => spawn_preview(&context, pair_id, kind),
                     Command::CancelPreview => abort_preview(&context),
@@ -1272,7 +1281,7 @@ fn rclone() -> Result<Rclone, String> {
 
 async fn publish_remotes(context: &Context) {
     let loaded = match rclone() {
-        Ok(rclone) => sheet_io::load_remotes(&rclone).await,
+        Ok(rclone) => sheet_io::load_remotes(&context.paths, &rclone).await,
         Err(text) => Err(text),
     };
     match loaded {
@@ -1342,6 +1351,37 @@ fn spawn_pick_folder(context: &Arc<Context>) {
         let path = picked.map(|handle| handle.path().to_path_buf());
         context.emitter.send(Event::FolderPicked(path));
     });
+}
+
+fn spawn_pick_client_json(context: &Arc<Context>) {
+    let context = Arc::clone(context);
+    guarded(
+        context.emitter.clone(),
+        "choosing a client file",
+        async move {
+            let picked = rfd::AsyncFileDialog::new()
+                .set_title("Choose Client File")
+                .add_filter("JSON", &["json"])
+                .pick_file()
+                .await;
+            if let Some(handle) = picked {
+                let result = sheet_io::read_client_json(handle.path()).await;
+                context.emitter.send(Event::ClientJson(result));
+            }
+        },
+    );
+}
+
+fn spawn_read_client_json(context: &Arc<Context>, path: PathBuf) {
+    let context = Arc::clone(context);
+    guarded(
+        context.emitter.clone(),
+        "reading a client file",
+        async move {
+            let result = sheet_io::read_client_json(&path).await;
+            context.emitter.send(Event::ClientJson(result));
+        },
+    );
 }
 
 fn spawn_create_sync(context: &Arc<Context>, new: NewSync) {
@@ -1452,14 +1492,23 @@ fn spawn_connect(context: &Arc<Context>, request: ConnectRequest) {
     context.tasks().connect = Some(cancel);
     let context = Arc::clone(context);
     guarded(context.emitter.clone(), "signing in", async move {
+        let mut request = request;
+        let signed_in = match rclone() {
+            Ok(rclone) => {
+                if request.mode == AccountMode::Add
+                    && let Ok(names) = rclone.listremotes().await
+                    && names.contains(&request.name)
+                {
+                    request.name = next_account_name(names.iter().map(String::as_str));
+                }
+                sheet_io::sign_in(&rclone, &request, cancelled).await
+            }
+            Err(text) => Err(text),
+        };
         let account = request
             .mode
             .remote()
             .map_or_else(|| request.name.clone(), str::to_owned);
-        let signed_in = match rclone() {
-            Ok(rclone) => sheet_io::sign_in(&rclone, &request, cancelled).await,
-            Err(text) => Err(text),
-        };
         match (signed_in, &request.mode) {
             (Ok(true), AccountMode::Rename { from }) => {
                 renamed(&context, from, &request.name).await;
@@ -1474,6 +1523,9 @@ fn spawn_connect(context: &Arc<Context>, request: ConnectRequest) {
 /// A sign-in worked: the remote list changed, and the syncs and backups
 /// that waited for access can run.
 async fn reconnected(context: &Arc<Context>, account: String) {
+    if let Ok(rclone) = rclone() {
+        sheet_io::remember_email(&context.paths, &rclone, &account).await;
+    }
     publish_remotes(context).await;
     let resumed = resume_after_sign_in(&context.paths, &account, round_trigger).await;
     for text in resumed.failures {
@@ -1557,6 +1609,10 @@ async fn renamed(context: &Arc<Context>, from: &str, to: &str) {
             format!("Renamed, but the old account \"{from}\" could not be removed: {text}"),
         );
     }
+    sheet_io::forget_email(&context.paths, from).await;
+    if let Ok(rclone) = rclone() {
+        sheet_io::remember_email(&context.paths, &rclone, to).await;
+    }
     publish_remotes(context).await;
     if let Err(text) = apply_config(&context.paths).await {
         fail(context, text);
@@ -1588,8 +1644,18 @@ fn spawn_check_accounts(context: &Arc<Context>) {
                 });
                 let rclone = rclone.clone();
                 let checked = name.clone();
-                spawn_account_check(&context.emitter, name, async move {
-                    sheet_io::check_account(&rclone, online, &checked).await
+                let context = Arc::clone(&context);
+                spawn_account_check(&context.emitter.clone(), name, async move {
+                    let status = sheet_io::check_account(&rclone, online, &checked).await;
+                    if status == AccountStatus::SignedIn
+                        && !sheet_io::knows_email(&context.paths, &checked).await
+                    {
+                        sheet_io::remember_email(&context.paths, &rclone, &checked).await;
+                        if sheet_io::knows_email(&context.paths, &checked).await {
+                            publish_remotes(&context).await;
+                        }
+                    }
+                    status
                 });
             }
         },
@@ -1654,6 +1720,7 @@ fn spawn_remove_account(context: &Arc<Context>, name: String) {
             };
             match removed {
                 Ok(ids) => {
+                    sheet_io::forget_email(&context.paths, &name).await;
                     publish_remotes(&context).await;
                     if !ids.is_empty() {
                         spawn_sync(&context, ids);
