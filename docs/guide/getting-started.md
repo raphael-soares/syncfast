@@ -27,13 +27,13 @@ Pick folders that are not inside each other: two syncs cannot overlap, and a syn
 
 ## Review the first sync
 
-A new sync is held until you review it. **Review changes** shows, from a dry run, what would be uploaded, downloaded, replaced or deleted on each side. Nothing is copied before you press **Sync**. When the review would delete files, the button reads **Delete and Sync**; read that list first.
+A new sync is held until you review it. **Review changes** shows, from a dry run, what would be uploaded, downloaded, replaced, renamed or deleted on each side. Nothing is copied before you press **Sync**. When the review would delete files, the button reads **Delete and Sync**; read that list first. A review after an error can bring back files you deleted or renamed since the last sync; they are listed under **Would come back**.
 
 Afterwards the status reads **Up to date** and syncfast runs a round seconds after files change on this computer, within a minute of a change on Drive, after the computer wakes or the network comes back, and as a safety net every hour by default. **Sync Now** runs one immediately. Change these in the **Options** tab of a sync, or for all syncs in **Settings › Defaults**.
 
 ## Day to day
 
-- **Activity** lists every round with its counts. Expand one for the file list.
+- **Activity** lists every round with its counts. Expand one for the file list. Renaming a file or folder moves it on the other side and is counted as renamed, never as deleted.
 - **Conflicts** appears when a file changed on both sides. Choose **Keep Current**, **Keep Conflicted Copy** or **Keep Both**.
 - **Filters** keeps files out of the sync: presets for system junk, developer folders and Git repositories (every folder with a `.git` inside, including repos created later; **Test Filters** and the review list them), and custom rules, one per line (`- *.bak` excludes, `+ ` includes). **Test Filters** says how many files a rule leaves out. Saving new filters holds the sync for a new review.
 - **Options** sets how this sync behaves: when it runs, what wins in a conflict, how long replaced files are kept, and when it stops a mass delete. Each row says which default it follows; **Reset to Default** goes back to it. **Settings › Defaults** holds the defaults every sync follows. A sync that is less safe than the built-in values shows **Safety lowered**.
