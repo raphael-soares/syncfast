@@ -96,6 +96,7 @@ fn sidebar_lists_backups_and_selects_one_on_click() {
     vm.pairs = vec![common::pair("drive", "Google Drive")];
     vm.selected = Some("drive".into());
     let mut harness = screen(vm);
+    harness.state_mut().actions.clear();
 
     harness.get_by_label_contains("Documents").click();
     harness.run_steps(4);
@@ -687,6 +688,7 @@ fn the_empty_sidebar_offers_new_backup_twice_and_both_work() {
     let mut vm = view_model(vec![common::pair("drive", "Google Drive")], Some("drive"));
     vm.backups.clear();
     let mut harness = screen(vm);
+    harness.state_mut().actions.clear();
 
     assert_eq!(harness.query_all_by_label("New Backup…").count(), 2);
     for index in 0..2 {
