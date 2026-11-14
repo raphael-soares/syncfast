@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.0](https://github.com/raphael-soares/syncfast/compare/v0.21.0...v0.22.0) (2026-11-14)
+
+
+### Features
+
+* UX do primeiro uso ([#118](https://github.com/raphael-soares/syncfast/issues/118)) ([c32ff2c](https://github.com/raphael-soares/syncfast/commit/c32ff2c1fd7ca82a0c9f6a48e6560fe71c3e357f))
+
 ## [0.21.0](https://github.com/raphael-soares/syncfast/compare/v0.20.1...v0.21.0) (2026-11-14)
 
 
