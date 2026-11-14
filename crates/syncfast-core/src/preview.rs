@@ -10,6 +10,7 @@ use crate::bisync::{ReviewKind, RoundMode, bisync_args, log_file};
 use crate::bisync_log::{Change, ChangeKind, RunSummary, summarize};
 use crate::config::Pair;
 use crate::filters::{self, FiltersFile};
+use crate::listing::{LastSync, last_sync};
 use crate::notify::last_error_message;
 use crate::oneway::{self, oneway_args, summarize_oneway};
 use crate::run::{
@@ -28,6 +29,9 @@ pub struct Preview {
     /// Folders the `git_repos` preset left out of the dry run.
     pub excluded_repos: Vec<String>,
     pub summary: RunSummary,
+    /// The changes of a resync that bring back files deleted or renamed
+    /// since the last good sync; also listed in `summary`.
+    pub returning: Vec<Change>,
 }
 
 impl Preview {
@@ -39,8 +43,25 @@ impl Preview {
             changes: &self.summary.changes,
             excluded_repos: &self.excluded_repos,
             counts: ChangeCounts::of(&self.summary.changes),
+            returning: &self.returning,
         }
     }
+}
+
+/// The resync changes that copy back a file one side had at the last good
+/// sync and no longer has: a download of a file the local listing had, or
+/// an upload of a file the remote listing had.
+#[must_use]
+pub fn coming_back(changes: &[Change], last: &LastSync) -> Vec<Change> {
+    changes
+        .iter()
+        .filter(|change| match change.kind {
+            ChangeKind::Download => last.local.contains(&change.path),
+            ChangeKind::Upload => last.remote.contains(&change.path),
+            _ => false,
+        })
+        .cloned()
+        .collect()
 }
 
 /// How many changes of each kind a preview found.
@@ -53,6 +74,8 @@ pub struct ChangeCounts {
     pub delete_local: u32,
     pub delete_remote: u32,
     pub other: u32,
+    #[serde(default)]
+    pub renamed: u32,
 }
 
 impl ChangeCounts {
@@ -79,6 +102,7 @@ impl ChangeCounts {
                 ChangeKind::DeleteLocal => &mut counts.delete_local,
                 ChangeKind::DeleteRemote => &mut counts.delete_remote,
                 ChangeKind::Other => &mut counts.other,
+                ChangeKind::RenameLocal | ChangeKind::RenameRemote => &mut counts.renamed,
             };
             *slot = slot.saturating_add(1);
         }
@@ -92,6 +116,7 @@ pub struct PreviewReport<'a> {
     pub changes: &'a [Change],
     pub excluded_repos: &'a [String],
     pub counts: ChangeCounts,
+    pub returning: &'a [Change],
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -206,15 +231,22 @@ pub(crate) async fn preview_locked(
         return Err(PreviewError::Failed { exit_code, message });
     }
     let summary = if one_way {
-        summarize_oneway(&changes, behavior.mode, exit_code)
+        summarize_oneway(&changes, &lines, behavior.mode, exit_code)
     } else {
         summarize(&lines)
+    };
+    let returning = match (one_way, kind) {
+        (false, ReviewKind::Resync) => last_sync(&env.paths.bisync_workdir(pair_id))
+            .map(|last| coming_back(&summary.changes, &last))
+            .unwrap_or_default(),
+        _ => Vec::new(),
     };
     Ok(Preview {
         mode: behavior.mode,
         filters_hash: filters_file.hash.clone(),
         excluded_repos: filters_file.git_repos.clone(),
         summary,
+        returning,
     })
 }
 
@@ -223,10 +255,37 @@ mod tests {
     use super::*;
 
     fn change(kind: ChangeKind, path: &str) -> Change {
-        Change {
-            kind,
-            path: path.to_owned(),
-        }
+        Change::new(kind, path)
+    }
+
+    #[test]
+    fn coming_back_is_what_a_resync_copies_to_the_side_that_lost_it() {
+        let last = LastSync {
+            local: ["gone-here.txt", "both.txt"].map(str::to_owned).into(),
+            remote: ["gone-there.txt", "both.txt"].map(str::to_owned).into(),
+        };
+        let changes = [
+            change(ChangeKind::Download, "gone-here.txt"),
+            change(ChangeKind::Upload, "gone-there.txt"),
+            change(ChangeKind::Download, "new-there.txt"),
+            change(ChangeKind::Upload, "new-here.txt"),
+            change(ChangeKind::OverwriteLocal, "both.txt"),
+        ];
+
+        let back = coming_back(&changes, &last);
+
+        assert_eq!(back, changes[..2]);
+    }
+
+    #[test]
+    fn renames_are_counted_apart_and_never_as_deletions() {
+        let counts = ChangeCounts::of(&[
+            change(ChangeKind::RenameLocal, "a"),
+            change(ChangeKind::RenameRemote, "b"),
+        ]);
+
+        assert_eq!(counts.renamed, 2);
+        assert!(!counts.deletes());
     }
 
     #[test]
@@ -316,6 +375,7 @@ mod tests {
                 changes: vec![change(ChangeKind::Download, "x.txt")],
                 ..RunSummary::default()
             },
+            returning: vec![],
         };
 
         let json = serde_json::to_value(preview.report()).unwrap();
@@ -333,8 +393,10 @@ mod tests {
                     "overwrite_remote": 0,
                     "delete_local": 0,
                     "delete_remote": 0,
-                    "other": 0
-                }
+                    "other": 0,
+                    "renamed": 0
+                },
+                "returning": []
             })
         );
     }

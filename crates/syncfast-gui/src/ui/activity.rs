@@ -95,8 +95,8 @@ fn cell(ui: &mut Ui, width: f32, content: impl FnOnce(&mut Ui)) {
     );
 }
 
-/// `↑ <uploaded>  ↓ <downloaded>  ✕ <deletes>`, the reason of a failed
-/// round, or how far the round in progress is.
+/// `↑ <uploaded>  ↓ <downloaded>  ✕ <deletes>` (and `<n> renamed`), the
+/// reason of a failed round, or how far the round in progress is.
 fn counters(pair: &PairRow, run: &RunEntry) -> String {
     if run.running() {
         return match &pair.progress {
@@ -123,11 +123,15 @@ fn transfer_counts(summary: &RunSummary) -> String {
         return String::new();
     }
     let deletes = summary.deleted_local.unwrap_or(0) + summary.deleted_remote.unwrap_or(0);
-    format!(
+    let counts = format!(
         "↑ {}  ↓ {}  ✕ {deletes}",
         summary.uploaded.unwrap_or(0),
         summary.downloaded.unwrap_or(0),
-    )
+    );
+    match summary.renamed.unwrap_or(0) {
+        0 => counts,
+        renamed => format!("{counts}  {renamed} renamed"),
+    }
 }
 
 fn log_view(ui: &mut Ui, run: &RunEntry, palette: &Palette) {

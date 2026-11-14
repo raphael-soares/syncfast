@@ -682,10 +682,10 @@ mod tests {
                 exit_code: 1,
                 summary: RunSummary {
                     uploaded: Some(1),
-                    changes: vec![crate::bisync_log::Change {
-                        kind: crate::bisync_log::ChangeKind::Upload,
-                        path: "a.txt".into(),
-                    }],
+                    changes: vec![crate::bisync_log::Change::new(
+                        crate::bisync_log::ChangeKind::Upload,
+                        "a.txt",
+                    )],
                     ..RunSummary::default()
                 },
                 log_file: "/s/runs/x.jsonl".into(),

@@ -32,6 +32,8 @@ struct StoredReview {
     filters_hash: String,
     shown: Timestamp,
     changes: Vec<Change>,
+    #[serde(default)]
+    returning: Vec<Change>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -53,6 +55,11 @@ pub struct ReviewView {
     pub changes: Vec<Change>,
     /// Changes that are not in `changes`, because the list is capped.
     pub changes_omitted: usize,
+    /// Files deleted or renamed since the last good sync that the resync
+    /// brings back.
+    pub returning: u32,
+    /// The first of them; they are also in `changes`.
+    pub returning_changes: Vec<Change>,
     /// Folders left out of the sync because they hold a `.git`.
     pub excluded_repos: Vec<String>,
     pub note: String,
@@ -109,6 +116,7 @@ impl Ops {
             filters_hash: found.filters_hash,
             shown: Timestamp::now(),
             changes: found.summary.changes,
+            returning: found.returning,
         };
         self.save_review(id, &stored).await?;
         let counts = ChangeCounts::of(&stored.changes);
@@ -124,6 +132,9 @@ impl Ops {
         };
         let mut changes = stored.changes;
         changes.truncate(SHOWN_CHANGES);
+        let returning = u32::try_from(stored.returning.len()).unwrap_or(u32::MAX);
+        let mut returning_changes = stored.returning;
+        returning_changes.truncate(SHOWN_CHANGES);
         Ok(ReviewView {
             sync_id: id.to_owned(),
             mode: behavior.mode,
@@ -135,6 +146,8 @@ impl Ops {
             agent_can_confirm: !deletes_files,
             changes,
             changes_omitted: omitted,
+            returning,
+            returning_changes,
             excluded_repos: found.excluded_repos,
             note,
         })

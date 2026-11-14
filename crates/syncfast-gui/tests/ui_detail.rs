@@ -539,6 +539,7 @@ fn run(id: &str, started: &str, status: DisplayStatus) -> RunEntry {
             downloaded: Some(1),
             deleted_local: Some(0),
             deleted_remote: Some(3),
+            renamed: None,
             conflicts_new: Some(0),
             changes: Vec::new(),
         },

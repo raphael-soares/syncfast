@@ -73,6 +73,7 @@ pub struct LastRunView {
     pub downloaded: Option<u32>,
     pub deleted_local: Option<u32>,
     pub deleted_remote: Option<u32>,
+    pub renamed: Option<u32>,
     pub conflicts_new: Option<u32>,
     pub log_file: PathBuf,
 }
@@ -199,6 +200,7 @@ impl LastRunView {
             downloaded: last.summary.downloaded,
             deleted_local: last.summary.deleted_local,
             deleted_remote: last.summary.deleted_remote,
+            renamed: last.summary.renamed,
             conflicts_new: last.summary.conflicts_new,
             log_file: last.log_file.clone(),
         })

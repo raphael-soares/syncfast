@@ -6,6 +6,7 @@ pub mod config;
 pub mod conflicts;
 pub mod filters;
 pub mod flatpak;
+pub mod listing;
 pub mod network;
 pub mod notify;
 pub mod oneway;

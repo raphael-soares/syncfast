@@ -2,7 +2,8 @@
 //! into what the UI shows: per-file changes, counters and live progress.
 //!
 //! Every message this module recognises comes from the fixtures in
-//! `tests/fixtures/rclone-*/`; side attribution is explained on [`summarize`].
+//! `tests/fixtures/rclone-1.76.0/`; side attribution is explained on
+//! [`summarize`].
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -14,9 +15,12 @@ const MSG_COPIED_NEW: &str = "Copied (new)";
 const MSG_COPIED_REPLACED: &str = "Copied (replaced existing)";
 const MSG_MOVED: &str = "Moved (server-side)";
 const MSG_DELETED: &str = "Deleted";
+const MSG_MOVED_TO: &str = "Moved (server-side) to: ";
+const MSG_RENAMED_FROM: &str = "Renamed from ";
 const MSG_MOVED_TO_BACKUP: &str = "Moved into backup dir";
 const SKIPPED_COPY: &str = "copy";
 const SKIPPED_MOVE: &str = "move";
+const SKIPPED_MOVE_TO: &str = "move to ";
 const SKIPPED_DELETE: &str = "delete";
 const SKIPPED_MOVE_TO_BACKUP: &str = "move into backup dir";
 const SKIPPED_MAKE_DIR: &str = "make directory";
@@ -186,7 +190,18 @@ pub enum ChangeKind {
     OverwriteRemote,
     DeleteLocal,
     DeleteRemote,
+    /// A file moved to a new path on this computer; `from` holds the old one.
+    RenameLocal,
+    /// A file moved to a new path on the remote; `from` holds the old one.
+    RenameRemote,
     Other,
+}
+
+impl ChangeKind {
+    #[must_use]
+    pub fn is_rename(self) -> bool {
+        matches!(self, Self::RenameLocal | Self::RenameRemote)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,6 +209,20 @@ pub struct Change {
     pub kind: ChangeKind,
     /// Relative to the synced folder. Folders end with `/`.
     pub path: String,
+    /// The path before a rename.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+}
+
+impl Change {
+    #[must_use]
+    pub fn new(kind: ChangeKind, path: impl Into<String>) -> Self {
+        Self {
+            kind,
+            path: path.into(),
+            from: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -203,6 +232,7 @@ pub struct RunSummary {
     pub downloaded: Option<u32>,
     pub deleted_local: Option<u32>,
     pub deleted_remote: Option<u32>,
+    pub renamed: Option<u32>,
     pub conflicts_new: Option<u32>,
     pub changes: Vec<Change>,
 }
@@ -317,8 +347,12 @@ struct Tracker {
 
 impl Tracker {
     fn push(&mut self, kind: ChangeKind, path: String) {
-        if self.seen.insert((kind, path.clone())) {
-            self.changes.push(Change { kind, path });
+        self.push_change(Change::new(kind, path));
+    }
+
+    fn push_change(&mut self, change: Change) {
+        if self.seen.insert((change.kind, change.path.clone())) {
+            self.changes.push(change);
         }
     }
 
@@ -337,6 +371,20 @@ impl Tracker {
     }
 
     fn feed_object(&mut self, line: &LogLine, object: &str) {
+        if let Some(from) = renamed_from(&line.msg) {
+            let kind = match self.target {
+                Some(Side::Local) => ChangeKind::RenameLocal,
+                Some(Side::Remote) => ChangeKind::RenameRemote,
+                None => ChangeKind::Other,
+            };
+            let mut change = Change::new(kind, object);
+            change.from = kind.is_rename().then_some(from);
+            self.push_change(change);
+            return;
+        }
+        if is_rename_move(line) {
+            return;
+        }
         let Some(op) = operation(line) else {
             self.feed_other(line, object);
             return;
@@ -395,7 +443,8 @@ impl Tracker {
         }
     }
 
-    fn finish(self) -> RunSummary {
+    fn finish(mut self) -> RunSummary {
+        drop_folders_of_renames(&mut self.changes);
         let count = |kinds: &[ChangeKind]| {
             let n = self
                 .changes
@@ -409,12 +458,47 @@ impl Tracker {
             downloaded: count(&[ChangeKind::Download, ChangeKind::OverwriteLocal]),
             deleted_local: count(&[ChangeKind::DeleteLocal]),
             deleted_remote: count(&[ChangeKind::DeleteRemote]),
+            renamed: count(&[ChangeKind::RenameLocal, ChangeKind::RenameRemote]),
             conflicts_new: self
                 .completed
                 .then(|| u32::try_from(self.conflicts).unwrap_or(u32::MAX)),
             changes: self.changes,
         }
     }
+}
+
+/// The old path in rclone's `Renamed from "<old>"` notice, which it logs on
+/// the new path once a tracked rename is applied (or would be, in a dry run).
+pub(crate) fn renamed_from(msg: &str) -> Option<String> {
+    crate::listing::unquote(msg.strip_prefix(MSG_RENAMED_FROM)?)
+}
+
+/// The move half of a tracked rename, logged on the old path. The
+/// `Renamed from` notice on the new path is the one that records it.
+fn is_rename_move(line: &LogLine) -> bool {
+    line.skipped
+        .as_deref()
+        .is_some_and(|skipped| skipped.starts_with(SKIPPED_MOVE_TO))
+        || line.msg.starts_with(MSG_MOVED_TO)
+}
+
+/// A dry run lists making the new folder and removing the old one of a
+/// renamed folder; the renamed files already say it.
+fn drop_folders_of_renames(changes: &mut Vec<Change>) {
+    let renamed: Vec<String> = changes
+        .iter()
+        .filter(|change| change.kind.is_rename())
+        .flat_map(|change| [Some(change.path.clone()), change.from.clone()])
+        .flatten()
+        .collect();
+    if renamed.is_empty() {
+        return;
+    }
+    changes.retain(|change| {
+        change.kind != ChangeKind::Other
+            || !change.path.ends_with('/')
+            || !renamed.iter().any(|path| path.starts_with(&change.path))
+    });
 }
 
 /// What a run did, from its log (real or `--dry-run`). Side attribution,
@@ -436,7 +520,7 @@ pub(crate) mod fixtures {
 
     pub fn fixture_path(name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/rclone-1.75.2")
+            .join("tests/fixtures/rclone-1.76.0")
             .join(name)
     }
 
@@ -465,10 +549,19 @@ mod tests {
     }
 
     fn change(kind: ChangeKind, path: &str) -> Change {
-        Change {
-            kind,
-            path: path.to_owned(),
-        }
+        Change::new(kind, path)
+    }
+
+    fn renames(kind: ChangeKind) -> Vec<Change> {
+        let mut changes: Vec<Change> = (1..=10)
+            .map(|n| Change {
+                kind,
+                path: format!("1-disc/f{n}.txt"),
+                from: Some(format!("disc/f{n}.txt")),
+            })
+            .collect();
+        changes.sort_by(|a, b| a.path.cmp(&b.path));
+        changes
     }
 
     fn counters(summary: &RunSummary) -> [Option<u32>; 5] {
@@ -520,12 +613,12 @@ mod tests {
         let summary = summarize(&fixture("resync_dry_run"));
 
         assert_eq!(
-            summary.changes,
+            sorted(summary.changes.clone()),
             [
-                change(ChangeKind::OverwriteLocal, "d.txt"),
-                change(ChangeKind::Download, "c.txt"),
                 change(ChangeKind::Upload, "a.txt"),
                 change(ChangeKind::Upload, "b.txt"),
+                change(ChangeKind::Download, "c.txt"),
+                change(ChangeKind::OverwriteLocal, "d.txt"),
             ]
         );
         assert_eq!(
@@ -702,10 +795,10 @@ mod tests {
         let summary = summarize(&fixture("force_dry_run"));
 
         assert_eq!(
-            summary.changes,
+            sorted(summary.changes),
             [
-                change(ChangeKind::DeleteRemote, "f2.txt"),
                 change(ChangeKind::DeleteRemote, "f1.txt"),
+                change(ChangeKind::DeleteRemote, "f2.txt"),
                 change(ChangeKind::DeleteRemote, "f3.txt"),
             ]
         );
@@ -714,19 +807,19 @@ mod tests {
 
     #[test]
     fn summarize_of_changes_on_both_sides_attributes_each_kind_to_its_side_in_real_and_dry_runs() {
-        let expected = [
-            change(ChangeKind::Download, "n2.txt"),
-            change(ChangeKind::OverwriteLocal, "f4.txt"),
-            change(ChangeKind::DeleteLocal, "f3.txt"),
-            change(ChangeKind::Upload, "n1.txt"),
-            change(ChangeKind::OverwriteRemote, "f2.txt"),
+        let expected = vec![
             change(ChangeKind::DeleteRemote, "f1.txt"),
+            change(ChangeKind::OverwriteRemote, "f2.txt"),
+            change(ChangeKind::DeleteLocal, "f3.txt"),
+            change(ChangeKind::OverwriteLocal, "f4.txt"),
+            change(ChangeKind::Upload, "n1.txt"),
+            change(ChangeKind::Download, "n2.txt"),
         ];
 
         let real = summarize(&fixture("mixed"));
         let dry = summarize(&fixture("mixed_dry_run"));
 
-        assert_eq!(real.changes, expected);
+        assert_eq!(sorted(real.changes.clone()), expected);
         assert_eq!(
             counters(&real),
             [Some(2), Some(2), Some(1), Some(1), Some(0)]
@@ -788,6 +881,69 @@ mod tests {
         let summary = summarize(&fixture("critical"));
 
         assert_eq!(summary, RunSummary::default());
+    }
+
+    #[test]
+    fn summarize_of_a_folder_renamed_locally_is_ten_remote_renames_and_nothing_else() {
+        let summary = summarize(&fixture("rename_local"));
+
+        assert_eq!(
+            sorted(summary.changes.clone()),
+            renames(ChangeKind::RenameRemote)
+        );
+        assert_eq!(summary.renamed, Some(10));
+        assert_eq!(
+            counters(&summary),
+            [Some(0), Some(0), Some(0), Some(0), Some(0)]
+        );
+    }
+
+    #[test]
+    fn summarize_of_a_folder_renamed_on_the_remote_is_ten_local_renames() {
+        let summary = summarize(&fixture("rename_remote"));
+
+        assert_eq!(
+            sorted(summary.changes.clone()),
+            renames(ChangeKind::RenameLocal)
+        );
+        assert_eq!(summary.renamed, Some(10));
+        assert_eq!(
+            counters(&summary),
+            [Some(0), Some(0), Some(0), Some(0), Some(0)]
+        );
+    }
+
+    #[test]
+    fn summarize_of_a_rename_dry_run_lists_the_renames_without_folder_noise() {
+        let summary = summarize(&fixture("rename_dry_run_force"));
+
+        assert_eq!(
+            sorted(summary.changes.clone()),
+            renames(ChangeKind::RenameRemote)
+        );
+        assert_eq!(summary.renamed, Some(10));
+    }
+
+    #[test]
+    fn a_rename_notice_with_an_escaped_old_path_keeps_the_real_name() {
+        let log = synthetic(&[
+            ("- Path1  Do queued copies to   - Path2", None),
+            (r#"Renamed from "old \"q\".txt""#, Some("new.txt")),
+            ("Bisync successful", None),
+        ]);
+
+        let summary = summarize(&log);
+
+        assert_eq!(summary.changes[0].from.as_deref(), Some("old \"q\".txt"));
+    }
+
+    #[test]
+    fn a_change_serializes_from_only_for_renames() {
+        let plain = serde_json::to_value(change(ChangeKind::Upload, "a")).unwrap();
+        let parsed: Change = serde_json::from_value(plain.clone()).unwrap();
+
+        assert_eq!(plain, serde_json::json!({"kind": "upload", "path": "a"}));
+        assert_eq!(parsed.from, None);
     }
 
     fn synthetic(entries: &[(&str, Option<&str>)]) -> Vec<LogLine> {
@@ -862,7 +1018,7 @@ mod tests {
         assert_eq!(progress.total_bytes, 13_107_200);
         assert_eq!(progress.eta_seconds, Some(0));
         assert_eq!(progress.current, None);
-        assert!((progress.speed - 2_118_628.586_042_749).abs() < 1.0);
+        assert!((progress.speed - 2_151_756.198_941_915_8).abs() < 1.0);
     }
 
     #[test]
@@ -875,12 +1031,12 @@ mod tests {
 
         let progress = last_stats(&lines[..=first]).unwrap();
 
-        assert_eq!(progress.transfers, 29);
+        assert_eq!(progress.transfers, 32);
         assert_eq!(progress.total_transfers, 200);
-        assert_eq!(progress.bytes, 2_162_688);
+        assert_eq!(progress.bytes, 2_228_224);
         assert_eq!(progress.total_bytes, 13_107_200);
         assert_eq!(progress.eta_seconds, None);
-        assert_eq!(progress.current.as_deref(), Some("bulk-125.bin"));
+        assert_eq!(progress.current.as_deref(), Some("bulk-127.bin"));
         assert!(progress.speed.abs() < f64::EPSILON);
     }
 

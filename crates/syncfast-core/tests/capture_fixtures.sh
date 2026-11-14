@@ -42,15 +42,22 @@ setup() {
 }
 
 # Same flags as bisync_args in the spec; extra flags go last so they win.
+# Rename tracking is left out of resyncs, as bisync_args does.
 bisync() {
   local log="$1"
   shift
+  local renames=(--track-renames --track-renames-strategy hash,modtime --max-delete-renames-aware)
+  local arg
+  for arg in "$@"; do
+    [[ "$arg" == "--resync" ]] && renames=()
+  done
   rclone bisync "$root/local" "$root/remote" \
     --filters-file "$root/state/filters/x.txt" \
     --workdir "$root/state/bisync/x/" \
     --resilient --recover --max-lock 2m \
     --conflict-resolve newer --conflict-loser num \
     --max-delete 50 \
+    "${renames[@]}" \
     --create-empty-src-dirs \
     --drive-skip-gdocs \
     --backup-dir1 "$root/data/versions/x/$stamp/" \
@@ -215,6 +222,30 @@ prepare
 rm "$root/local/f1.txt" "$root/local/f2.txt" "$root/local/f3.txt"
 capture force_dry_run --force --dry-run
 
+# A folder of ten files renamed on one side, with two other files: ten of
+# twelve is above --max-delete 50, which tracked renames do not count toward.
+seed_disc() {
+  setup
+  put "$root/local/keep1.txt" "keep 1" "$old"
+  put "$root/local/keep2.txt" "keep 2" "$old"
+  for n in $(seq 1 10); do
+    put "$root/local/disc/f$n.txt" "disc file $n" "$old"
+  done
+  prepare
+}
+
+seed_disc
+mv "$root/local/disc" "$root/local/1-disc"
+capture rename_local
+
+seed_disc
+mv "$root/remote/disc" "$root/remote/1-disc"
+capture rename_remote
+
+seed_disc
+mv "$root/local/disc" "$root/local/1-disc"
+capture rename_dry_run_force --force --dry-run
+
 setup
 put "$root/local/only.txt" "base" "$old"
 prepare
@@ -272,10 +303,13 @@ capture stats --stats 1s --bwlimit 2M
 oneway() { # oneway <copy|sync> <log> <changes> [extra flags]
   local sub="$1" log="$2" changes="$3"
   shift 3
+  local renames=()
+  [[ "$sub" == "sync" ]] && renames=(--track-renames --track-renames-strategy hash,modtime)
   rclone "$sub" "$root/local" "$root/remote" \
     --filter-from "$root/state/filters/x.txt" \
     --create-empty-src-dirs \
     --drive-skip-gdocs \
+    "${renames[@]}" \
     --combined "$changes" \
     --retries 1 \
     --stats 2s --stats-log-level NOTICE \
@@ -340,6 +374,16 @@ put "$root/remote/extra.txt" "only in the destination" "$old"
 chmod 000 "$root/local/locked.txt"
 capture_oneway sync_errors sync
 chmod 644 "$root/local/locked.txt"
+
+# A mirrored folder renamed in the source: moved in the destination, with
+# --max-delete below the number of renamed files.
+setup
+for n in 1 2 3; do
+  put "$root/local/disc/f$n.txt" "disc file $n" "$old"
+  put "$root/remote/disc/f$n.txt" "disc file $n" "$old"
+done
+mv "$root/local/disc" "$root/local/1-disc"
+capture_oneway mirror_rename sync --max-delete 2
 
 # `lsf -R --files-only` as Rclone::has_files runs it: one name is enough, so
 # the process is stopped after the first line.

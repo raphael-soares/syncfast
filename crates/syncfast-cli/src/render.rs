@@ -105,12 +105,13 @@ pub fn show(detail: &PairDetail) -> String {
         let count = |value: Option<u32>| value.map_or_else(|| "?".to_owned(), |n| n.to_string());
         let _ = writeln!(
             out,
-            "  last round: {} up {} down {} deleted here {} deleted there {} conflicts {} (exit {})",
+            "  last round: {} up {} down {} deleted here {} deleted there {} renamed {} conflicts {} (exit {})",
             run.finished,
             count(run.uploaded),
             count(run.downloaded),
             count(run.deleted_local),
             count(run.deleted_remote),
+            count(run.renamed),
             count(run.conflicts_new),
             run.exit_code
         );
@@ -302,13 +303,14 @@ pub fn review(review: &ReviewView) -> String {
     );
     let _ = writeln!(
         out,
-        "  upload {} download {} replace here {} replace there {} delete here {} delete there {} other {}",
+        "  upload {} download {} replace here {} replace there {} delete here {} delete there {} rename {} other {}",
         counts.upload,
         counts.download,
         counts.overwrite_local,
         counts.overwrite_remote,
         counts.delete_local,
         counts.delete_remote,
+        counts.renamed,
         counts.other
     );
     for change in &review.changes {
@@ -319,12 +321,31 @@ pub fn review(review: &ReviewView) -> String {
             ChangeKind::OverwriteRemote => "replace there",
             ChangeKind::DeleteLocal => "delete here",
             ChangeKind::DeleteRemote => "delete there",
+            ChangeKind::RenameLocal => "rename here",
+            ChangeKind::RenameRemote => "rename there",
             ChangeKind::Other => "other",
         };
-        let _ = writeln!(out, "  {label}: {}", change.path);
+        match &change.from {
+            Some(from) => {
+                let _ = writeln!(out, "  {label}: {from} -> {}", change.path);
+            }
+            None => {
+                let _ = writeln!(out, "  {label}: {}", change.path);
+            }
+        }
     }
     if review.changes_omitted > 0 {
         let _ = writeln!(out, "  ... {} more changes", review.changes_omitted);
+    }
+    if review.returning > 0 {
+        let _ = writeln!(
+            out,
+            "  coming back (deleted or renamed since the last sync): {}",
+            review.returning
+        );
+        for change in &review.returning_changes {
+            let _ = writeln!(out, "  - {}", change.path);
+        }
     }
     if !review.excluded_repos.is_empty() {
         let _ = writeln!(
@@ -409,6 +430,9 @@ pub fn activity(rounds: &[RoundView]) -> String {
                     .map(|(a, b)| a + b)
             ),
         );
+        if let Some(renamed) = round.renamed.filter(|renamed| *renamed > 0) {
+            let _ = write!(out, " renamed {renamed}");
+        }
         if round.auto_reviewed.is_some() {
             out.push_str("\treviewed automatically");
         }

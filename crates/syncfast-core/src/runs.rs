@@ -131,6 +131,7 @@ fn entry(file_name: &str, text: &str, known: &Known<'_>) -> RunEntry {
     let summary = match &known.one_way {
         Some(one_way) if !known.in_progress => summarize_oneway(
             &one_way.changes,
+            &lines,
             one_way.mode,
             known.one_way_exit_code(&lines),
         ),

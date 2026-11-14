@@ -901,7 +901,7 @@ impl Round<'_> {
         if mode.is_one_way() {
             (
                 classify_oneway(exit_code, lines),
-                summarize_oneway(changes, mode, exit_code),
+                summarize_oneway(changes, lines, mode, exit_code),
             )
         } else {
             (

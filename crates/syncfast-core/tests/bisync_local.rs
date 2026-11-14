@@ -590,6 +590,72 @@ async fn deleting_most_files_locally_stops_at_the_gate_until_a_forced_round_is_c
 }
 
 #[tokio::test]
+async fn renaming_a_folder_with_most_files_moves_it_on_the_remote_without_the_gate() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "keep.txt", "keep");
+    for name in ["a.txt", "b.txt", "c.txt", "d.txt"] {
+        write(&bed.local, &format!("disc/{name}"), name);
+    }
+    bed.first_sync().await;
+    fs::rename(bed.local.join("disc"), bed.local.join("1-disc")).unwrap();
+
+    let report = bed.run().await;
+
+    assert_eq!(
+        report,
+        RunReport::Ran {
+            mode: RoundMode::Normal,
+            outcome: Outcome::Ok
+        }
+    );
+    assert!(bed.state().await.gate.is_none());
+    assert_eq!(names(&bed.remote), ["1-disc", "keep.txt"]);
+    assert_eq!(
+        names(&bed.remote.join("1-disc")),
+        ["a.txt", "b.txt", "c.txt", "d.txt"]
+    );
+    let summary = bed.state().await.last_run.unwrap().summary;
+    assert_eq!(
+        (summary.renamed, summary.uploaded, summary.deleted_remote),
+        (Some(4), Some(0), Some(0))
+    );
+    let renamed = summary
+        .changes
+        .iter()
+        .find(|change| change.path == "1-disc/a.txt")
+        .unwrap();
+    assert_eq!(renamed.kind, ChangeKind::RenameRemote);
+    assert_eq!(renamed.from.as_deref(), Some("disc/a.txt"));
+}
+
+#[tokio::test]
+async fn a_resync_review_lists_what_was_deleted_since_the_last_sync_as_coming_back() {
+    let Some(bed) = bed() else { return };
+    for name in ["gone.txt", "kept.txt"] {
+        write(&bed.local, name, name);
+    }
+    bed.first_sync().await;
+    fs::remove_file(bed.local.join("gone.txt")).unwrap();
+    write(&bed.remote, "new.txt", "new");
+
+    let reviewed = bed.preview(ReviewKind::Resync).await.unwrap();
+
+    let back: Vec<(ChangeKind, &str)> = reviewed
+        .returning
+        .iter()
+        .map(|change| (change.kind, change.path.as_str()))
+        .collect();
+    assert_eq!(back, [(ChangeKind::Download, "gone.txt")]);
+    assert!(
+        reviewed
+            .summary
+            .changes
+            .iter()
+            .any(|change| change.path == "new.txt")
+    );
+}
+
+#[tokio::test]
 async fn an_emptied_local_folder_needs_attention_at_once_and_the_remote_keeps_every_file() {
     let Some(bed) = bed() else { return };
     let files: Vec<String> = (0..60).map(|n| format!("file-{n:02}.txt")).collect();
