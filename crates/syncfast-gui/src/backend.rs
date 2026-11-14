@@ -1272,7 +1272,7 @@ fn rclone() -> Result<Rclone, String> {
 
 async fn publish_remotes(context: &Context) {
     let loaded = match rclone() {
-        Ok(rclone) => sheet_io::load_remotes(&rclone).await,
+        Ok(rclone) => sheet_io::load_remotes(&context.paths, &rclone).await,
         Err(text) => Err(text),
     };
     match loaded {
@@ -1474,6 +1474,9 @@ fn spawn_connect(context: &Arc<Context>, request: ConnectRequest) {
 /// A sign-in worked: the remote list changed, and the syncs and backups
 /// that waited for access can run.
 async fn reconnected(context: &Arc<Context>, account: String) {
+    if let Ok(rclone) = rclone() {
+        sheet_io::remember_email(&context.paths, &rclone, &account).await;
+    }
     publish_remotes(context).await;
     let resumed = resume_after_sign_in(&context.paths, &account, round_trigger).await;
     for text in resumed.failures {
@@ -1557,6 +1560,10 @@ async fn renamed(context: &Arc<Context>, from: &str, to: &str) {
             format!("Renamed, but the old account \"{from}\" could not be removed: {text}"),
         );
     }
+    sheet_io::forget_email(&context.paths, from).await;
+    if let Ok(rclone) = rclone() {
+        sheet_io::remember_email(&context.paths, &rclone, to).await;
+    }
     publish_remotes(context).await;
     if let Err(text) = apply_config(&context.paths).await {
         fail(context, text);
@@ -1588,8 +1595,18 @@ fn spawn_check_accounts(context: &Arc<Context>) {
                 });
                 let rclone = rclone.clone();
                 let checked = name.clone();
-                spawn_account_check(&context.emitter, name, async move {
-                    sheet_io::check_account(&rclone, online, &checked).await
+                let context = Arc::clone(&context);
+                spawn_account_check(&context.emitter.clone(), name, async move {
+                    let status = sheet_io::check_account(&rclone, online, &checked).await;
+                    if status == AccountStatus::SignedIn
+                        && !sheet_io::knows_email(&context.paths, &checked).await
+                    {
+                        sheet_io::remember_email(&context.paths, &rclone, &checked).await;
+                        if sheet_io::knows_email(&context.paths, &checked).await {
+                            publish_remotes(&context).await;
+                        }
+                    }
+                    status
                 });
             }
         },
@@ -1654,6 +1671,7 @@ fn spawn_remove_account(context: &Arc<Context>, name: String) {
             };
             match removed {
                 Ok(ids) => {
+                    sheet_io::forget_email(&context.paths, &name).await;
                     publish_remotes(&context).await;
                     if !ids.is_empty() {
                         spawn_sync(&context, ids);

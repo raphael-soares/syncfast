@@ -123,7 +123,7 @@ pub fn marked_pairs(changes: &[Change], pairs: &mut [PairFolders]) -> Vec<String
 }
 
 #[derive(Debug, thiserror::Error)]
-enum DriveError {
+pub enum DriveError {
     #[error("Drive answered {status}: {message}")]
     Http { status: u16, message: String },
     #[error("cannot reach Drive: {0}")]
@@ -208,6 +208,33 @@ fn get_blocking<T: DeserializeOwned>(
         status,
         message: google_message(&body),
     })
+}
+
+/// The address of the Google account `token` signs in to, as Drive reports
+/// it. Blocks on the network.
+///
+/// # Errors
+/// Drive cannot be reached, refuses the token or answers something else.
+pub fn account_email(token: &str) -> Result<Option<String>, DriveError> {
+    #[derive(Deserialize)]
+    struct About {
+        user: Option<User>,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct User {
+        email_address: Option<String>,
+    }
+    let about: About = get_blocking(
+        &agent(),
+        token,
+        "/about",
+        &[("fields", "user(emailAddress)".to_owned())],
+    )?;
+    Ok(about
+        .user
+        .and_then(|user| user.email_address)
+        .filter(|email| !email.is_empty()))
 }
 
 /// What a poller keeps between two cycles.

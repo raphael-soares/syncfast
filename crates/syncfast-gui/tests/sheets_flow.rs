@@ -331,6 +331,7 @@ fn get_started_without_an_account_chains_account_then_add_sync_then_review() {
         name: "gdrive".into(),
         kind: "drive".into(),
         own_client_id: true,
+        email: None,
     }]));
     let wizard = sheets.handle_event(&Event::Connected(Ok("gdrive".into())));
     let created = sheets.apply(

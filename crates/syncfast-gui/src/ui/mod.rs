@@ -136,9 +136,17 @@ pub struct RemoteRow {
     pub kind: String,
     /// Only meaningful for `drive`: the remote has its own `client_id`.
     pub own_client_id: bool,
+    /// The Google account's address, once read after a sign-in.
+    pub email: Option<String>,
 }
 
 impl RemoteRow {
+    /// How the screens name the account: its email, else its rclone name.
+    #[must_use]
+    pub fn label(&self) -> &str {
+        self.email.as_deref().unwrap_or(&self.name)
+    }
+
     #[must_use]
     pub fn is_drive(&self) -> bool {
         self.kind == "drive"

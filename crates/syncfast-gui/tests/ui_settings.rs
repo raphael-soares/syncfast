@@ -25,6 +25,7 @@ fn remote(name: &str, kind: &str, own_client_id: bool) -> RemoteRow {
         name: name.into(),
         kind: kind.into(),
         own_client_id,
+        email: None,
     }
 }
 
@@ -78,6 +79,22 @@ fn only_a_drive_remote_without_its_own_client_id_gets_the_shared_client_warning(
     harness.get_by_label("trabalho · Google Drive");
     harness.get_by_label("backup · local");
     harness.get_by_label("Use My Client ID…");
+}
+
+#[test]
+fn an_account_with_a_known_email_is_titled_by_it_and_keeps_its_name_below() {
+    let mut harness = harness(
+        accounts(vec![RemoteRow {
+            email: Some("ada@example.com".into()),
+            ..remote("drive", "drive", true)
+        }]),
+        screen(),
+    );
+
+    harness.run();
+
+    harness.get_by_label("ada@example.com · Google Drive");
+    harness.get_by_label("Name: drive");
 }
 
 #[test]

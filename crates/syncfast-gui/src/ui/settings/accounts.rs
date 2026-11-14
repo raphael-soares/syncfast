@@ -82,7 +82,7 @@ pub fn show(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
 fn title(palette: &Palette, remote: &RemoteRow) -> LayoutJob {
     let mut job = LayoutJob::default();
     job.append(
-        &remote.name,
+        remote.label(),
         0.0,
         TextFormat::simple(theme::headline(), palette.text),
     );
@@ -133,7 +133,7 @@ fn row(
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.set_min_height(if line.is_some() || shared {
+                ui.set_min_height(if line.is_some() || shared || remote.email.is_some() {
                     FLAGGED_HEIGHT
                 } else {
                     ROW_HEIGHT
@@ -148,6 +148,13 @@ fn row(
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     ui.label(title(palette, remote));
+                    if remote.email.is_some() {
+                        ui.label(
+                            RichText::new(format!("Name: {}", remote.name))
+                                .font(theme::callout())
+                                .color(palette.secondary),
+                        );
+                    }
                     if let Some((text, color)) = &line {
                         ui.label(RichText::new(text).font(theme::callout()).color(*color));
                     }

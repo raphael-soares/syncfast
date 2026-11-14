@@ -2,16 +2,19 @@
 //! folder checks and the files the confirmation leaves for the next round.
 //! The backend runs these and turns the results into events.
 
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::path::Path;
 use std::time::Duration;
 
 use jiff::Zoned;
+use syncfast_core::account_labels;
 use syncfast_core::backup::destination::Destination;
 use syncfast_core::backup::state::BackupState;
 use syncfast_core::behavior::{Behavior, ReviewLevel, SyncMode};
 use syncfast_core::bisync::{Fault, ReviewKind, fault_of};
 use syncfast_core::config::{Config, Pair, expand_tilde, split_remote};
+use syncfast_core::drive_changes::account_email;
 use syncfast_core::network::NetworkManager;
 use syncfast_core::notify::NativeNotifier;
 use syncfast_core::paths::Paths;
@@ -34,24 +37,76 @@ pub enum PreviewFailure {
     Failed(String),
 }
 
-/// Every remote with its type and whether a Drive one has its own client ID.
+/// Every remote with its type, its email when known, and whether a Drive one
+/// has its own client ID.
 ///
 /// # Errors
 /// rclone cannot list the remotes or read its config.
-pub async fn load_remotes(rclone: &Rclone) -> Result<Vec<RemoteRow>, String> {
+pub async fn load_remotes(paths: &Paths, rclone: &Rclone) -> Result<Vec<RemoteRow>, String> {
     let kinds = rclone.remote_types().await.map_err(|e| e.to_string())?;
     let shared = rclone
         .drive_remotes_without_own_client_id()
         .await
         .map_err(|e| e.to_string())?;
+    let mut emails = load_emails(paths).await;
     Ok(kinds
         .into_iter()
         .map(|(name, kind)| RemoteRow {
             own_client_id: !shared.contains(&name),
+            email: emails.remove(&name),
             name,
             kind,
         })
         .collect())
+}
+
+async fn load_emails(paths: &Paths) -> BTreeMap<String, String> {
+    let paths = paths.clone();
+    tokio::task::spawn_blocking(move || account_labels::load(&paths))
+        .await
+        .unwrap_or_default()
+}
+
+/// Whether the email of `name` is already known.
+pub async fn knows_email(paths: &Paths, name: &str) -> bool {
+    load_emails(paths).await.contains_key(name)
+}
+
+/// Asks Google for the email of `name` and keeps it. The email only labels
+/// the account, so a failure is logged and the sign-in goes on.
+pub async fn remember_email(paths: &Paths, rclone: &Rclone, name: &str) {
+    let found = match rclone.drive_token(name).await {
+        Ok(Some(token)) => tokio::task::spawn_blocking(move || account_email(&token.access_token))
+            .await
+            .map_err(|err| err.to_string())
+            .and_then(|found| found.map_err(|err| err.to_string())),
+        Ok(None) => Ok(None),
+        Err(err) => Err(err.to_string()),
+    };
+    let email = match found {
+        Ok(Some(email)) => email,
+        Ok(None) => return,
+        Err(text) => {
+            log::debug!("cannot read the email of \"{name}\": {text}");
+            return;
+        }
+    };
+    let (paths, name) = (paths.clone(), name.to_owned());
+    let saved =
+        tokio::task::spawn_blocking(move || account_labels::save(&paths, &name, &email)).await;
+    if let Ok(Err(err)) = saved {
+        log::debug!("cannot keep the email of an account: {err}");
+    }
+}
+
+/// Forgets the email of `name`; the account is gone or renamed.
+pub async fn forget_email(paths: &Paths, name: &str) {
+    let (paths, name) = (paths.clone(), name.to_owned());
+    let forgotten =
+        tokio::task::spawn_blocking(move || account_labels::forget(&paths, &name)).await;
+    if let Ok(Err(err)) = forgotten {
+        log::debug!("cannot forget the email of an account: {err}");
+    }
 }
 
 /// The folder names directly inside `remote_path`, sorted.
@@ -834,19 +889,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remotes_come_with_their_type_and_drive_remotes_say_whether_the_client_is_their_own() {
+    async fn remotes_come_with_their_type_their_email_and_whether_the_client_is_their_own() {
         let dir = tempfile::tempdir().unwrap();
         let config = "[dev]\ntype = local\n\n[shared]\ntype = drive\n\n[own]\ntype = drive\nclient_id = 1.apps\nclient_secret = x\n";
         let Some(rclone) = rclone_with(dir.path(), config) else {
             return;
         };
+        let paths = paths_in(dir.path());
+        account_labels::save(&paths, "own", "ada@example.com").unwrap();
 
-        let remotes = load_remotes(&rclone).await.unwrap();
+        let remotes = load_remotes(&paths, &rclone).await.unwrap();
 
         let row = |name: &str| remotes.iter().find(|r| r.name == name).unwrap().clone();
         assert_eq!(remotes.len(), 3);
         assert!(row("dev").kind == "local" && !row("dev").shares_client_id());
         assert!(row("shared").shares_client_id());
+        assert_eq!(row("own").email.as_deref(), Some("ada@example.com"));
+        assert_eq!(row("dev").email, None);
         assert!(row("own").is_drive() && !row("own").shares_client_id());
     }
 

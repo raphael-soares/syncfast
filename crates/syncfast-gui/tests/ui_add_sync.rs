@@ -35,6 +35,7 @@ fn remote(name: &str, kind: &str, own_client_id: bool) -> RemoteRow {
         name: name.into(),
         kind: kind.into(),
         own_client_id,
+        email: None,
     }
 }
 

@@ -36,6 +36,7 @@ fn remote(name: &str) -> RemoteRow {
         name: name.into(),
         kind: "drive".into(),
         own_client_id: true,
+        email: None,
     }
 }
 
