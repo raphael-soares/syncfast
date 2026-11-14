@@ -18,10 +18,11 @@ Press **Get Started**. syncfast needs a Google client of your own; the **Connect
 
 ## Create a sync
 
-1. Press **+** next to **Syncs**, or continue from the welcome screen.
-2. Pick the **Account**, then the folder on Drive (or **Entire gdrive**). **New Folder…** creates one.
-3. Pick the **Folder on This Computer**, or create it.
-4. Name the sync and press **Create Sync**.
+1. Press **+** next to **Syncs**, or continue from the welcome screen. The **New Sync** sheet opens. You can also drop a folder on it.
+2. Pick the **Folder on this computer** with **Choose…**, or type it and create it.
+3. **Folder on Google Drive** takes the same name as that folder; change it, leave it empty for the entire Drive, or **Browse…** your folders. A folder that does not exist yet is created on Drive. With more than one account, pick it first.
+4. Under **Keep**, choose **Both the same** (changes and deletions go both ways) or **A copy on Google Drive** (files go up; nothing on this computer is changed or deleted).
+5. Press **Create Sync**. **Options** holds the filters and the sync's name if you want to change them.
 
 Pick folders that are not inside each other: two syncs cannot overlap, and a synced folder cannot contain syncfast's versions folder.
 

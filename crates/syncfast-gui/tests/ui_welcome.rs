@@ -68,18 +68,18 @@ fn welcome_greets_and_explains_what_the_app_does() {
 fn without_an_account_the_first_step_is_current_and_the_others_wait() {
     let harness = harness(fresh(false));
 
-    harness.get_by_label("Connect your Google account, current step");
+    harness.get_by_label("Connect Google Drive, current step");
     harness.get_by_label("Choose a folder, not started");
-    harness.get_by_label("Review the first sync, not started");
+    harness.get_by_label("Check what will happen, not started");
 }
 
 #[test]
 fn with_an_account_the_first_step_is_done_and_the_folder_step_is_current() {
     let harness = harness(fresh(true));
 
-    harness.get_by_label("Connect your Google account, done");
+    harness.get_by_label("Connect Google Drive, done");
     harness.get_by_label("Choose a folder, current step");
-    harness.get_by_label("Review the first sync, not started");
+    harness.get_by_label("Check what will happen, not started");
 }
 
 #[test]
@@ -97,7 +97,7 @@ fn a_first_sync_confirmed_automatically_completes_every_step_and_says_syncing_st
     let harness = harness(confirmed);
 
     assert_eq!(confirmed.steps(), [Done, Done, Done]);
-    harness.get_by_label("Connect your Google account, done");
+    harness.get_by_label("Connect Google Drive, done");
     harness.get_by_label("Choose a folder, done");
     harness.get_by_label("Review confirmed automatically, so syncing started., done");
 }

@@ -9,7 +9,7 @@ Open Settings with `Ctrl+,` or from the tray menu. It is a dialog over the windo
 
 ## Sync modes
 
-The **Mode** section of a sync's **Options** tab chooses what the sync does. It has no default: every sync sets its own, and **Add Sync** always starts with **Two-way**.
+The **Mode** section of a sync's **Options** tab chooses what the sync does. It has no default: every sync sets its own. **New Sync** creates a **Two-way** sync for **Both the same** and an **Upload only** sync for **A copy on Google Drive**.
 
 - **Two-way**: changes on either side are copied to the other, and both versions are kept when both changed.
 - **Upload only**: new and changed files go to the cloud. Nothing is deleted there and nothing comes back.

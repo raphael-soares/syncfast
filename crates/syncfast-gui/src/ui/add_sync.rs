@@ -1,11 +1,13 @@
-//! The Add Sync sheet: a five step assistant (account, folder in the
-//! account, folder on this computer, filters, name).
+//! The New Sync sheet: the folder on this computer, the folder on Google
+//! Drive that follows it, and what to keep, in one sheet. Filters and the
+//! name wait under Options.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use egui::text::{LayoutJob, TextFormat};
 use egui::{Id, Rect, RichText, Sense, Ui, UiBuilder, Vec2};
+use syncfast_core::behavior::SyncMode;
 use syncfast_core::config::{filter_line_problem, remotes_overlap, unique_id};
 use syncfast_core::filters::{DEFAULT_SYNC_PRESETS, preset_names};
 
@@ -17,7 +19,7 @@ use super::{Action, PairRow, RemoteRow};
 use crate::icons::Icon;
 use crate::theme::{self, radius, size, space};
 
-/// A sync the assistant asks the backend to create.
+/// A sync the sheet asks the backend to create.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewSync {
     pub id: String,
@@ -28,6 +30,7 @@ pub struct NewSync {
     pub presets: Vec<String>,
     /// Custom filter lines, each starting with `+ ` or `- `.
     pub filters: Vec<String>,
+    pub mode: SyncMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,65 +97,85 @@ pub struct AddSyncView<'a> {
     /// folder may not contain it.
     pub data_dir: &'a Path,
     /// Why `Create Folder` failed; shown under the folder field. It does not
-    /// disable `Continue` by itself.
+    /// disable `Create Sync` by itself.
     pub local_error: Option<&'a str>,
     /// The last `Test Filters`, whichever sync or wizard it ran for.
     pub filter_test: Option<&'a FilterTest>,
 }
 
+/// What the sheet offers to keep, in words instead of sync modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Step {
+pub enum SimpleMode {
+    /// Both sides the same: changes and deletions go both ways.
     #[default]
-    Account,
-    RemoteFolder,
-    LocalFolder,
-    Filters,
-    Name,
+    BothSame,
+    /// A copy on Drive: files go up, nothing here is changed.
+    CopyToDrive,
+}
+
+impl SimpleMode {
+    #[must_use]
+    pub fn sync_mode(self) -> SyncMode {
+        match self {
+            Self::BothSame => SyncMode::Bisync,
+            Self::CopyToDrive => SyncMode::Upload,
+        }
+    }
 }
 
 /// What the sheet itself remembers while it is open. The app owns it so it
 /// can feed answers of the backend back in (see the methods).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddSyncState {
-    pub step: Step,
     /// The chosen account (rclone remote name).
     pub account: Option<String>,
-    /// The chosen folder in the account, relative to its root: `None` is no
-    /// choice yet, `Some("")` is `Entire <account>`.
-    pub remote_path: Option<String>,
+    /// The folder on this computer, as typed.
+    pub local: String,
+    /// The folder in the account, relative to its root; empty is the whole
+    /// account.
+    pub remote_folder: String,
+    /// The user typed or picked the Drive folder: stop following the local
+    /// folder's name.
+    pub remote_edited: bool,
+    pub mode: SimpleMode,
+    /// The Drive folder tree is open under the field.
+    pub browsing: bool,
     /// Folders of the tree that are open, by relative path.
     pub expanded: HashSet<String>,
     /// The `New Folder…` field while it is open.
     pub new_folder: Option<String>,
-    /// The path as typed.
-    pub local: String,
     pub presets: Vec<String>,
     /// Custom rules, one per line.
     pub rules: String,
     pub name: String,
     /// The user typed in the name field: stop following the folder name.
     pub name_edited: bool,
+    /// The text last sent to be checked; `None` sends the field again.
+    pub checked_local: Option<String>,
 }
 
 impl Default for AddSyncState {
     fn default() -> Self {
         Self {
-            step: Step::Account,
             account: None,
-            remote_path: None,
+            local: String::new(),
+            remote_folder: String::new(),
+            remote_edited: false,
+            mode: SimpleMode::default(),
+            browsing: false,
             expanded: HashSet::new(),
             new_folder: None,
-            local: String::new(),
             presets: preset_names(&DEFAULT_SYNC_PRESETS),
             rules: String::new(),
             name: String::new(),
             name_edited: false,
+            checked_local: None,
         }
     }
 }
 
 impl AddSyncState {
-    /// The portal's dialog returned `path`.
+    /// The portal's dialog returned `path`, or a folder was dropped.
     pub fn picked_local(&mut self, path: &Path) {
         self.local = path.display().to_string();
     }
@@ -160,67 +183,52 @@ impl AddSyncState {
     /// `rclone mkdir` made `<account>:<parent>/<child>` (`parent` is `""`
     /// at the root): the new folder becomes the choice.
     pub fn remote_folder_created(&mut self, parent: &str, child: &str) {
-        let path = if parent.is_empty() {
-            child.to_owned()
-        } else {
-            format!("{parent}/{child}")
-        };
         if !parent.is_empty() {
             self.expanded.insert(parent.to_owned());
         }
         self.new_folder = None;
-        self.remote_path = Some(path);
+        self.remote_folder = join_rel(parent, child);
+        self.remote_edited = true;
     }
 }
 
-/// Draws the sheet. `Cancel`, `Back` and `Continue` move the assistant
-/// through `state`; everything else comes back as actions for the app.
+/// Draws the sheet. Everything the backend must do comes back as actions
+/// for the app.
 #[must_use]
 pub fn show(ctx: &egui::Context, view: &AddSyncView<'_>, state: &mut AddSyncState) -> Vec<Action> {
-    if state.step == Step::Name && !state.name_edited {
-        let name = default_name(view, state);
-        if state.name != name {
-            state.name = name;
-        }
-    }
-    let title = step_title(state);
-    let mut buttons = SheetButtons::new(if state.step == Step::Name {
-        "Create Sync"
-    } else {
-        "Continue"
+    let dropped = ctx.input(|input| {
+        input
+            .raw
+            .dropped_files
+            .first()
+            .map(|file| file.path().to_path_buf())
     });
-    buttons.primary_enabled = step_valid(view, state) && !view.creating;
-    buttons.back = state.step != Step::Account;
+    if let Some(path) = dropped {
+        state.picked_local(&path);
+    }
+    if state.account.is_none()
+        && let [only] = view.remotes
+    {
+        state.account = Some(only.name.clone());
+    }
+    follow_local_folder(view, state);
+    let mut buttons = SheetButtons::new("Create Sync");
+    buttons.primary_enabled = ready(view, state) && !view.creating;
 
     let mut actions = Vec::new();
-    let (step, remote_title) = (state.step, remote_step_title(state));
-    let chosen = widgets::sheet_with_header(
-        ctx,
-        "add-sync",
-        &title,
-        &buttons,
-        |ui| step_indicator(ui, step, &remote_title),
-        |ui| body(ui, view, state, &mut actions),
-    );
+    let chosen = widgets::sheet(ctx, "add-sync", "New Sync", &buttons, |ui| {
+        body(ui, view, state, &mut actions);
+    });
     match chosen {
         Some(SheetAction::Cancel) => emit(&mut actions, AddSyncAction::Cancel),
-        Some(SheetAction::Back) => {
-            state.step = previous(state.step);
-            ctx.request_repaint();
-        }
-        Some(SheetAction::Primary) if step_valid(view, state) && !view.creating => {
-            if state.step == Step::Name {
-                if let Some(new) = new_sync(view, state) {
-                    emit(&mut actions, AddSyncAction::Create(new));
-                }
-            } else {
-                state.step = next(state.step);
-                ctx.request_repaint();
+        Some(SheetAction::Primary) if ready(view, state) && !view.creating => {
+            if let Some(new) = new_sync(view, state) {
+                emit(&mut actions, AddSyncAction::Create(new));
             }
         }
-        Some(SheetAction::Primary) | None => {}
+        Some(SheetAction::Primary | SheetAction::Back) | None => {}
     }
-    step_requests(ctx, view, state, &mut actions);
+    requests(view, state, &mut actions);
     actions
 }
 
@@ -228,67 +236,81 @@ fn emit(actions: &mut Vec<Action>, action: AddSyncAction) {
     actions.push(Action::AddSyncSheet(action));
 }
 
+/// The Drive folder and the name copy the local folder's name until the
+/// user types their own.
+fn follow_local_folder(view: &AddSyncView<'_>, state: &mut AddSyncState) {
+    let local_name = local_target(view, state).and_then(|path| {
+        path.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+    });
+    if !state.remote_edited {
+        let folder = local_name.clone().unwrap_or_default();
+        if state.remote_folder != folder {
+            state.remote_folder = folder;
+        }
+    }
+    if !state.name_edited {
+        let name = local_name.unwrap_or_else(|| "Sync".to_owned());
+        if state.name != name {
+            state.name = name;
+        }
+    }
+}
+
+fn ready(view: &AddSyncView<'_>, state: &AddSyncState) -> bool {
+    matches!(local_check(view, state), LocalCheck::Ready)
+        && state.account.is_some()
+        && remote_problem(view, state).is_none()
+        && rule_problems(&state.rules).is_empty()
+        && name_problem(&state.name).is_none()
+}
+
+/// Requests that depend on what the sheet shows, not on a click: the root
+/// listing of the account and the check of the typed folder.
+fn requests(view: &AddSyncView<'_>, state: &mut AddSyncState, actions: &mut Vec<Action>) {
+    if let Some(account) = &state.account {
+        let root = remote_key(account, "");
+        if !view.dirs.contains_key(&root) {
+            emit(actions, AddSyncAction::LoadDirs(root));
+        }
+    }
+    if state.checked_local.as_deref() != Some(state.local.as_str()) {
+        state.checked_local = Some(state.local.clone());
+        if !state.local.trim().is_empty() {
+            emit(actions, AddSyncAction::CheckLocal(state.local.clone()));
+        }
+    }
+}
+
 fn body(ui: &mut Ui, view: &AddSyncView<'_>, state: &mut AddSyncState, actions: &mut Vec<Action>) {
-    match state.step {
-        Step::Account => account_step(ui, view, state, actions),
-        Step::RemoteFolder => remote_step(ui, view, state, actions),
-        Step::LocalFolder => local_step(ui, view, state, actions),
-        Step::Filters => filters_step(ui, view, state, actions),
-        Step::Name => name_step(ui, view, state),
+    local_section(ui, view, state, actions);
+    ui.add_space(space::S);
+    drive_section(ui, view, state, actions);
+    ui.add_space(space::S);
+    keep_section(ui, state);
+    ui.add_space(space::S);
+    options_section(ui, view, state, actions);
+    if let Some(error) = view.create_error {
+        widgets::inline_error(ui, error);
     }
 }
 
-fn next(step: Step) -> Step {
-    match step {
-        Step::Account => Step::RemoteFolder,
-        Step::RemoteFolder => Step::LocalFolder,
-        Step::LocalFolder => Step::Filters,
-        Step::Filters | Step::Name => Step::Name,
-    }
+fn note(ui: &mut Ui, text: &str) {
+    let palette = theme::palette(ui.ctx());
+    ui.label(
+        RichText::new(text)
+            .font(theme::callout())
+            .color(palette.secondary),
+    );
 }
 
-fn previous(step: Step) -> Step {
-    match step {
-        Step::Account | Step::RemoteFolder => Step::Account,
-        Step::LocalFolder => Step::RemoteFolder,
-        Step::Filters => Step::LocalFolder,
-        Step::Name => Step::Filters,
-    }
-}
-
-fn step_title(state: &AddSyncState) -> String {
-    match state.step {
-        Step::Account => "Account".to_owned(),
-        Step::RemoteFolder => remote_step_title(state),
-        Step::LocalFolder => "Folder on This Computer".to_owned(),
-        Step::Filters => "Filters".to_owned(),
-        Step::Name => "Name".to_owned(),
-    }
-}
-
-fn remote_step_title(state: &AddSyncState) -> String {
-    format!(
-        "Folder in {}",
-        state.account.as_deref().unwrap_or("Account")
-    )
-}
-
-fn step_indicator(ui: &mut Ui, step: Step, remote_title: &str) {
-    let current = match step {
-        Step::Account => 0,
-        Step::RemoteFolder => 1,
-        Step::LocalFolder => 2,
-        Step::Filters => 3,
-        Step::Name => 4,
-    };
-    let names = [
-        "Account",
-        remote_title,
-        "Folder on This Computer",
-        "Filters",
-        "Name",
-    ];
-    steps_header(ui, &names, current);
+fn heading(ui: &mut Ui, text: &str) {
+    let palette = theme::palette(ui.ctx());
+    ui.label(
+        RichText::new(text)
+            .font(theme::headline())
+            .color(palette.text),
+    );
 }
 
 /// `A › B › C` with the step at `current` in bold.
@@ -313,51 +335,6 @@ pub(super) fn steps_header(ui: &mut Ui, names: &[&str], current: usize) {
     ui.label(job);
 }
 
-fn step_valid(view: &AddSyncView<'_>, state: &AddSyncState) -> bool {
-    match state.step {
-        Step::Account => state.account.is_some(),
-        Step::RemoteFolder => state.remote_path.is_some() && remote_problem(view, state).is_none(),
-        Step::LocalFolder => matches!(local_check(view, state), LocalCheck::Ready),
-        Step::Filters => rule_problems(&state.rules).is_empty(),
-        Step::Name => {
-            name_problem(&state.name).is_none()
-                && state.account.is_some()
-                && state.remote_path.is_some()
-                && local_target(view, state).is_some()
-        }
-    }
-}
-
-/// Requests that depend on the step being on screen, not on a click: the
-/// root listing of the account and the check of the typed folder.
-fn step_requests(
-    ctx: &egui::Context,
-    view: &AddSyncView<'_>,
-    state: &AddSyncState,
-    actions: &mut Vec<Action>,
-) {
-    if state.step == Step::RemoteFolder
-        && let Some(account) = &state.account
-    {
-        let root = remote_key(account, "");
-        if !view.dirs.contains_key(&root) {
-            emit(actions, AddSyncAction::LoadDirs(root));
-        }
-    }
-    let seen = Id::new("syncfast-add-sync-checked-local");
-    if state.step != Step::LocalFolder {
-        ctx.data_mut(|data| data.remove::<String>(seen));
-        return;
-    }
-    let checked = ctx.data(|data| data.get_temp::<String>(seen));
-    if checked.as_deref() != Some(state.local.as_str()) {
-        ctx.data_mut(|data| data.insert_temp(seen, state.local.clone()));
-        if !state.local.trim().is_empty() {
-            emit(actions, AddSyncAction::CheckLocal(state.local.clone()));
-        }
-    }
-}
-
 pub(super) fn remote_key(account: &str, rel: &str) -> String {
     format!("{account}:{rel}")
 }
@@ -367,43 +344,6 @@ pub(super) fn join_rel(parent: &str, name: &str) -> String {
         name.to_owned()
     } else {
         format!("{parent}/{name}")
-    }
-}
-
-fn account_step(
-    ui: &mut Ui,
-    view: &AddSyncView<'_>,
-    state: &mut AddSyncState,
-    actions: &mut Vec<Action>,
-) {
-    if view.remotes.is_empty() {
-        let palette = theme::palette(ui.ctx());
-        ui.label(
-            RichText::new("No accounts yet.")
-                .font(theme::body())
-                .color(palette.secondary),
-        );
-    }
-    for remote in view.remotes {
-        let selected = state.account.as_deref() == Some(remote.name.as_str());
-        if account_row(ui, remote, selected) && !selected {
-            state.account = Some(remote.name.clone());
-            state.remote_path = None;
-            state.expanded.clear();
-            state.new_folder = None;
-            ui.ctx().request_repaint();
-        }
-    }
-    ui.add_space(space::S);
-    if widgets::button_with_icon(
-        ui,
-        ButtonKind::Secondary,
-        Some(Icon::Plus),
-        "Add Google Drive Account\u{2026}",
-    )
-    .clicked()
-    {
-        actions.push(Action::AddAccount);
     }
 }
 
@@ -422,7 +362,7 @@ pub(super) fn account_row(ui: &mut Ui, remote: &RemoteRow, selected: bool) -> bo
             egui::WidgetType::SelectableLabel,
             ui.is_enabled(),
             selected,
-            &remote.name,
+            remote.label(),
         )
     });
     let text_x = rect.left() + space::S + size::ICON + space::S;
@@ -450,7 +390,7 @@ pub(super) fn account_row(ui: &mut Ui, remote: &RemoteRow, selected: bool) -> bo
             .paint_at(ui, icon);
         let galley =
             ui.painter()
-                .layout_no_wrap(remote.name.clone(), theme::headline(), palette.text);
+                .layout_no_wrap(remote.label().to_owned(), theme::headline(), palette.text);
         let name_y = icon.center().y - galley.size().y / 2.0;
         ui.painter()
             .galley(egui::pos2(text_x, name_y), galley, palette.text);
@@ -463,7 +403,7 @@ pub(super) fn account_row(ui: &mut Ui, remote: &RemoteRow, selected: bool) -> bo
         let mut child = ui.new_child(UiBuilder::new().max_rect(area));
         child.add(
             egui::Label::new(
-                RichText::new("Uses rclone's shared client ID")
+                RichText::new(SHARED_CLIENT_ID)
                     .font(theme::callout())
                     .color(palette.warning),
             )
@@ -481,7 +421,142 @@ pub(super) fn account_row(ui: &mut Ui, remote: &RemoteRow, selected: bool) -> bo
     response.clicked()
 }
 
-fn remote_step(
+const SHARED_CLIENT_ID: &str = "Uses rclone's shared client ID";
+
+fn local_section(
+    ui: &mut Ui,
+    view: &AddSyncView<'_>,
+    state: &mut AddSyncState,
+    actions: &mut Vec<Action>,
+) {
+    let response = widgets::text_field(
+        ui,
+        "Folder on this computer",
+        &mut state.local,
+        "/home/you/Documents",
+    );
+    if response.changed() {
+        ui.ctx().request_repaint();
+    }
+    if widgets::secondary_button(ui, "Choose\u{2026}").clicked() {
+        emit(actions, AddSyncAction::PickFolder);
+    }
+    match local_check(view, state) {
+        LocalCheck::Empty | LocalCheck::Pending | LocalCheck::Ready => {}
+        LocalCheck::Problem(message) => {
+            widgets::inline_error(ui, &message);
+        }
+        LocalCheck::Missing(path) => {
+            ui.horizontal(|ui| {
+                widgets::inline_error(ui, "This folder does not exist.");
+                if widgets::secondary_button(ui, "Create Folder").clicked() {
+                    emit(
+                        actions,
+                        AddSyncAction::CreateLocal(path.to_string_lossy().into_owned()),
+                    );
+                }
+            });
+        }
+    }
+    if let Some(error) = view.local_error {
+        widgets::inline_error(ui, error);
+    }
+}
+
+fn drive_section(
+    ui: &mut Ui,
+    view: &AddSyncView<'_>,
+    state: &mut AddSyncState,
+    actions: &mut Vec<Action>,
+) {
+    if view.remotes.is_empty() {
+        heading(ui, "Google Drive");
+        note(ui, "No Google Drive account is connected yet.");
+        if widgets::button_with_icon(
+            ui,
+            ButtonKind::Secondary,
+            Some(Icon::Plus),
+            "Connect Google Drive\u{2026}",
+        )
+        .clicked()
+        {
+            actions.push(Action::AddAccount);
+        }
+        return;
+    }
+    if view.remotes.len() > 1 {
+        account_choice(ui, view, state);
+    }
+    if widgets::text_field(
+        ui,
+        "Folder on Google Drive",
+        &mut state.remote_folder,
+        "Entire Drive",
+    )
+    .changed()
+    {
+        state.remote_edited = true;
+        ui.ctx().request_repaint();
+    }
+    let chosen = state
+        .account
+        .as_deref()
+        .and_then(|account| view.remotes.iter().find(|remote| remote.name == account));
+    if let Some(remote) = chosen {
+        if view.remotes.len() == 1 {
+            note(ui, &format!("In {}", remote.label()));
+        }
+        if remote.shares_client_id() {
+            let palette = theme::palette(ui.ctx());
+            ui.label(
+                RichText::new(SHARED_CLIENT_ID)
+                    .font(theme::callout())
+                    .color(palette.warning),
+            );
+        }
+    }
+    if let Some(problem) = remote_problem(view, state) {
+        widgets::inline_error(ui, &problem);
+    }
+    if widgets::secondary_button(ui, "Browse\u{2026}").clicked() {
+        state.browsing = !state.browsing;
+        ui.ctx().request_repaint();
+    }
+    if state.browsing {
+        browse(ui, view, state, actions);
+    }
+}
+
+fn account_choice(ui: &mut Ui, view: &AddSyncView<'_>, state: &mut AddSyncState) {
+    heading(ui, "Google Drive account");
+    let shown = state
+        .account
+        .as_deref()
+        .and_then(|account| view.remotes.iter().find(|remote| remote.name == account))
+        .map_or("Choose an account", RemoteRow::label)
+        .to_owned();
+    let combo = egui::ComboBox::from_id_salt("add-sync-account")
+        .selected_text(&shown)
+        .width(ui.available_width())
+        .show_ui(ui, |ui| {
+            for remote in view.remotes {
+                let selected = state.account.as_deref() == Some(remote.name.as_str());
+                if ui.selectable_label(selected, remote.label()).clicked() && !selected {
+                    state.account = Some(remote.name.clone());
+                    state.expanded.clear();
+                    state.new_folder = None;
+                }
+            }
+        });
+    combo.response.widget_info(|| {
+        let mut info = egui::WidgetInfo::new(egui::WidgetType::ComboBox);
+        info.label = Some("Google Drive account".to_owned());
+        info.current_text_value = Some(shown.clone());
+        info
+    });
+}
+
+fn browse(
     ui: &mut Ui,
     view: &AddSyncView<'_>,
     state: &mut AddSyncState,
@@ -494,20 +569,23 @@ fn remote_step(
         NodeState::Loaded(nodes) => nodes,
         NodeState::Unloaded | NodeState::Loading => Vec::new(),
     };
-    let root_label = format!("Entire {account}");
+    let selected = remote_rel(state).to_owned();
     let tree_actions = widgets::folder_tree(
         ui,
         &FolderTree {
-            root_label: &root_label,
+            root_label: "Entire Drive",
             nodes: &nodes,
-            selected: state.remote_path.as_deref(),
+            selected: Some(&selected),
             expanded: &state.expanded,
         },
     );
     for action in tree_actions {
         ui.ctx().request_repaint();
         match action {
-            TreeAction::Select(path) => state.remote_path = Some(path),
+            TreeAction::Select(path) => {
+                state.remote_folder = path;
+                state.remote_edited = true;
+            }
             TreeAction::Toggle(path) => {
                 if !state.expanded.remove(&path) {
                     let key = remote_key(&account, &path);
@@ -523,13 +601,66 @@ fn remote_step(
     new_folder_section(
         ui,
         &mut state.new_folder,
-        state.remote_path.as_deref().unwrap_or_default(),
+        &selected,
         view.mkdir_error,
         &account,
         actions,
     );
-    if let Some(problem) = remote_problem(view, state) {
-        widgets::inline_error(ui, &problem);
+}
+
+fn keep_section(ui: &mut Ui, state: &mut AddSyncState) {
+    heading(ui, "Keep");
+    let choices = [
+        (
+            SimpleMode::BothSame,
+            "Both the same",
+            "Changes and deletions go both ways.",
+        ),
+        (
+            SimpleMode::CopyToDrive,
+            "A copy on Google Drive",
+            "Files go up to Drive. Nothing on this computer is changed or deleted.",
+        ),
+    ];
+    for (mode, label, caption) in choices {
+        if ui.radio(state.mode == mode, label).clicked() && state.mode != mode {
+            state.mode = mode;
+            ui.ctx().request_repaint();
+        }
+        ui.horizontal(|ui| {
+            ui.add_space(space::XL);
+            note(ui, caption);
+        });
+    }
+}
+
+fn options_section(
+    ui: &mut Ui,
+    view: &AddSyncView<'_>,
+    state: &mut AddSyncState,
+    actions: &mut Vec<Action>,
+) {
+    let palette = theme::palette(ui.ctx());
+    egui::CollapsingHeader::new(
+        RichText::new("Options")
+            .font(theme::headline())
+            .color(palette.text),
+    )
+    .id_salt("add-sync-options")
+    .default_open(false)
+    .show(ui, |ui| {
+        if widgets::text_field(ui, "Name", &mut state.name, "Documents").changed() {
+            state.name_edited = true;
+            ui.ctx().request_repaint();
+        }
+        if let Some(problem) = name_problem(&state.name) {
+            widgets::inline_error(ui, problem);
+        }
+        ui.add_space(space::S);
+        filters_form(ui, view, state, actions);
+    });
+    if name_problem(&state.name).is_some() || !rule_problems(&state.rules).is_empty() {
+        widgets::inline_error(ui, "Fix the name or the filters under Options.");
     }
 }
 
@@ -659,8 +790,18 @@ fn folder_name_ok(name: &str) -> bool {
     !name.trim().is_empty() && !name.contains('/')
 }
 
+/// The Drive folder as rclone takes it: no surrounding blanks or trailing
+/// `/`.
+fn remote_rel(state: &AddSyncState) -> &str {
+    state.remote_folder.trim().trim_end_matches('/')
+}
+
 fn remote_problem(view: &AddSyncView<'_>, state: &AddSyncState) -> Option<String> {
-    let chosen = remote_key(state.account.as_deref()?, state.remote_path.as_deref()?);
+    let rel = remote_rel(state);
+    if rel.starts_with('/') {
+        return Some("Write the Drive folder without a leading \"/\".".to_owned());
+    }
+    let chosen = remote_key(state.account.as_deref()?, rel);
     view.existing
         .iter()
         .find(|pair| remotes_overlap(&chosen, &pair.remote))
@@ -730,41 +871,6 @@ fn local_check(view: &AddSyncView<'_>, state: &AddSyncState) -> LocalCheck {
     }
 }
 
-fn local_step(
-    ui: &mut Ui,
-    view: &AddSyncView<'_>,
-    state: &mut AddSyncState,
-    actions: &mut Vec<Action>,
-) {
-    let response = widgets::text_field(ui, "Folder", &mut state.local, "/home/you/Documents");
-    if response.changed() {
-        ui.ctx().request_repaint();
-    }
-    if widgets::secondary_button(ui, "Choose\u{2026}").clicked() {
-        emit(actions, AddSyncAction::PickFolder);
-    }
-    match local_check(view, state) {
-        LocalCheck::Empty | LocalCheck::Pending | LocalCheck::Ready => {}
-        LocalCheck::Problem(message) => {
-            widgets::inline_error(ui, &message);
-        }
-        LocalCheck::Missing(path) => {
-            ui.horizontal(|ui| {
-                widgets::inline_error(ui, "This folder does not exist.");
-                if widgets::secondary_button(ui, "Create Folder").clicked() {
-                    emit(
-                        actions,
-                        AddSyncAction::CreateLocal(path.to_string_lossy().into_owned()),
-                    );
-                }
-            });
-        }
-    }
-    if let Some(error) = view.local_error {
-        widgets::inline_error(ui, error);
-    }
-}
-
 /// One entry per non-blank line, numbered as the user sees the lines.
 fn rule_problems(rules: &str) -> Vec<String> {
     rules
@@ -783,7 +889,7 @@ fn rule_lines(rules: &str) -> Vec<String> {
         .collect()
 }
 
-fn filters_step(
+fn filters_form(
     ui: &mut Ui,
     view: &AddSyncView<'_>,
     state: &mut AddSyncState,
@@ -815,42 +921,9 @@ fn filters_step(
     }
 }
 
-fn default_name(view: &AddSyncView<'_>, state: &AddSyncState) -> String {
-    local_target(view, state)
-        .and_then(|path| {
-            path.file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-        })
-        .unwrap_or_else(|| "Sync".to_owned())
-}
-
 fn name_problem(name: &str) -> Option<&'static str> {
     (name.trim().is_empty() || name.chars().any(char::is_control))
         .then_some("sync name must be one line of text")
-}
-
-fn name_step(ui: &mut Ui, view: &AddSyncView<'_>, state: &mut AddSyncState) {
-    let palette = theme::palette(ui.ctx());
-    if widgets::text_field(ui, "Name", &mut state.name, "Documents").changed() {
-        state.name_edited = true;
-        ui.ctx().request_repaint();
-    }
-    if let Some(problem) = name_problem(&state.name) {
-        widgets::inline_error(ui, problem);
-    } else {
-        let id = unique_id(
-            state.name.trim(),
-            view.existing.iter().map(|pair| pair.id.as_str()),
-        );
-        ui.label(
-            RichText::new(format!("Sync id: {id}"))
-                .font(theme::footnote())
-                .color(palette.secondary),
-        );
-    }
-    if let Some(error) = view.create_error {
-        widgets::inline_error(ui, error);
-    }
 }
 
 fn new_sync(view: &AddSyncView<'_>, state: &AddSyncState) -> Option<NewSync> {
@@ -859,8 +932,9 @@ fn new_sync(view: &AddSyncView<'_>, state: &AddSyncState) -> Option<NewSync> {
         id: unique_id(name, view.existing.iter().map(|pair| pair.id.as_str())),
         name: name.to_owned(),
         local: local_target(view, state)?,
-        remote: remote_key(state.account.as_deref()?, state.remote_path.as_deref()?),
+        remote: remote_key(state.account.as_deref()?, remote_rel(state)),
         presets: state.presets.clone(),
         filters: rule_lines(&state.rules),
+        mode: state.mode.sync_mode(),
     })
 }

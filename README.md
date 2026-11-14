@@ -39,7 +39,7 @@ flatpak run io.github.raphael_soares.syncfast
 
 1. Open syncfast and press **Get Started**.
 2. Add your Google Drive account with your own OAuth client ID ([how](docs/guide/google-drive.md)).
-3. Choose a folder on Drive and a folder on this computer, then **Create Sync**.
+3. Choose a folder on this computer; the folder on Drive follows its name. Then **Create Sync**.
 4. Review the first sync. After you confirm it, syncfast keeps both sides equal by itself.
 
 <p align="center">

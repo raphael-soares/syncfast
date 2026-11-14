@@ -44,6 +44,8 @@ struct AddSyncSession {
     create_error: Option<String>,
     /// What was asked of the backend, to open the review of the new sync.
     creating: Option<NewSync>,
+    /// The Drive folder of `creating` is being made first.
+    making_folder: bool,
 }
 
 #[derive(Debug)]
@@ -64,8 +66,8 @@ struct AccountSession {
     error: Option<String>,
     /// After the account exists, the Add Sync sheet opens.
     then_add_sync: bool,
-    /// Closing without an account brings the Add Sync sheet back.
-    back_to_add_sync: bool,
+    /// Closing without an account brings the Add Sync sheet back as it was.
+    back_to_add_sync: Option<Box<AddSyncState>>,
     /// Closing without an account brings the New Backup sheet back.
     back_to_backup: Option<Box<WizardSession>>,
 }
@@ -165,8 +167,9 @@ impl Sheets {
         }
     }
 
-    fn open_add_sync(&mut self, state: AddSyncState) -> Vec<Command> {
+    fn open_add_sync(&mut self, mut state: AddSyncState) -> Vec<Command> {
         let mut commands = self.leave();
+        state.checked_local = None;
         self.current = Current::AddSync(Box::new(AddSyncSession {
             state,
             dirs: HashMap::new(),
@@ -175,6 +178,7 @@ impl Sheets {
             local_error: None,
             create_error: None,
             creating: None,
+            making_folder: false,
         }));
         commands.push(Command::LoadRemotes);
         commands
@@ -231,7 +235,11 @@ impl Sheets {
         } else {
             None
         };
-        let from_wizard = matches!(self.current, Current::AddSync(_));
+        let add_sync = match &self.current {
+            Current::AddSync(session) => Some(Box::new(session.state.clone())),
+            _ => None,
+        };
+        let from_wizard = add_sync.is_some();
         let renaming = matches!(mode, AccountMode::Rename { .. });
         let mut commands = self.leave();
         commands.push(Command::LoadRemotes);
@@ -240,7 +248,7 @@ impl Sheets {
             connecting: false,
             error: None,
             then_add_sync: !renaming && parked.is_none() && (from_wizard || around.welcome),
-            back_to_add_sync: from_wizard,
+            back_to_add_sync: add_sync,
             back_to_backup: parked,
         }));
         commands
@@ -307,7 +315,12 @@ impl Sheets {
             AddSyncAction::Create(new) => {
                 session.create_error = None;
                 session.creating = Some(new.clone());
-                vec![Command::CreateSync(new.clone())]
+                if folder_is_known(&session.dirs, &new.remote) {
+                    vec![Command::CreateSync(new.clone())]
+                } else {
+                    session.making_folder = true;
+                    vec![Command::MakeRemoteDir(new.remote.clone())]
+                }
             }
         }
     }
@@ -326,7 +339,7 @@ impl Sheets {
             AccountAction::JsonDropped(path) => vec![Command::ReadClientJson(path.clone())],
             AccountAction::Cancel => {
                 let was_connecting = session.connecting;
-                let back = session.back_to_add_sync;
+                let back = session.back_to_add_sync.take();
                 let parked = session.back_to_backup.take();
                 self.current = Current::Closed;
                 let mut commands = Vec::new();
@@ -335,8 +348,8 @@ impl Sheets {
                 }
                 if let Some(wizard) = parked {
                     self.current = Current::Backup(Box::new(BackupSheet::from_wizard(wizard)));
-                } else if back {
-                    commands.extend(self.open_add_sync(AddSyncState::default()));
+                } else if let Some(state) = back {
+                    commands.extend(self.open_add_sync(*state));
                 }
                 commands
             }
@@ -498,6 +511,19 @@ impl Sheets {
         let Current::AddSync(session) = &mut self.current else {
             return Vec::new();
         };
+        if session.making_folder
+            && let Some(new) = session.creating.as_ref().filter(|new| new.remote == path)
+        {
+            session.making_folder = false;
+            return match result {
+                Ok(()) => vec![Command::CreateSync(new.clone())],
+                Err(text) => {
+                    session.create_error = Some(text.clone());
+                    session.creating = None;
+                    Vec::new()
+                }
+            };
+        }
         if let Err(text) = result {
             session.mkdir_error = Some(text.clone());
             return Vec::new();
@@ -598,6 +624,7 @@ impl Sheets {
             }
             Ok(name) => {
                 let next = session.then_add_sync;
+                let add_sync = session.back_to_add_sync.take();
                 let parked = session.back_to_backup.take();
                 self.current = Current::Closed;
                 if let Some(wizard) = parked {
@@ -607,10 +634,8 @@ impl Sheets {
                     return vec![Command::LoadRemotes];
                 }
                 if next {
-                    let state = AddSyncState {
-                        account: Some(name.clone()),
-                        ..AddSyncState::default()
-                    };
+                    let mut state = add_sync.map(|state| *state).unwrap_or_default();
+                    state.account = Some(name.clone());
                     self.open_add_sync(state)
                 } else {
                     Vec::new()
@@ -700,4 +725,20 @@ impl Sheets {
             }
         }
     }
+}
+
+/// The account root, or a folder its parent's listing showed: no `mkdir`
+/// before the sync is created.
+fn folder_is_known(dirs: &HashMap<String, DirListing>, remote: &str) -> bool {
+    let Some((account, rel)) = remote.split_once(':') else {
+        return true;
+    };
+    if rel.is_empty() {
+        return true;
+    }
+    let (parent, child) = rel.rsplit_once('/').unwrap_or(("", rel));
+    matches!(
+        dirs.get(&format!("{account}:{parent}")),
+        Some(DirListing::Loaded(names)) if names.iter().any(|name| name == child)
+    )
 }

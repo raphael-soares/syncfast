@@ -13,7 +13,7 @@ use syncfast_core::backup::destination::Destination;
 use syncfast_core::backup::state::BackupState;
 use syncfast_core::behavior::{Behavior, ReviewLevel, SyncMode};
 use syncfast_core::bisync::{Fault, ReviewKind, fault_of};
-use syncfast_core::config::{Config, Pair, expand_tilde, split_remote};
+use syncfast_core::config::{Config, Pair, SettingScope, expand_tilde, split_remote};
 use syncfast_core::drive_changes::account_email;
 use syncfast_core::network::NetworkManager;
 use syncfast_core::notify::NativeNotifier;
@@ -208,6 +208,7 @@ pub async fn create_sync(
 ) -> Result<ReviewLevel, String> {
     let mut config = Config::load(paths).await.map_err(|e| e.to_string())?;
     let id = new.id.clone();
+    let mode = new.mode;
     let pair = Pair {
         id: new.id,
         name: new.name,
@@ -218,17 +219,25 @@ pub async fn create_sync(
         filters: new.filters,
         overrides: syncfast_core::settings::Overrides::default(),
     };
-    config.add_pair(pair.clone()).map_err(|e| e.to_string())?;
+    let add = |config: &mut Config| -> Result<(), String> {
+        config.add_pair(pair.clone()).map_err(|e| e.to_string())?;
+        if mode != SyncMode::Bisync {
+            config
+                .set_setting(&SettingScope::Sync(id.clone()), "mode", mode.name())
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    };
+    add(&mut config)?;
     let accounts = rclone.listremotes().await.map_err(|e| e.to_string())?;
     let validation = config.validate(paths, &accounts);
     if let Some(error) = validation.errors.iter().find(|error| error.pair_id == id) {
         return Err(error.message.clone());
     }
     let review = Behavior::for_pair(&config.defaults(), &pair).review;
-    Config::edit(paths, |config| config.add_pair(pair))
+    Config::edit(paths, add)
         .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())??;
     Ok(review)
 }
 
@@ -707,6 +716,7 @@ mod tests {
             remote: remote.into(),
             presets: vec!["system_junk".into()],
             filters: vec!["- *.bak".into()],
+            mode: SyncMode::Bisync,
         }
     }
 
@@ -1036,6 +1046,29 @@ mod tests {
         );
         assert_eq!(saved.presets, ["system_junk"]);
         assert_eq!(saved.filters, ["- *.bak"]);
+    }
+
+    #[tokio::test]
+    async fn a_copy_to_drive_sync_is_saved_with_the_upload_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        let Some(rclone) = rclone_with(dir.path(), "[dev]\ntype = local\n") else {
+            return;
+        };
+        let local = dir.path().join("local");
+        std::fs::create_dir_all(&local).unwrap();
+        let new = NewSync {
+            mode: SyncMode::Upload,
+            ..new_sync("dev", local, "dev:")
+        };
+
+        create_sync(&paths, &rclone, new).await.unwrap();
+
+        let config = Config::load(&paths).await.unwrap();
+        let behavior = Behavior::for_pair(&config.defaults(), &config.pairs()[0]);
+        assert_eq!(behavior.mode, SyncMode::Upload);
+        let text = std::fs::read_to_string(paths.config_file()).unwrap();
+        assert!(text.contains("mode = \"upload\""), "{text}");
     }
 
     #[tokio::test]
