@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.1](https://github.com/raphael-soares/syncfast/compare/v0.20.0...v0.20.1) (2026-11-14)
+
+
+### Bug fixes
+
+* **ci:** puxar só o histórico que o Flatpak publicado guarda ([#114](https://github.com/raphael-soares/syncfast/issues/114)) ([a58e56c](https://github.com/raphael-soares/syncfast/commit/a58e56c1d809e513c5b459ee43f1d5451fcb316f))
+
 ## [0.20.0](https://github.com/raphael-soares/syncfast/compare/v0.19.0...v0.20.0) (2026-11-14)
 
 
