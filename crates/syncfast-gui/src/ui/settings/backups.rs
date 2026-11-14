@@ -11,10 +11,10 @@ use crate::ui::{Action, ViewModel};
 pub const GUIDE_URL: &str =
     "https://github.com/raphael-soares/syncfast/blob/main/docs/guide/backup.md";
 
-pub const NO_STORAGE: &str =
-    "No Secret portal and no Secret Service answered. See docs/guide/backup.md.";
+pub const NO_STORAGE: &str = "No Secret portal and no Secret Service answered.";
 
-pub const HOST_KEYRING_NOTE: &str = "The Flatpak can read every secret in your keyring. Routing the Secret portal is safer; see docs/guide/backup.md.";
+pub const HOST_KEYRING_NOTE: &str =
+    "The Flatpak can read every secret in your keyring. Routing the Secret portal is safer.";
 
 /// What the last look at the key storage found, and what the last test of it
 /// said.
@@ -94,14 +94,7 @@ pub fn show(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
         .as_deref()
         .map_or_else(|| "Not found".to_owned(), str::to_owned);
     setting_row(ui, "restic", Some(&restic), |_| {});
-    if ui
-        .link(
-            RichText::new("Backing up with syncfast")
-                .font(theme::callout())
-                .color(palette.accent),
-        )
-        .clicked()
-    {
+    if secondary_button(ui, "Backup Guide").clicked() {
         actions.push(Action::OpenUrl(GUIDE_URL.to_owned()));
     }
     actions

@@ -3,7 +3,7 @@
 //! I/O. The app sends the [`Command`]s it returns.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use syncfast_core::config::split_remote;
@@ -104,6 +104,11 @@ impl Sheets {
     #[must_use]
     pub fn remotes(&self) -> &[RemoteRow] {
         &self.remotes
+    }
+
+    #[must_use]
+    pub fn home(&self) -> &Path {
+        &self.home
     }
 
     /// The backups that exist, for the sheets that name one.

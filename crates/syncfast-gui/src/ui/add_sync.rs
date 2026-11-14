@@ -725,7 +725,7 @@ pub(super) fn listing_notes(
         .collect();
     failed.sort();
     for (key, message) in failed {
-        widgets::inline_error(ui, message);
+        widgets::error_with_details(ui, message);
         if widgets::secondary_button(ui, "Try Again").clicked() {
             emit(actions, AddSyncAction::LoadDirs(key.clone()));
         }

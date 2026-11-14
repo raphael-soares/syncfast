@@ -1223,7 +1223,7 @@ fn the_backups_pane_warns_about_the_host_keyring() {
 
     harness.get_by_label("Host keyring (Secret Service)");
     harness.get_by_label(
-        "The Flatpak can read every secret in your keyring. Routing the Secret portal is safer; see docs/guide/backup.md.",
+        "The Flatpak can read every secret in your keyring. Routing the Secret portal is safer.",
     );
 }
 
@@ -1231,8 +1231,7 @@ fn the_backups_pane_warns_about_the_host_keyring() {
 fn the_backups_pane_says_when_no_key_storage_answers_and_why() {
     let harness = settings_pane(KeyStorageView::Missing("no portal on the bus".into()));
 
-    harness
-        .get_by_label("No Secret portal and no Secret Service answered. See docs/guide/backup.md.");
+    harness.get_by_label("No Secret portal and no Secret Service answered.");
     harness.get_by_label("no portal on the bus");
 }
 
@@ -1242,7 +1241,7 @@ fn test_key_storage_and_the_guide_link_emit_their_actions() {
 
     harness.get_by_label("Test Key Storage").click();
     harness.run_steps(4);
-    harness.get_by_label("Backing up with syncfast").click();
+    harness.get_by_label("Backup Guide").click();
     harness.run_steps(4);
 
     assert_eq!(

@@ -27,6 +27,7 @@ pub mod welcome;
 pub mod widgets;
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use jiff::Timestamp;
@@ -217,6 +218,8 @@ pub struct ViewModel {
     /// The version of the restic that runs the backups; `None` when it is
     /// not found.
     pub restic_version: Option<String>,
+    /// Shown as `~` in paths.
+    pub home: PathBuf,
 }
 
 impl ViewModel {

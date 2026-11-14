@@ -14,7 +14,8 @@ use syncfast_core::state::GateKind;
 
 use super::Action;
 use super::widgets::{
-    PrimaryKind, SheetAction, SheetButtons, inline_error, progress_bar, secondary_button, sheet,
+    PrimaryKind, SheetAction, SheetButtons, error_with_details, progress_bar, secondary_button,
+    sheet,
 };
 use crate::icons::Icon;
 use crate::theme::{self, Palette, radius, size, space};
@@ -219,7 +220,7 @@ fn body(ui: &mut Ui, view: &ReviewView<'_>, actions: &mut Vec<Action>) {
         }
         ReviewPhase::Failed(message) => {
             forget_toggles(ui, toggles_id);
-            inline_error(ui, message);
+            error_with_details(ui, message);
             if secondary_button(ui, "Try Again").clicked() {
                 actions.push(Action::Review(ReviewAction::Retry));
             }

@@ -8,7 +8,7 @@ use syncfast_core::bisync::Fault;
 use syncfast_core::bisync_log::Progress;
 use syncfast_core::state::{DisplayStatus, GateKind};
 use syncfast_gui::theme::{self, Palette};
-use syncfast_gui::ui::{self, Action, DetailTab, PairRow, ViewModel};
+use syncfast_gui::ui::{self, Action, DetailTab, PairRow, RemoteRow, ViewModel};
 
 fn now() -> Timestamp {
     "2026-11-03T12:00:00Z".parse().unwrap()
@@ -124,6 +124,40 @@ fn a_long_sync_path_is_cut_short_before_the_actions_in_the_smallest_window() {
         title_right <= actions_left,
         "{title_right} > {actions_left}"
     );
+}
+
+#[test]
+fn the_subtitle_shortens_home_and_names_the_drive_account_by_its_email() {
+    let mut vm = view(pair(DisplayStatus::UpToDate));
+    vm.home = "/home/ada".into();
+    vm.remotes = vec![RemoteRow {
+        name: "gdrive".into(),
+        kind: "drive".into(),
+        own_client_id: true,
+        email: Some("ada@example.com".into()),
+    }];
+
+    let harness = harness(vm);
+
+    harness.get_by_label("~/Drive ↔ Google Drive (ada@example.com)/Notes");
+}
+
+#[test]
+fn the_subtitle_keeps_a_remote_that_is_not_a_drive_account_as_written() {
+    let mut vm = view(PairRow {
+        remote: "nas:".into(),
+        ..pair(DisplayStatus::UpToDate)
+    });
+    vm.remotes = vec![RemoteRow {
+        name: "nas".into(),
+        kind: "sftp".into(),
+        own_client_id: false,
+        email: None,
+    }];
+
+    let harness = harness(vm);
+
+    harness.get_by_label("/home/ada/Drive ↔ nas:");
 }
 
 fn mirrored(mode: SyncMode, local: &str) -> PairRow {

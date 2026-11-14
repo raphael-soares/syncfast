@@ -284,6 +284,7 @@ impl App {
             defaults_overrides: self.snapshot.defaults_overrides.clone(),
             key_storage: ui::settings::KeyStorageView::default(),
             restic_version: None,
+            home: self.sheets.home().to_path_buf(),
         };
         self.backup_screens.fill(&mut vm);
         vm.backup.restoring = self

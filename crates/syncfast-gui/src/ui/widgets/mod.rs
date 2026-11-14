@@ -32,7 +32,7 @@ pub use dialog::dialog;
 pub use empty_state::empty_state;
 pub use folder_tree::{FolderNode, FolderTree, NodeState, TreeAction, folder_tree};
 pub use icon_button::icon_button;
-pub use inline_error::inline_error;
+pub use inline_error::{error_with_details, friendly, inline_error};
 pub use list_row::list_row;
 pub use progress_bar::progress_bar;
 pub use segmented::segmented;

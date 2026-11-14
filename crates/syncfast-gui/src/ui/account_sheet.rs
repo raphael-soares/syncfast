@@ -11,8 +11,8 @@ use egui::{RichText, Ui};
 use crate::theme::{self, space};
 
 use super::widgets::{
-    PrimaryKind, SheetAction, SheetButtons, inline_error, progress_bar, secondary_button,
-    secret_field, sheet, text_field,
+    PrimaryKind, SheetAction, SheetButtons, error_with_details, inline_error, progress_bar,
+    secondary_button, secret_field, sheet, text_field,
 };
 use super::{Action, RemoteRow};
 
@@ -376,7 +376,7 @@ fn body(ui: &mut Ui, view: &AccountView<'_>, state: &mut AccountState, actions: 
         secret_field(ui, "Client secret", &mut state.client_secret);
     });
     if let Some(error) = view.error {
-        inline_error(ui, error);
+        error_with_details(ui, error);
     }
 }
 

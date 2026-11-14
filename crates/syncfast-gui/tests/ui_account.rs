@@ -368,8 +368,23 @@ fn while_signing_in_the_sheet_waits_for_the_browser_and_blocks_connect() {
 fn a_failed_sign_in_shows_the_last_line_rclone_printed() {
     let harness = harness(AccountMode::Add, |screen| {
         filled(screen);
+        screen.error = Some("Failed to configure token: port 53682 already in use".into());
+    });
+
+    harness.get_by_label("Failed to configure token: port 53682 already in use");
+}
+
+#[test]
+fn a_denied_sign_in_says_what_to_check_and_keeps_rclone_s_line_under_details() {
+    let mut harness = harness(AccountMode::Add, |screen| {
+        filled(screen);
         screen.error = Some("Failed to configure token: access_denied".into());
     });
+
+    harness.get_by_label(
+        "Google did not grant access. If your Google Cloud app is in testing, add your account as a test user.",
+    );
+    click(&mut harness, "Details");
 
     harness.get_by_label("Failed to configure token: access_denied");
 }

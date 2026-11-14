@@ -33,7 +33,7 @@ const DRIVE_HINT: &str =
 const RETENTION_NOTE: &str = "Older snapshots are deleted from the destination after each backup.";
 const MOUNTS_NOTE: &str =
     "Mounted drives, rclone mounts and Btrfs subvolumes inside these folders are backed up too.";
-const HOST_KEYRING_NOTE: &str = "Using the host keyring. See docs/guide/backup.md.";
+const HOST_KEYRING_NOTE: &str = "Using the host keyring.";
 const EVERY: [(&str, Every); 3] = [
     ("Every hour", Every::Hourly),
     ("Every day", Every::Daily),
@@ -764,6 +764,9 @@ fn body(
         && state.step == state.sequence()[0]
     {
         note(ui, HOST_KEYRING_NOTE);
+        if ui.link("Backup Guide").clicked() {
+            actions.push(Action::OpenUrl(super::settings::GUIDE_URL.to_owned()));
+        }
     }
     if let Some(error) = &state.error
         && error.step == state.step

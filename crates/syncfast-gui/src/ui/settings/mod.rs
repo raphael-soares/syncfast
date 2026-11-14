@@ -5,7 +5,7 @@ mod accounts;
 mod advanced;
 mod backups;
 
-pub use backups::KeyStorageView;
+pub use backups::{GUIDE_URL, KeyStorageView};
 
 use egui::{RichText, Ui};
 
