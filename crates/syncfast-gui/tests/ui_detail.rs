@@ -1,17 +1,12 @@
 #![allow(clippy::unwrap_used)]
 
-use std::sync::Arc;
-
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use jiff::Timestamp;
-use jiff::tz::TimeZone;
-use syncfast_core::behavior::{ReviewLevel, SyncMode};
+use syncfast_core::behavior::SyncMode;
 use syncfast_core::bisync::Fault;
-use syncfast_core::bisync_log::{Progress, RunSummary};
-use syncfast_core::preview::ChangeCounts;
-use syncfast_core::runs::RunEntry;
-use syncfast_core::state::{AutoReviewed, DisplayStatus, GateKind};
+use syncfast_core::bisync_log::Progress;
+use syncfast_core::state::{DisplayStatus, GateKind};
 use syncfast_gui::theme::{self, Palette};
 use syncfast_gui::ui::{self, Action, DetailTab, PairRow, ViewModel};
 
@@ -54,7 +49,7 @@ fn view(pair: PairRow) -> ViewModel {
         sidebar_width: 240.0,
         error: None,
         now: now(),
-        tab: DetailTab::Activity,
+        tab: DetailTab::Filters,
         runs: None,
         ..ViewModel::default()
     }
@@ -499,11 +494,12 @@ fn a_running_round_without_a_total_shows_an_indeterminate_bar() {
 }
 
 #[test]
-fn the_tabs_are_activity_conflicts_and_filters_and_picking_one_asks_to_switch() {
+fn the_tabs_are_conflicts_filters_and_options_and_picking_one_asks_to_switch() {
     let mut harness = harness(view(pair(DisplayStatus::UpToDate)));
 
-    harness.get_by_label("Activity");
     harness.get_by_label("Filters");
+    harness.get_by_label("Options");
+    assert!(harness.query_by_label("Activity").is_none());
     harness.get_by_label("Conflicts").click();
     harness.run_steps(4);
 
@@ -539,137 +535,4 @@ fn the_selected_tab_decides_what_the_detail_shows() {
     let harness = harness(vm);
 
     harness.get_by_label("No conflicts");
-    assert!(harness.query_by_label("No activity yet").is_none());
-}
-
-fn run(id: &str, started: &str, status: DisplayStatus) -> RunEntry {
-    RunEntry {
-        id: id.into(),
-        started: Some(
-            started
-                .parse::<Timestamp>()
-                .unwrap()
-                .to_zoned(TimeZone::UTC),
-        ),
-        seconds: Some(4),
-        status,
-        summary: RunSummary {
-            uploaded: Some(2),
-            downloaded: Some(1),
-            deleted_local: Some(0),
-            deleted_remote: Some(3),
-            renamed: None,
-            conflicts_new: Some(0),
-            changes: Vec::new(),
-        },
-        detail: None,
-        auto_reviewed: None,
-        idle: false,
-        messages: vec!["Synching Path1".into(), "Bisync successful".into()],
-    }
-}
-
-fn with_runs(runs: Vec<RunEntry>) -> ViewModel {
-    let mut vm = view(pair(DisplayStatus::UpToDate));
-    vm.runs = Some(Arc::from(runs));
-    vm
-}
-
-#[test]
-fn activity_without_rounds_says_there_is_none_yet() {
-    let harness = harness(with_runs(Vec::new()));
-
-    harness.get_by_label("No activity yet");
-}
-
-#[test]
-fn activity_lists_a_round_with_its_time_duration_result_and_counters() {
-    let harness = harness(with_runs(vec![run(
-        "a",
-        "2026-11-03T11:55:00Z",
-        DisplayStatus::UpToDate,
-    )]));
-
-    harness.get_by_label("Today 11:55");
-    harness.get_by_label("4 s");
-    harness.get_by_label("↑ 2  ↓ 1  ✕ 3");
-    assert!(harness.query_by_label("No activity yet").is_none());
-}
-
-#[test]
-fn activity_says_when_a_round_was_reviewed_automatically_beside_its_counters() {
-    let mut reviewed = run("a", "2026-11-03T11:55:00Z", DisplayStatus::UpToDate);
-    reviewed.auto_reviewed = Some(AutoReviewed {
-        gate: GateKind::TooManyDeletes,
-        level: ReviewLevel::Automatic,
-        counts: ChangeCounts {
-            delete_remote: 3,
-            ..ChangeCounts::default()
-        },
-        recoverable: false,
-    });
-    let plain = run("b", "2026-11-03T11:50:00Z", DisplayStatus::UpToDate);
-    let harness = harness(with_runs(vec![reviewed, plain]));
-
-    harness.get_by_label("Reviewed automatically  ↑ 2  ↓ 1  ✕ 3");
-    harness.get_by_label("↑ 2  ↓ 1  ✕ 3");
-}
-
-#[test]
-fn activity_shows_an_idle_check_with_its_time_and_says_nothing_changed() {
-    let mut idle = run(
-        "b.idle.jsonl",
-        "2026-11-03T11:55:00Z",
-        DisplayStatus::UpToDate,
-    );
-    idle.idle = true;
-    idle.summary = RunSummary::default();
-    let harness = harness(with_runs(vec![idle]));
-
-    harness.get_by_label("Today 11:55");
-    harness.get_by_label("No changes");
-}
-
-#[test]
-fn activity_shows_the_reason_of_a_failed_round_instead_of_counters() {
-    let mut failed = run("b", "2026-11-02T13:50:00Z", DisplayStatus::Retrying);
-    failed.detail = Some("network error".into());
-    let harness = harness(with_runs(vec![failed]));
-
-    harness.get_by_label("Yesterday 13:50");
-    harness.get_by_label("Will retry");
-    harness.get_by_label("network error");
-}
-
-#[test]
-fn activity_shows_the_round_in_progress_as_running() {
-    let mut running = pair(DisplayStatus::Syncing);
-    running.progress = Some(syncing_progress(980));
-    let mut vm = view(running);
-    let mut current = run("a", "2026-11-03T11:59:00Z", DisplayStatus::Syncing);
-    current.seconds = None;
-    vm.runs = Some(Arc::from(vec![current]));
-    let harness = harness(vm);
-
-    harness.get_by_label("running");
-    harness.get_by_label("412 of 980 files");
-}
-
-#[test]
-fn clicking_a_round_shows_its_log_and_clicking_again_hides_it() {
-    let mut harness = harness(with_runs(vec![run(
-        "a",
-        "2026-11-03T11:55:00Z",
-        DisplayStatus::UpToDate,
-    )]));
-    assert!(harness.query_by_label("Bisync successful").is_none());
-
-    harness.get_by_label("Today 11:55").click();
-    harness.run_steps(4);
-    harness.get_by_label("Synching Path1");
-    harness.get_by_label("Bisync successful");
-
-    harness.get_by_label("Today 11:55").click();
-    harness.run_steps(4);
-    assert!(harness.query_by_label("Bisync successful").is_none());
 }

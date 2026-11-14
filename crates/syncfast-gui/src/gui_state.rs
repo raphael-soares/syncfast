@@ -50,6 +50,7 @@ pub enum SettingsPane {
     General,
     Notifications,
     Appearance,
+    Advanced,
 }
 
 /// The sidebar groups the panes of Settings sit under.
@@ -75,13 +76,14 @@ impl SettingsGroup {
 
 impl SettingsPane {
     /// In the order the sidebar lists them, group by group.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Accounts,
         Self::Defaults,
         Self::Backups,
         Self::General,
         Self::Notifications,
         Self::Appearance,
+        Self::Advanced,
     ];
 
     /// The pane's name, shown in the sidebar and as the title of its content.
@@ -94,6 +96,7 @@ impl SettingsPane {
             Self::General => "General",
             Self::Notifications => "Notifications",
             Self::Appearance => "Appearance",
+            Self::Advanced => "Advanced",
         }
     }
 
@@ -102,7 +105,9 @@ impl SettingsPane {
         match self {
             Self::Accounts | Self::Defaults => SettingsGroup::Syncs,
             Self::Backups => SettingsGroup::Backups,
-            Self::General | Self::Notifications | Self::Appearance => SettingsGroup::App,
+            Self::General | Self::Notifications | Self::Appearance | Self::Advanced => {
+                SettingsGroup::App
+            }
         }
     }
 }
@@ -263,6 +268,7 @@ mod tests {
                 (SettingsGroup::App, "General"),
                 (SettingsGroup::App, "Notifications"),
                 (SettingsGroup::App, "Appearance"),
+                (SettingsGroup::App, "Advanced"),
             ]
         );
     }

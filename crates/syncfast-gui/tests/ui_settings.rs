@@ -4,8 +4,15 @@ mod common;
 
 use common::{from_config, harness, harness_in, pair, view_model};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
+use jiff::Timestamp;
+use jiff::tz::TimeZone;
+use std::sync::Arc;
+use syncfast_core::behavior::ReviewLevel;
+use syncfast_core::bisync_log::{Progress, RunSummary};
 use syncfast_core::config::SettingScope;
-use syncfast_core::state::GateKind;
+use syncfast_core::preview::ChangeCounts;
+use syncfast_core::runs::RunEntry;
+use syncfast_core::state::{AutoReviewed, DisplayStatus, GateKind};
 use syncfast_gui::gui_state::SettingsPane;
 use syncfast_gui::theme::{Palette, ThemeChoice};
 use syncfast_gui::ui::settings::AppearanceView;
@@ -652,4 +659,215 @@ fn the_defaults_pane_fits_the_minimum_window_in_both_themes() {
             assert!(fits(rect), "{row} sticks out: {rect:?}");
         }
     }
+}
+
+fn advanced_view(pairs: Vec<syncfast_gui::ui::PairRow>) -> ViewModel {
+    ViewModel {
+        settings_pane: SettingsPane::Advanced,
+        ..view_model(pairs, Some("a"))
+    }
+}
+
+fn with_runs(runs: Vec<RunEntry>) -> ViewModel {
+    let mut vm = advanced_view(vec![pair("a", "Notes"), pair("b", "Photos")]);
+    vm.runs = Some(Arc::from(runs));
+    vm
+}
+
+fn advanced(vm: ViewModel) -> egui_kittest::Harness<'static, common::Frame> {
+    let mut harness = harness(vm, screen());
+    harness.run();
+    harness
+}
+
+#[test]
+fn the_advanced_pane_names_the_selected_sync_in_a_combo_and_lists_its_rounds() {
+    let harness = advanced(with_runs(vec![run(
+        "a",
+        "2026-11-03T11:55:00Z",
+        DisplayStatus::UpToDate,
+    )]));
+
+    assert_eq!(
+        harness
+            .get_by_role(egui::accesskit::Role::ComboBox)
+            .accesskit_node()
+            .value(),
+        Some("Notes".to_owned())
+    );
+    assert!(harness.query_all_by_label("Sync").count() > 0);
+    harness.get_by_label("Today 11:55");
+}
+
+#[test]
+fn picking_another_sync_in_the_advanced_pane_asks_to_select_it() {
+    let mut harness = advanced(with_runs(Vec::new()));
+    harness.get_by_role(egui::accesskit::Role::ComboBox).click();
+    harness.run();
+
+    harness.get_by_label("Photos").click();
+    harness.run();
+
+    assert_eq!(harness.state().actions, [Action::SelectPair("b".into())]);
+}
+
+#[test]
+fn the_advanced_pane_without_syncs_says_so() {
+    let harness = advanced(advanced_view(Vec::new()));
+
+    harness.get_by_label("No syncs yet");
+    assert!(
+        harness
+            .query_by_role(egui::accesskit::Role::ComboBox)
+            .is_none()
+    );
+}
+
+#[test]
+fn the_advanced_pane_is_in_the_sidebar() {
+    let mut harness = harness(accounts(Vec::new()), screen());
+    harness.run();
+
+    harness.get_by_label("Advanced").click();
+    harness.run();
+
+    assert_eq!(
+        harness.state().actions,
+        [Action::SetSettingsPane(SettingsPane::Advanced)]
+    );
+}
+
+fn run(id: &str, started: &str, status: DisplayStatus) -> RunEntry {
+    RunEntry {
+        id: id.into(),
+        started: Some(
+            started
+                .parse::<Timestamp>()
+                .unwrap()
+                .to_zoned(TimeZone::UTC),
+        ),
+        seconds: Some(4),
+        status,
+        summary: RunSummary {
+            uploaded: Some(2),
+            downloaded: Some(1),
+            deleted_local: Some(0),
+            deleted_remote: Some(3),
+            renamed: None,
+            conflicts_new: Some(0),
+            changes: Vec::new(),
+        },
+        detail: None,
+        auto_reviewed: None,
+        idle: false,
+        messages: vec!["Synching Path1".into(), "Bisync successful".into()],
+    }
+}
+
+#[test]
+fn activity_without_rounds_says_there_is_none_yet() {
+    let harness = advanced(with_runs(Vec::new()));
+
+    harness.get_by_label("No activity yet");
+}
+
+#[test]
+fn activity_lists_a_round_with_its_time_duration_result_and_counters() {
+    let harness = advanced(with_runs(vec![run(
+        "a",
+        "2026-11-03T11:55:00Z",
+        DisplayStatus::UpToDate,
+    )]));
+
+    harness.get_by_label("Today 11:55");
+    harness.get_by_label("4 s");
+    harness.get_by_label("↑ 2  ↓ 1  ✕ 3");
+    assert!(harness.query_by_label("No activity yet").is_none());
+}
+
+#[test]
+fn activity_says_when_a_round_was_reviewed_automatically_beside_its_counters() {
+    let mut reviewed = run("a", "2026-11-03T11:55:00Z", DisplayStatus::UpToDate);
+    reviewed.auto_reviewed = Some(AutoReviewed {
+        gate: GateKind::TooManyDeletes,
+        level: ReviewLevel::Automatic,
+        counts: ChangeCounts {
+            delete_remote: 3,
+            ..ChangeCounts::default()
+        },
+        recoverable: false,
+    });
+    let plain = run("b", "2026-11-03T11:50:00Z", DisplayStatus::UpToDate);
+    let harness = advanced(with_runs(vec![reviewed, plain]));
+
+    harness.get_by_label("Reviewed automatically  ↑ 2  ↓ 1  ✕ 3");
+    harness.get_by_label("↑ 2  ↓ 1  ✕ 3");
+}
+
+#[test]
+fn activity_shows_an_idle_check_with_its_time_and_says_nothing_changed() {
+    let mut idle = run(
+        "b.idle.jsonl",
+        "2026-11-03T11:55:00Z",
+        DisplayStatus::UpToDate,
+    );
+    idle.idle = true;
+    idle.summary = RunSummary::default();
+    let harness = advanced(with_runs(vec![idle]));
+
+    harness.get_by_label("Today 11:55");
+    harness.get_by_label("No changes");
+}
+
+#[test]
+fn activity_shows_the_reason_of_a_failed_round_instead_of_counters() {
+    let mut failed = run("b", "2026-11-02T13:50:00Z", DisplayStatus::Retrying);
+    failed.detail = Some("network error".into());
+    let harness = advanced(with_runs(vec![failed]));
+
+    harness.get_by_label("Yesterday 13:50");
+    harness.get_by_label("Will retry");
+    harness.get_by_label("network error");
+}
+
+#[test]
+fn activity_shows_the_round_in_progress_as_running() {
+    let mut running = pair("a", "Notes");
+    running.status = DisplayStatus::Syncing;
+    running.progress = Some(Progress {
+        transfers: 412,
+        total_transfers: 980,
+        bytes: 1_800_000_000,
+        total_bytes: 4_300_000_000,
+        speed: 12_400_000.0,
+        eta_seconds: Some(170),
+        current: Some("Fotos/IMG_4471.jpg".into()),
+    });
+    let mut vm = advanced_view(vec![running]);
+    let mut current = run("a", "2026-11-03T11:59:00Z", DisplayStatus::Syncing);
+    current.seconds = None;
+    vm.runs = Some(Arc::from(vec![current]));
+    let harness = advanced(vm);
+
+    harness.get_by_label("running");
+    harness.get_by_label("412 of 980 files");
+}
+
+#[test]
+fn clicking_a_round_shows_its_log_and_clicking_again_hides_it() {
+    let mut harness = advanced(with_runs(vec![run(
+        "a",
+        "2026-11-03T11:55:00Z",
+        DisplayStatus::UpToDate,
+    )]));
+    assert!(harness.query_by_label("Bisync successful").is_none());
+
+    harness.get_by_label("Today 11:55").click();
+    harness.run_steps(4);
+    harness.get_by_label("Synching Path1");
+    harness.get_by_label("Bisync successful");
+
+    harness.get_by_label("Today 11:55").click();
+    harness.run_steps(4);
+    assert!(harness.query_by_label("Bisync successful").is_none());
 }

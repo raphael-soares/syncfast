@@ -1,4 +1,4 @@
-//! The Activity tab: the rounds of the selected sync, newest first.
+//! Activity: the rounds of the selected sync, newest first, in Settings › Advanced.
 
 use egui::{Frame, Id, Margin, RichText, Ui, Vec2};
 use syncfast_core::bisync_log::RunSummary;

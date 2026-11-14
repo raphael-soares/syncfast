@@ -963,7 +963,7 @@ fn fields_of_a_direction_the_mode_does_not_sync_are_hidden() {
 fn only_a_two_way_sync_has_a_conflicts_tab() {
     let tabs = |pair_settings: &str| {
         let mut vm = options("", pair_settings);
-        vm.tab = DetailTab::Activity;
+        vm.tab = DetailTab::Filters;
         let mut harness = harness(vm, ui::detail::show);
         harness.run();
         harness.query_all_by_label("Conflicts").count() > 0
@@ -979,7 +979,7 @@ fn only_a_two_way_sync_has_a_conflicts_tab() {
 fn a_one_way_sync_shows_its_mode_as_a_chip_and_a_two_way_one_does_not() {
     let chip = |pair_settings: &str, label: &str| {
         let mut vm = options("", pair_settings);
-        vm.tab = DetailTab::Activity;
+        vm.tab = DetailTab::Filters;
         let mut harness = harness(vm, ui::detail::show);
         harness.run();
         harness.query_all_by_label(label).count() > 0

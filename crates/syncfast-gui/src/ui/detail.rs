@@ -14,7 +14,7 @@ use super::widgets::{
     BadgeSize, ButtonKind, button_with_icon, chip, icon_button, inline_error, primary_button,
     progress_bar, segmented, status_badge, toolbar,
 };
-use super::{Action, PairRow, ViewModel, activity, conflicts, filters, options, recently_deleted};
+use super::{Action, PairRow, ViewModel, conflicts, filters, options, recently_deleted};
 use crate::icons::Icon;
 use crate::theme::{self, Palette, radius, size, space};
 
@@ -25,7 +25,6 @@ const SIDE: i8 = 20;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum DetailTab {
     #[default]
-    Activity,
     RecentlyDeleted,
     Conflicts,
     Filters,
@@ -33,8 +32,7 @@ pub enum DetailTab {
 }
 
 impl DetailTab {
-    pub const ALL: [Self; 5] = [
-        Self::Activity,
+    pub const ALL: [Self; 4] = [
         Self::RecentlyDeleted,
         Self::Conflicts,
         Self::Filters,
@@ -44,7 +42,6 @@ impl DetailTab {
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
-            Self::Activity => "Activity",
             Self::RecentlyDeleted => "Recently Deleted",
             Self::Conflicts => "Conflicts",
             Self::Filters => "Filters",
@@ -149,7 +146,6 @@ fn pair_detail(ui: &mut Ui, vm: &ViewModel, pair: &PairRow, palette: &Palette) -
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| match tab {
-                DetailTab::Activity => actions.extend(activity::show(ui, vm)),
                 DetailTab::RecentlyDeleted => actions.extend(recently_deleted::show(ui, vm)),
                 DetailTab::Conflicts => actions.extend(conflicts::show(ui, vm)),
                 DetailTab::Filters => actions.extend(filters::show(ui, vm)),
