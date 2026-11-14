@@ -14,7 +14,9 @@ use crate::bisync::{
     EXIT_CRITICAL, EXIT_USAGE, Fault, Outcome, RoundMode, USE_TRASH, bwlimit_args, dir_arg,
     failure_msgs, fault_of, log_file, stamp,
 };
-use crate::bisync_log::{Change, ChangeKind, LogLine, RunSummary, renamed_from};
+use crate::bisync_log::{
+    Change, ChangeKind, FileError, LogLine, RunSummary, file_errors, renamed_from,
+};
 use crate::config::{Pair, split_remote};
 use crate::paths::Paths;
 use crate::rclone::{Rclone, RcloneError};
@@ -270,7 +272,25 @@ pub fn summarize_oneway(
         renamed: count(&[ChangeKind::RenameLocal, ChangeKind::RenameRemote]),
         conflicts_new: None,
         changes,
+        errors: oneway_errors(lines, &failed),
     }
+}
+
+/// The files the log names in an error line, then the ones the report
+/// marks as failed (`!`) without a line of their own.
+fn oneway_errors(lines: &[LogLine], failed: &HashSet<&str>) -> Vec<FileError> {
+    let mut errors = file_errors(lines);
+    let mut unexplained: Vec<&str> = failed
+        .iter()
+        .copied()
+        .filter(|path| !errors.iter().any(|error| error.path == *path))
+        .collect();
+    unexplained.sort_unstable();
+    errors.extend(unexplained.into_iter().map(|path| FileError {
+        path: path.to_owned(),
+        message: "Failed to sync".to_owned(),
+    }));
+    errors
 }
 
 /// New path to old path of each rename the log names and the report
@@ -1020,6 +1040,28 @@ mod tests {
 
         assert_eq!(errors.changes, [change(ChangeKind::Upload, "ok.txt")]);
         assert_eq!(errors.uploaded, None);
+    }
+
+    #[test]
+    fn a_file_that_could_not_be_read_is_an_error_with_rclone_message() {
+        let summary = summary("oneway_sync_errors", SyncMode::Upload);
+
+        assert_eq!(
+            summary.errors,
+            [FileError {
+                path: "locked.txt".to_owned(),
+                message: "Failed to copy: failed to open source object: open /tmp/tmp.5DFmmplI3S/local/locked.txt: permission denied".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_file_the_report_marks_failed_without_a_log_line_is_an_error_too() {
+        let summary = summarize_oneway("! b.txt\n+ ok.txt\n! a.txt\n", &[], SyncMode::Upload, 1);
+
+        let paths: Vec<_> = summary.errors.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, ["a.txt", "b.txt"]);
+        assert_eq!(summary.errors[0].message, "Failed to sync");
     }
 
     #[test]

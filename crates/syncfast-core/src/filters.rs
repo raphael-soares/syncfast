@@ -289,27 +289,34 @@ pub async fn write_if_changed(paths: &Paths, pair: &Pair) -> Result<FiltersFile,
     }
 }
 
-/// Answers "is this directory excluded?" from the directory rules (`- x/`) of
-/// a rendered filters-file. File rules are ignored; a single `+ ` rule turns
-/// the matcher off, because include rules can re-admit anything.
+/// Answers "is this directory excluded?" from the directory rules (`- x/`)
+/// of a rendered filters-file, and "is this file excluded?" from those and
+/// the file rules (`- x`). A single `+ ` rule turns the matcher off,
+/// because include rules can re-admit anything.
 #[derive(Debug, Clone)]
 pub struct DirMatcher {
     set: GlobSet,
+    files: GlobSet,
     disabled: bool,
 }
 
 impl DirMatcher {
     #[must_use]
     pub fn new(rendered: &str) -> Self {
-        let mut builder = GlobSetBuilder::new();
+        let mut dirs = GlobSetBuilder::new();
+        let mut files = GlobSetBuilder::new();
         let mut disabled = false;
         for line in rendered.lines() {
             if line.starts_with("+ ") {
                 disabled = true;
                 continue;
             }
-            let Some(pattern) = line.strip_prefix("- ").and_then(|p| p.strip_suffix('/')) else {
+            let Some(rule) = line.strip_prefix("- ") else {
                 continue;
+            };
+            let (pattern, builder) = match rule.strip_suffix('/') {
+                Some(dir) => (dir, &mut dirs),
+                None => (rule, &mut files),
             };
             let glob = match pattern.strip_prefix('/') {
                 Some(anchored) => anchored.to_owned(),
@@ -319,14 +326,20 @@ impl DirMatcher {
                 Ok(glob) => {
                     builder.add(glob);
                 }
-                Err(err) => log::warn!("ignoring directory filter {line:?}: {err}"),
+                Err(err) => log::warn!("ignoring filter {line:?}: {err}"),
             }
         }
-        let set = builder.build().unwrap_or_else(|err| {
-            log::warn!("directory filters are unusable: {err}");
-            GlobSet::empty()
-        });
-        Self { set, disabled }
+        let build = |builder: GlobSetBuilder| {
+            builder.build().unwrap_or_else(|err| {
+                log::warn!("filters are unusable: {err}");
+                GlobSet::empty()
+            })
+        };
+        Self {
+            set: build(dirs),
+            files: build(files),
+            disabled,
+        }
     }
 
     /// `rel_dir` is relative to the pair's root. A directory is excluded when
@@ -340,6 +353,16 @@ impl DirMatcher {
             .ancestors()
             .filter(|dir| !dir.as_os_str().is_empty())
             .any(|dir| self.set.is_match(dir))
+    }
+
+    /// `rel` is a file relative to the pair's root: excluded by a file rule
+    /// or because its directory is.
+    #[must_use]
+    pub fn is_excluded_file(&self, rel: &Path) -> bool {
+        if self.disabled {
+            return false;
+        }
+        rel.parent().is_some_and(|dir| self.is_excluded(dir)) || self.files.is_match(rel)
     }
 }
 
@@ -416,6 +439,29 @@ mod tests {
 
     fn excluded(matcher: &DirMatcher, dir: &str) -> bool {
         matcher.is_excluded(Path::new(dir))
+    }
+
+    #[test]
+    fn a_file_is_excluded_by_a_file_rule_or_by_its_folder() {
+        let m = matcher(&["- *.bak", "- /top.txt", "- node_modules/"]);
+        let file = |path: &str| m.is_excluded_file(Path::new(path));
+
+        assert!(file("a/b.bak"));
+        assert!(file("b.bak"));
+        assert!(file("top.txt"));
+        assert!(!file("x/top.txt"));
+        assert!(file("node_modules/x.js"));
+        assert!(file("app/node_modules/deep/x.js"));
+        assert!(!file("ok.txt"));
+        assert!(!excluded(&m, "a.bak"), "a file rule is not a folder rule");
+    }
+
+    #[test]
+    fn an_include_rule_excludes_no_file() {
+        let m = matcher(&["- *.bak", "- node_modules/", "+ x"]);
+
+        assert!(!m.is_excluded_file(Path::new("a.bak")));
+        assert!(!m.is_excluded_file(Path::new("node_modules/x.js")));
     }
 
     #[test]

@@ -1,10 +1,14 @@
 //! The status service `syncfast watch` publishes on the session bus, for a
-//! file manager extension: which folders are sync roots, their state, and
-//! which files are conflicted. The extension lives outside the sandbox and
-//! never reads syncfast's files.
+//! file manager extension: which folders are sync roots and their state,
+//! the state of each file and folder inside them, and which files are
+//! conflicted. The extension lives outside the sandbox and never reads
+//! syncfast's files.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fs::Metadata;
 use std::io;
+use std::ops::Bound;
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -28,6 +32,14 @@ pub const OBJECT_PATH: &str = "/io/github/raphael_soares/syncfast/Status";
 /// How often the states are read again; `Changed` follows within this time
 /// of a round starting or ending.
 const POLL: Duration = Duration::from_secs(2);
+
+/// Changed paths kept per sync before the record collapses into "the whole
+/// sync changed".
+const DIRTY_CAP: usize = 10_000;
+
+/// Per sync id, each path the watcher saw change (relative to the root)
+/// and when. The empty path stands for the whole sync.
+type Dirty = HashMap<String, BTreeMap<PathBuf, Timestamp>>;
 
 /// The bus the service connects to.
 #[derive(Debug, Clone)]
@@ -83,11 +95,178 @@ struct RootEntry {
     state: &'static str,
 }
 
-/// What `Roots` and `Conflicts` answer.
+/// What `Roots`, `Conflicts` and `Directory` answer.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct Snapshot {
     roots: Vec<RootEntry>,
     conflicts: Vec<String>,
+    syncs: Vec<SyncView>,
+}
+
+/// The round the files on disk match: the last one that succeeded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Baseline {
+    started: Timestamp,
+    finished: Timestamp,
+}
+
+/// `None` when the sync never succeeded. An older success without its
+/// round's start counts as a round that started when it finished.
+fn baseline(state: &State) -> Option<Baseline> {
+    let success = state.last_success?;
+    Some(match &state.last_run {
+        Some(run) if run.finished == success => Baseline {
+            started: run.started,
+            finished: run.finished,
+        },
+        _ => Baseline {
+            started: success,
+            finished: success,
+        },
+    })
+}
+
+/// What `Directory` needs to know about one sync.
+#[derive(Debug, Clone)]
+struct SyncView {
+    id: String,
+    root: PathBuf,
+    matcher: DirMatcher,
+    baseline: Option<Baseline>,
+    running: bool,
+    /// Relative to `root`, from the last round.
+    errors: BTreeMap<PathBuf, String>,
+    /// Relative to `root`.
+    conflicts: HashSet<PathBuf>,
+    /// Only so that a new change in the [`Dirty`] record counts as a
+    /// change of the snapshot.
+    dirty_len: usize,
+    dirty_newest: Option<Timestamp>,
+}
+
+/// The matcher is left out: it follows the config, and a filter change
+/// holds the sync for review, which changes the root state.
+impl PartialEq for SyncView {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.root == other.root
+            && self.baseline == other.baseline
+            && self.running == other.running
+            && self.errors == other.errors
+            && self.conflicts == other.conflicts
+            && self.dirty_len == other.dirty_len
+            && self.dirty_newest == other.dirty_newest
+    }
+}
+
+impl Eq for SyncView {}
+
+/// The entries of `map` that are `rel` or below it.
+fn under<'a, V>(
+    map: &'a BTreeMap<PathBuf, V>,
+    rel: &'a Path,
+) -> impl Iterator<Item = (&'a PathBuf, &'a V)> {
+    map.range::<Path, _>((Bound::Included(rel), Bound::Unbounded))
+        .take_while(move |(path, _)| path.starts_with(rel))
+}
+
+/// The entries of `dirty` that are `rel` or below it, and the whole-sync
+/// entry.
+fn dirty_under<'a>(
+    dirty: &'a BTreeMap<PathBuf, Timestamp>,
+    rel: &'a Path,
+) -> impl Iterator<Item = (&'a PathBuf, &'a Timestamp)> {
+    dirty
+        .get_key_value(Path::new(""))
+        .into_iter()
+        .chain(under(dirty, rel))
+}
+
+/// The state of one file or folder of a sync, by precedence, and its
+/// detail: the error message, or when it was last synced (RFC 3339).
+/// `changed_at` is its ctime: a change while nothing watched still shows.
+fn entry_state(
+    view: &SyncView,
+    dirty: &BTreeMap<PathBuf, Timestamp>,
+    rel: &Path,
+    is_dir: bool,
+    changed_at: Option<Timestamp>,
+) -> (&'static str, String) {
+    if view.conflicts.contains(rel) {
+        return ("conflict", String::new());
+    }
+    let error = if is_dir {
+        under(&view.errors, rel).map(|(_, message)| message).next()
+    } else {
+        view.errors.get(rel)
+    };
+    if let Some(message) = error {
+        return ("error", message.clone());
+    }
+    let Some(base) = view.baseline else {
+        return (pending(view), String::new());
+    };
+    let touched = if is_dir {
+        dirty_under(dirty, rel).next().is_some()
+    } else {
+        dirty.contains_key(Path::new("")) || dirty.contains_key(rel)
+    };
+    if touched || changed_at.is_some_and(|at| at > base.finished) {
+        return (pending(view), String::new());
+    }
+    ("synced", base.finished.to_string())
+}
+
+fn pending(view: &SyncView) -> &'static str {
+    if view.running { "syncing" } else { "pending" }
+}
+
+fn changed_at(meta: &Metadata) -> Option<Timestamp> {
+    if meta.ctime() == 0 && meta.ctime_nsec() == 0 {
+        return None;
+    }
+    Timestamp::new(meta.ctime(), i32::try_from(meta.ctime_nsec()).ok()?).ok()
+}
+
+/// Name, state and detail of each entry of `dir`, which is `rel` inside
+/// the sync. Entries the filters leave out, names that are not UTF-8 and
+/// entries that cannot be read are skipped.
+fn list_directory(
+    view: &SyncView,
+    dirty: &BTreeMap<PathBuf, Timestamp>,
+    dir: &Path,
+    rel: &Path,
+) -> Vec<(String, String, String)> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            log::debug!("cannot list {}: {err}", dir.display());
+            return Vec::new();
+        }
+    };
+    let mut listed = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let child = rel.join(&name);
+        let is_dir = meta.is_dir();
+        let excluded = if is_dir {
+            view.matcher.is_excluded(&child)
+        } else {
+            view.matcher.is_excluded_file(&child)
+        };
+        if excluded {
+            continue;
+        }
+        let (state, detail) = entry_state(view, dirty, &child, is_dir, changed_at(&meta));
+        listed.push((name, state.to_owned(), detail));
+    }
+    listed.sort_unstable();
+    listed
 }
 
 /// One sync as read from disk, before it becomes part of a [`Snapshot`].
@@ -209,12 +388,36 @@ async fn conflicts_of(
 
 struct Service {
     shared: Arc<Mutex<Snapshot>>,
+    dirty: Arc<Mutex<Dirty>>,
     trigger: Arc<dyn Trigger>,
 }
 
 impl Service {
     fn read<T>(&self, pick: impl FnOnce(&Snapshot) -> T) -> T {
         pick(&self.shared.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// The sync that holds `path`, `path` relative to its root, and the part
+    /// of the change record that matters for that folder.
+    fn view_of(&self, path: &Path) -> Option<(SyncView, PathBuf, BTreeMap<PathBuf, Timestamp>)> {
+        let (view, rel) = self.read(|snapshot| {
+            let root = root_containing(&snapshot.roots, path)?;
+            let view = snapshot.syncs.iter().find(|view| view.id == root.id)?;
+            let rel = path.strip_prefix(&view.root).ok()?.to_owned();
+            Some((view.clone(), rel))
+        })?;
+        let dirty = self
+            .dirty
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&view.id)
+            .map(|record| {
+                dirty_under(record, &rel)
+                    .map(|(path, at)| (path.clone(), *at))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Some((view, rel, dirty))
     }
 }
 
@@ -233,6 +436,27 @@ impl Service {
 
     fn conflicts(&self) -> Vec<String> {
         self.read(|snapshot| snapshot.conflicts.clone())
+    }
+
+    /// Name, state and detail of each entry of the folder `path`, inside a
+    /// sync. The state is `synced` (the detail says when, RFC 3339),
+    /// `pending`, `syncing`, `error` (the detail is the message) or
+    /// `conflict`. Entries the filters leave out are not listed; empty when
+    /// `path` is not inside a sync or is left out itself.
+    async fn directory(&self, path: String) -> Vec<(String, String, String)> {
+        let dir = PathBuf::from(path);
+        let Some((view, rel, dirty)) = self.view_of(&dir) else {
+            return Vec::new();
+        };
+        if !rel.as_os_str().is_empty() && view.matcher.is_excluded(&rel) {
+            return Vec::new();
+        }
+        tokio::task::spawn_blocking(move || list_directory(&view, &dirty, &dir, &rel))
+            .await
+            .unwrap_or_else(|err| {
+                log::warn!("listing a folder failed: {err}");
+                Vec::new()
+            })
     }
 
     /// Starts a round of the sync whose folder holds `path`. False when no
@@ -261,6 +485,7 @@ impl Service {
 pub struct StatusHandle {
     syncs: watch::Sender<Arc<[SyncInfo]>>,
     waiting: watch::Sender<HashSet<String>>,
+    dirty: Arc<Mutex<Dirty>>,
     task: JoinHandle<()>,
 }
 
@@ -268,6 +493,17 @@ impl StatusHandle {
     /// The enabled syncs, after the config changed.
     pub fn set_syncs(&self, syncs: Vec<SyncInfo>) {
         self.syncs.send_replace(syncs.into());
+    }
+
+    /// `rel` changed in sync `id` now; empty when anything may have.
+    pub fn note_change(&self, id: &str, rel: PathBuf) {
+        let now = Timestamp::now();
+        let mut dirty = self.dirty.lock().unwrap_or_else(PoisonError::into_inner);
+        let record = dirty.entry(id.to_owned()).or_default();
+        record.insert(rel, now);
+        if record.len() > DIRTY_CAP {
+            *record = BTreeMap::from([(PathBuf::new(), now)]);
+        }
     }
 
     /// The syncs with a trigger on its way.
@@ -294,39 +530,57 @@ impl Drop for StatusHandle {
 pub fn spawn(bus: Bus, paths: Paths, trigger: Arc<dyn Trigger>) -> StatusHandle {
     let (syncs, syncs_rx) = watch::channel(Arc::<[SyncInfo]>::from(Vec::new()));
     let (waiting, waiting_rx) = watch::channel(HashSet::new());
+    let dirty = Arc::new(Mutex::new(Dirty::new()));
+    let service = Service {
+        shared: Arc::new(Mutex::new(Snapshot::default())),
+        dirty: dirty.clone(),
+        trigger,
+    };
     let task = tokio::spawn(async move {
-        if let Err(err) = serve(bus, paths, trigger, syncs_rx, waiting_rx).await {
+        if let Err(err) = serve(bus, paths, service, syncs_rx, waiting_rx).await {
             log::warn!("not publishing the sync status on the session bus: {err}");
         }
     });
     StatusHandle {
         syncs,
         waiting,
+        dirty,
         task,
+    }
+}
+
+/// Forgets the changes the last good round started after, so they were
+/// synced; then what the snapshot keeps of the record.
+fn prune_dirty(dirty: &mut Dirty, views: &mut [SyncView]) {
+    dirty.retain(|id, _| views.iter().any(|view| view.id == *id));
+    for view in views {
+        let Some(record) = dirty.get_mut(&view.id) else {
+            continue;
+        };
+        if let Some(base) = view.baseline {
+            record.retain(|_, at| *at >= base.started);
+        }
+        view.dirty_len = record.len();
+        view.dirty_newest = record.values().max().copied();
     }
 }
 
 async fn serve(
     bus: Bus,
     paths: Paths,
-    trigger: Arc<dyn Trigger>,
+    service: Service,
     mut syncs: watch::Receiver<Arc<[SyncInfo]>>,
     mut waiting: watch::Receiver<HashSet<String>>,
 ) -> zbus::Result<()> {
-    let shared = Arc::new(Mutex::new(Snapshot::default()));
+    let shared = service.shared.clone();
+    let dirty = service.dirty.clone();
     let builder = match bus {
         Bus::Session => Builder::session()?,
         Bus::Address(address) => Builder::address(address.as_str())?,
     };
     let connection = builder
         .name(BUS_NAME)?
-        .serve_at(
-            OBJECT_PATH,
-            Service {
-                shared: shared.clone(),
-                trigger,
-            },
-        )?
+        .serve_at(OBJECT_PATH, service)?
         .build()
         .await?;
     let interface = connection
@@ -345,20 +599,44 @@ async fn serve(
         let infos = syncs.borrow_and_update().clone();
         let settling = waiting.borrow_and_update().clone();
         let mut samples = Vec::with_capacity(infos.len());
+        let mut views = Vec::with_capacity(infos.len());
         for info in infos.iter() {
             let state = State::load_or_config_error(&paths, &info.id).await;
             let running = is_running(&paths, &info.id);
+            let conflicts = conflicts_of(&mut cache, info, &state).await;
+            views.push(SyncView {
+                id: info.id.clone(),
+                root: info.root.clone(),
+                matcher: info.matcher.clone(),
+                baseline: baseline(&state),
+                running,
+                errors: state
+                    .last_run
+                    .iter()
+                    .flat_map(|run| &run.summary.errors)
+                    .map(|error| (PathBuf::from(&error.path), error.message.clone()))
+                    .collect(),
+                conflicts: conflicts.iter().cloned().collect(),
+                dirty_len: 0,
+                dirty_newest: None,
+            });
             samples.push(Sample {
                 id: info.id.clone(),
                 root: info.root.clone(),
                 state: root_state(&state, running, settling.contains(&info.id)),
-                conflicts: conflicts_of(&mut cache, info, &state).await,
+                conflicts,
             });
         }
         cache.retain(|id, _| infos.iter().any(|info| info.id == *id));
+        prune_dirty(
+            &mut dirty.lock().unwrap_or_else(PoisonError::into_inner),
+            &mut views,
+        );
+        let mut next = snapshot(samples);
+        next.syncs = views;
         let changed = replace(
             &mut shared.lock().unwrap_or_else(PoisonError::into_inner),
-            snapshot(samples),
+            next,
         );
         if changed && let Err(err) = Service::changed(interface.signal_emitter()).await {
             log::warn!("cannot signal a status change: {err}");
@@ -525,6 +803,216 @@ mod tests {
                 PathBuf::from("a.txt.conflict1"),
                 PathBuf::from("sub/gone.txt.conflict1"),
             ]
+        );
+    }
+
+    fn at(text: &str) -> Timestamp {
+        text.parse().unwrap()
+    }
+
+    fn run(started: &str, finished: &str) -> crate::state::LastRun {
+        crate::state::LastRun {
+            started: at(started),
+            finished: at(finished),
+            exit_code: 0,
+            summary: crate::bisync_log::RunSummary::default(),
+            log_file: PathBuf::new(),
+            auto_reviewed: None,
+        }
+    }
+
+    #[test]
+    fn the_baseline_is_the_last_good_round_or_nothing() {
+        let good = State {
+            last_success: Some(at("2026-01-01T10:05:00Z")),
+            last_run: Some(run("2026-01-01T10:00:00Z", "2026-01-01T10:05:00Z")),
+            ..State::default()
+        };
+        let failed_after = State {
+            last_success: Some(at("2026-01-01T09:00:00Z")),
+            last_run: Some(run("2026-01-01T10:00:00Z", "2026-01-01T10:05:00Z")),
+            ..State::default()
+        };
+
+        assert_eq!(
+            baseline(&good),
+            Some(Baseline {
+                started: at("2026-01-01T10:00:00Z"),
+                finished: at("2026-01-01T10:05:00Z"),
+            })
+        );
+        assert_eq!(
+            baseline(&failed_after),
+            Some(Baseline {
+                started: at("2026-01-01T09:00:00Z"),
+                finished: at("2026-01-01T09:00:00Z"),
+            })
+        );
+        assert_eq!(baseline(&State::default()), None);
+    }
+
+    const STARTED: &str = "2026-01-01T10:00:00Z";
+    const DURING: &str = "2026-01-01T10:02:00Z";
+    const FINISHED: &str = "2026-01-01T10:05:00Z";
+    const AFTER: &str = "2026-01-01T10:09:00Z";
+    const BEFORE: &str = "2026-01-01T09:00:00Z";
+
+    fn view() -> SyncView {
+        SyncView {
+            id: "docs".to_owned(),
+            root: PathBuf::from("/r"),
+            matcher: DirMatcher::new(""),
+            baseline: Some(Baseline {
+                started: at(STARTED),
+                finished: at(FINISHED),
+            }),
+            running: false,
+            errors: BTreeMap::new(),
+            conflicts: HashSet::new(),
+            dirty_len: 0,
+            dirty_newest: None,
+        }
+    }
+
+    fn record(paths: &[&str]) -> BTreeMap<PathBuf, Timestamp> {
+        paths
+            .iter()
+            .map(|path| (PathBuf::from(path), at(DURING)))
+            .collect()
+    }
+
+    fn file(view: &SyncView, dirty: &[&str], rel: &str, ctime: &str) -> (&'static str, String) {
+        entry_state(view, &record(dirty), Path::new(rel), false, Some(at(ctime)))
+    }
+
+    fn folder(view: &SyncView, dirty: &[&str], rel: &str) -> &'static str {
+        entry_state(view, &record(dirty), Path::new(rel), true, Some(at(BEFORE))).0
+    }
+
+    #[test]
+    fn an_untouched_file_is_synced_as_of_the_last_good_round() {
+        assert_eq!(
+            file(&view(), &[], "a.txt", BEFORE),
+            ("synced", "2026-01-01T10:05:00Z".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_file_the_round_downloaded_is_synced() {
+        assert_eq!(file(&view(), &[], "a.txt", DURING).0, "synced");
+    }
+
+    #[test]
+    fn a_file_changed_after_the_round_is_pending_even_unseen_by_the_watcher() {
+        assert_eq!(
+            file(&view(), &[], "a.txt", AFTER),
+            ("pending", String::new())
+        );
+    }
+
+    #[test]
+    fn a_file_changed_during_the_round_is_pending_by_the_record() {
+        assert_eq!(file(&view(), &["a.txt"], "a.txt", DURING).0, "pending");
+        assert_eq!(file(&view(), &["b.txt"], "a.txt", DURING).0, "synced");
+    }
+
+    #[test]
+    fn a_folder_is_pending_when_anything_below_it_changed() {
+        let dirty = ["x/y/z.txt"];
+
+        assert_eq!(folder(&view(), &dirty, "x"), "pending");
+        assert_eq!(folder(&view(), &dirty, "x/y"), "pending");
+        assert_eq!(folder(&view(), &dirty, "x/w"), "synced");
+        assert_eq!(folder(&view(), &dirty, "x.d"), "synced");
+        assert_eq!(file(&view(), &dirty, "x", BEFORE).0, "synced");
+    }
+
+    #[test]
+    fn a_whole_sync_change_leaves_every_entry_pending() {
+        assert_eq!(file(&view(), &[""], "a.txt", BEFORE).0, "pending");
+        assert_eq!(folder(&view(), &[""], "x"), "pending");
+    }
+
+    #[test]
+    fn a_sync_that_never_succeeded_is_all_pending() {
+        let never = SyncView {
+            baseline: None,
+            ..view()
+        };
+
+        assert_eq!(file(&never, &[], "a.txt", BEFORE).0, "pending");
+    }
+
+    #[test]
+    fn a_running_round_turns_pending_into_syncing() {
+        let running = SyncView {
+            running: true,
+            ..view()
+        };
+
+        assert_eq!(file(&running, &[], "a.txt", AFTER).0, "syncing");
+        assert_eq!(file(&running, &[], "b.txt", BEFORE).0, "synced");
+    }
+
+    #[test]
+    fn an_error_beats_pending_and_a_folder_shows_the_first_error_below_it() {
+        let failing = SyncView {
+            errors: BTreeMap::from([
+                (PathBuf::from("d/b.txt"), "second".to_owned()),
+                (PathBuf::from("d/a.txt"), "first".to_owned()),
+            ]),
+            ..view()
+        };
+
+        assert_eq!(
+            file(&failing, &["d/a.txt"], "d/a.txt", AFTER),
+            ("error", "first".to_owned())
+        );
+        assert_eq!(
+            entry_state(&failing, &record(&[]), Path::new("d"), true, None),
+            ("error", "first".to_owned())
+        );
+        assert_eq!(folder(&failing, &[], "e"), "synced");
+    }
+
+    #[test]
+    fn a_conflict_beats_an_error() {
+        let both = SyncView {
+            errors: BTreeMap::from([(PathBuf::from("a.txt"), "denied".to_owned())]),
+            conflicts: HashSet::from([PathBuf::from("a.txt")]),
+            ..view()
+        };
+
+        assert_eq!(
+            file(&both, &[], "a.txt", BEFORE),
+            ("conflict", String::new())
+        );
+    }
+
+    #[test]
+    fn the_record_forgets_what_the_last_good_round_started_after() {
+        let mut dirty = Dirty::from([
+            (
+                "docs".to_owned(),
+                BTreeMap::from([
+                    (PathBuf::from("old.txt"), at(BEFORE)),
+                    (PathBuf::from("new.txt"), at(DURING)),
+                ]),
+            ),
+            ("gone".to_owned(), record(&["a"])),
+        ]);
+        let mut views = [view()];
+
+        prune_dirty(&mut dirty, &mut views);
+
+        assert_eq!(dirty.keys().collect::<Vec<_>>(), ["docs"]);
+        assert_eq!(
+            dirty["docs"].keys().collect::<Vec<_>>(),
+            [Path::new("new.txt")]
+        );
+        assert_eq!(
+            (views[0].dirty_len, views[0].dirty_newest),
+            (1, Some(at(DURING)))
         );
     }
 }
