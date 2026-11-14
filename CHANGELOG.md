@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.1](https://github.com/raphael-soares/syncfast/compare/v0.22.0...v0.22.1) (2026-11-14)
+
+
+### Documentation
+
+* README para quem chega pelo GitHub ([#121](https://github.com/raphael-soares/syncfast/issues/121)) ([87f72ef](https://github.com/raphael-soares/syncfast/commit/87f72ef184f834d0ac2e97aeca962cf1a2a4d577))
+
 ## [0.22.0](https://github.com/raphael-soares/syncfast/compare/v0.21.0...v0.22.0) (2026-11-14)
 
 
