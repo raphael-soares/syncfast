@@ -2,6 +2,7 @@
 //! panes, grouped. Close, a click outside and Esc dismiss it.
 
 mod accounts;
+mod advanced;
 mod backups;
 
 pub use backups::KeyStorageView;
@@ -41,6 +42,7 @@ fn pane_icon(pane: SettingsPane) -> Icon {
         SettingsPane::General => Icon::Power,
         SettingsPane::Notifications => Icon::Bell,
         SettingsPane::Appearance => Icon::Palette,
+        SettingsPane::Advanced => Icon::History,
     }
 }
 
@@ -119,5 +121,6 @@ fn pane(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
         SettingsPane::General => options::general(ui, vm),
         SettingsPane::Notifications => options::notifications(ui, vm),
         SettingsPane::Appearance => options::appearance(ui, vm),
+        SettingsPane::Advanced => advanced::show(ui, vm),
     }
 }

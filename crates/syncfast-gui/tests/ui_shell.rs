@@ -40,7 +40,7 @@ fn view(pairs: Vec<PairRow>, selected: Option<&str>) -> ViewModel {
         sidebar_width: 240.0,
         error: None,
         now: now(),
-        tab: ui::DetailTab::Activity,
+        tab: ui::DetailTab::Filters,
         runs: None,
         ..ViewModel::default()
     }

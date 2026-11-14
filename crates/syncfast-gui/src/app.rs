@@ -306,11 +306,11 @@ impl App {
         Some((id, pair.running, finished))
     }
 
-    /// Asks the backend for the history of the selected sync when Activity
-    /// shows it and it changed: another sync, the tab just opened, or a
-    /// round started or ended.
+    /// Asks the backend for the history of the selected sync when the
+    /// Advanced pane shows it and it changed: another sync, the pane just
+    /// opened, or a round started or ended.
     fn load_runs_if_stale(&mut self) {
-        if self.tab != DetailTab::Activity {
+        if !self.screens.settings_open || self.gui.settings_pane != SettingsPane::Advanced {
             self.runs_key = None;
             return;
         }
@@ -722,15 +722,17 @@ impl App {
     fn apply(&mut self, action: Action, ctx: &egui::Context) {
         match action {
             Action::SelectPair(id) => {
-                self.screens.settings_open = false;
+                if self.gui.settings_pane != SettingsPane::Advanced {
+                    self.screens.settings_open = false;
+                }
                 if self.gui.selected_pair.as_ref() != Some(&id)
                     || self.gui.selected_backup.is_some()
                 {
                     self.gui.selected_pair = Some(id);
                     self.gui.selected_backup = None;
                     self.mark_gui_dirty();
-                    self.load_runs_if_stale();
                 }
+                self.load_runs_if_stale();
             }
             Action::SelectBackup(id) => {
                 self.screens.settings_open = false;
@@ -837,10 +839,7 @@ impl App {
                 self.error = None;
                 self.backend.send(Command::SetAllEnabled(enabled));
             }
-            Action::SelectTab(tab) => {
-                self.tab = tab;
-                self.load_runs_if_stale();
-            }
+            Action::SelectTab(tab) => self.tab = tab,
             Action::SetEnabled(id, enabled) => {
                 self.error = None;
                 self.backend.send(Command::SetEnabled(id, enabled));
@@ -903,13 +902,17 @@ impl App {
                     SettingsPane::Backups => self.enter_backups_pane(),
                     _ => {}
                 }
+                self.load_runs_if_stale();
             }
             Action::OpenAccounts => {
                 self.remember_pane(SettingsPane::Accounts);
                 self.open_settings(ctx);
                 self.backend.send(Command::CheckAccounts);
             }
-            Action::CloseSettings => self.screens.settings_open = false,
+            Action::CloseSettings => {
+                self.screens.settings_open = false;
+                self.load_runs_if_stale();
+            }
             &Action::SetSettingsPane(pane) => {
                 let entering = self.gui.settings_pane != pane;
                 self.remember_pane(pane);
@@ -920,6 +923,7 @@ impl App {
                         _ => {}
                     }
                 }
+                self.load_runs_if_stale();
             }
             _ => {}
         }
@@ -1315,8 +1319,11 @@ mod tests {
     fn the_history_is_read_again_when_a_round_ends_even_if_no_poll_saw_it_running() {
         let (_dir, mut app) = app();
         app.snapshot.pairs = vec![pair_with_gate("a", None)];
+        app.screens.settings_open = true;
+        app.gui.settings_pane = SettingsPane::Advanced;
         app.load_runs_if_stale();
         let first = app.runs_key.clone();
+        assert!(first.is_some());
 
         app.load_runs_if_stale();
         assert_eq!(app.runs_key, first, "a poll with nothing new reads nothing");
@@ -1337,6 +1344,49 @@ mod tests {
             app.runs_key.map(|key| key.2),
             Some(Some("2026-11-03T12:00:00Z".parse().unwrap()))
         );
+    }
+
+    #[test]
+    fn opening_the_advanced_pane_reads_the_history_of_the_selected_sync() {
+        let (_dir, mut app) = app();
+        app.snapshot.pairs = vec![pair_with_gate("a", None)];
+        let ctx = egui::Context::default();
+
+        app.apply(Action::OpenSettings, &ctx);
+        assert!(app.runs_key.is_none(), "Accounts does not show the history");
+        app.apply(Action::SetSettingsPane(SettingsPane::Advanced), &ctx);
+
+        assert!(app.runs_key.is_some());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut loaded = false;
+        while !loaded && std::time::Instant::now() < deadline {
+            loaded = app
+                .backend
+                .events()
+                .iter()
+                .any(|event| matches!(event, Event::Runs { pair, .. } if pair == "a"));
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(loaded, "the backend was asked for the runs of the sync");
+
+        app.apply(Action::SetSettingsPane(SettingsPane::General), &ctx);
+        assert!(app.runs_key.is_none());
+    }
+
+    #[test]
+    fn choosing_a_sync_in_the_advanced_pane_keeps_settings_open_and_reads_its_history() {
+        let (_dir, mut app) = app();
+        app.snapshot.pairs = vec![pair_with_gate("a", None), pair_with_gate("b", None)];
+        let ctx = egui::Context::default();
+        app.apply(Action::OpenSettings, &ctx);
+        app.apply(Action::SetSettingsPane(SettingsPane::Advanced), &ctx);
+        let first = app.runs_key.clone();
+
+        app.apply(Action::SelectPair("b".into()), &ctx);
+
+        assert!(app.screens.settings_open);
+        assert_ne!(app.runs_key, first);
+        assert_eq!(app.runs_key.map(|key| key.0).as_deref(), Some("b"));
     }
 
     #[test]
