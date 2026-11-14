@@ -40,7 +40,8 @@ const JOBS_KEPT: usize = 20;
 const LONGEST_ID: usize = 40;
 const UNIT_PREFIX: &str = "syncfast-restore-";
 const STDERR_KEPT: usize = 64 * 1024;
-const STOPPED: &str = "The restore stopped before it finished.";
+const STOPPED: &str =
+    "The restore stopped before it finished. What was already restored stays in the folder.";
 
 #[derive(Debug, thiserror::Error)]
 pub enum RestoreError {
@@ -834,7 +835,12 @@ mod tests {
 
         assert_eq!((fresh.status, fresh.finished), ("running", false));
         assert_eq!((old.status, old.finished), ("failed", true));
-        assert_eq!(old.error.as_deref(), Some(STOPPED));
+        assert_eq!(
+            old.error.as_deref(),
+            Some(
+                "The restore stopped before it finished. What was already restored stays in the folder."
+            )
+        );
     }
 
     #[tokio::test]
