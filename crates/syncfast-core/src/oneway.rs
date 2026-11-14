@@ -207,9 +207,7 @@ fn entries(changes: &str) -> impl Iterator<Item = (char, &str)> {
 /// counters are known only for a run that finished (`exit_code` 0). A file
 /// rclone also marked as failed (`!`) did not change, whatever else the
 /// report says about it. What `copy` would remove from the destination is
-/// not a change of a `copy` mode. The report lists a mirror's tracked
-/// rename as `+ new` and `- old`; the log's `Renamed from` notices pair them
-/// back into one rename.
+/// not a change of a `copy` mode. Mirror renames: ADR 0005.
 #[must_use]
 pub fn summarize_oneway(
     changes: &str,

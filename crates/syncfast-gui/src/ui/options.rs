@@ -728,12 +728,16 @@ fn value_label(key: &str, value: &Value) -> String {
 
 fn schedule_summary(behavior: &Behavior) -> String {
     let interval = duration_label(behavior.interval.as_secs());
-    if behavior.watch {
-        format!(
+    match (behavior.watch, behavior.mode.downloads()) {
+        (true, true) => format!(
             "Syncs seconds after a change here, within a minute of a change on Drive, after resume, and every {interval}."
-        )
-    } else {
-        format!("Syncs every {interval}, after resume, and when the network comes back.")
+        ),
+        (true, false) => {
+            format!("Syncs seconds after a change here, after resume, and every {interval}.")
+        }
+        (false, _) => {
+            format!("Syncs every {interval}, after resume, and when the network comes back.")
+        }
     }
 }
 

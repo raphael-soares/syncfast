@@ -616,6 +616,14 @@ fn the_summary_says_when_a_sync_runs_with_watching_off() {
 }
 
 #[test]
+fn an_upload_only_sync_does_not_promise_to_follow_drive() {
+    let mut harness = harness(options("", "mode = \"mirror_up\"\n"), screen());
+    harness.run();
+
+    harness.get_by_label("Syncs seconds after a change here, after resume, and every 1 h.");
+}
+
+#[test]
 fn the_summary_follows_the_timing_the_sync_resolves() {
     let mut harness = harness(
         options("interval = \"15m\"", "interval = \"2h\"\n"),

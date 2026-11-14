@@ -233,7 +233,6 @@ impl Poller {
                 Ok(marked) => {
                     failing = false;
                     for id in marked {
-                        log::debug!("Drive changed under \"{id}\"");
                         if wakes.send(Wake::Remote(id)).await.is_err() {
                             return;
                         }

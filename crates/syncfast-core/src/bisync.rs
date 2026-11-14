@@ -100,8 +100,8 @@ const ALL_FILES_CHANGED: &str = "Safety abort: all files were changed";
 const MUST_RESYNC: &str = "Must run --resync to recover";
 const EMPTY_PRIOR_LISTINGS: [&str; 2] = ["Empty prior Path1 listing", "Empty prior Path2 listing"];
 const VANISHED_DIR_PATTERNS: [&str; 2] = [
-    "error reading source directory",
-    "error reading destination directory",
+    "error reading source directory: directory not found",
+    "error reading destination directory: directory not found",
 ];
 /// Renames become moves and do not count toward `--max-delete`. Never
 /// combined with `--slow-hash-sync-only`, which rclone rejects with a hash
@@ -1112,6 +1112,24 @@ mod tests {
         ));
 
         assert_eq!(classify(7, &log, workdir.path()), Outcome::Transient);
+    }
+
+    #[test]
+    fn a_subfolder_that_cannot_be_read_for_lack_of_permission_still_needs_attention() {
+        let workdir = workdir_with(&["x.path1.lst", "x.path2.lst"]);
+        let log = parse_log(concat!(
+            r#"{"level":"error","msg":"error reading source directory: googleapi: Error 403: The user does not have sufficient permissions for this file., insufficientFilePermissions","object":"estrutura-de-dados-ii/provas/p1","objectType":"string"}"#,
+            "\n",
+            r#"{"level":"notice","msg":"Failed to bisync with 2 errors: last error was: bisync aborted"}"#,
+        ));
+
+        assert!(matches!(
+            classify(7, &log, workdir.path()),
+            Outcome::NeedsAttention {
+                fault: Fault::Permission,
+                ..
+            }
+        ));
     }
 
     #[test]

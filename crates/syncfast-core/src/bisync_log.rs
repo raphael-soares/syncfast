@@ -485,19 +485,23 @@ fn is_rename_move(line: &LogLine) -> bool {
 /// A dry run lists making the new folder and removing the old one of a
 /// renamed folder; the renamed files already say it.
 fn drop_folders_of_renames(changes: &mut Vec<Change>) {
-    let renamed: Vec<String> = changes
+    let folders: HashSet<String> = changes
         .iter()
         .filter(|change| change.kind.is_rename())
-        .flat_map(|change| [Some(change.path.clone()), change.from.clone()])
+        .flat_map(|change| [Some(change.path.as_str()), change.from.as_deref()])
         .flatten()
+        .flat_map(|path| {
+            path.match_indices('/')
+                .map(|(end, _)| path[..=end].to_owned())
+        })
         .collect();
-    if renamed.is_empty() {
+    if folders.is_empty() {
         return;
     }
     changes.retain(|change| {
         change.kind != ChangeKind::Other
             || !change.path.ends_with('/')
-            || !renamed.iter().any(|path| path.starts_with(&change.path))
+            || !folders.contains(&change.path)
     });
 }
 
