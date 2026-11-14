@@ -603,6 +603,12 @@ impl Watcher {
             .min()
     }
 
+    fn note_change(&self, pair: usize, rel: PathBuf) {
+        if let Some(status) = &self.status {
+            status.note_change(&self.pairs[pair].id, rel);
+        }
+    }
+
     fn mark(&mut self, pair: usize, now: Instant) {
         let id = self.pairs[pair].id.clone();
         self.mark_id(&id, now);
@@ -645,6 +651,7 @@ impl Watcher {
         for pair in back {
             self.missing_roots.remove(&pair);
             self.watch_subtree(pair, PathBuf::new());
+            self.note_change(pair, PathBuf::new());
             self.mark(pair, now);
         }
         if !self.missing_roots.is_empty() {
@@ -687,6 +694,7 @@ impl Watcher {
         if mask.contains(EventMask::Q_OVERFLOW) {
             log::warn!("inotify queue overflowed; checking every sync again");
             for pair in 0..self.pairs.len() {
+                self.note_change(pair, PathBuf::new());
                 self.mark(pair, now);
             }
             self.watch_trees();
@@ -721,6 +729,7 @@ impl Watcher {
             if dir.rel.is_empty() {
                 self.forget_subtree(pair, Path::new(""));
                 self.note_missing_root(pair);
+                self.note_change(pair, PathBuf::new());
                 self.mark(pair, now);
             }
             return;
@@ -729,12 +738,16 @@ impl Watcher {
         if name.is_some() && self.pairs[pair].matcher.is_excluded(&rel) {
             return;
         }
-        if mask.contains(EventMask::ISDIR) {
+        let is_dir = mask.contains(EventMask::ISDIR);
+        if is_dir {
             if mask.intersects(EventMask::CREATE | EventMask::MOVED_TO) {
-                self.watch_subtree(pair, rel);
+                self.watch_subtree(pair, rel.clone());
             } else if mask.contains(EventMask::MOVED_FROM) {
                 self.forget_subtree(pair, &rel);
             }
+        }
+        if is_dir || !self.pairs[pair].matcher.is_excluded_file(&rel) {
+            self.note_change(pair, rel);
         }
         self.mark(pair, now);
     }

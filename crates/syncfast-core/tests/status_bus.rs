@@ -14,8 +14,10 @@ use std::time::Duration;
 
 use common::Bed;
 use futures_util::StreamExt as _;
+use jiff::{SignedDuration, Timestamp};
+use syncfast_core::bisync_log::{FileError, RunSummary};
 use syncfast_core::network::BoxFuture;
-use syncfast_core::state::{State, try_lock_pair};
+use syncfast_core::state::{LastRun, State, try_lock_pair};
 use syncfast_core::status_bus::{BUS_NAME, Bus, OBJECT_PATH};
 use syncfast_core::watch::{Trigger, WatchEnv, Watcher};
 use tokio::sync::oneshot;
@@ -87,6 +89,134 @@ async fn conflicts(proxy: &zbus::Proxy<'_>) -> Vec<String> {
 
 async fn sync_now(proxy: &zbus::Proxy<'_>, path: &str) -> bool {
     proxy.call("SyncNow", &(path,)).await.unwrap()
+}
+
+type Entries = Vec<(String, String, String)>;
+
+async fn directory(proxy: &zbus::Proxy<'_>, path: &str) -> Entries {
+    proxy.call("Directory", &(path,)).await.unwrap()
+}
+
+/// Asks `Directory` until `done` accepts the answer; the last answer
+/// otherwise.
+async fn wait_for_directory(
+    proxy: &zbus::Proxy<'_>,
+    path: &str,
+    done: impl Fn(&Entries) -> bool,
+) -> Entries {
+    let mut found = Vec::new();
+    for _ in 0..100 {
+        found = directory(proxy, path).await;
+        if done(&found) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    found
+}
+
+fn good_round(started: Timestamp, finished: Timestamp, errors: Vec<FileError>) -> State {
+    State {
+        last_success: Some(finished),
+        last_run: Some(LastRun {
+            started,
+            finished,
+            exit_code: 0,
+            summary: RunSummary {
+                errors,
+                ..RunSummary::default()
+            },
+            log_file: "/s/runs/x.jsonl".into(),
+            auto_reviewed: None,
+        }),
+        ..State::default()
+    }
+}
+
+fn entry(name: &str, state: &str, detail: &str) -> (String, String, String) {
+    (name.to_owned(), state.to_owned(), detail.to_owned())
+}
+
+#[tokio::test]
+async fn directory_answers_the_state_of_each_entry_the_filters_keep() {
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let bed = Bed::new();
+    let local = bed.local("docs");
+    fs::create_dir_all(local.join("d")).unwrap();
+    bed.write_config_text(&format!(
+        "version = 1\n\n[[pair]]\nid = \"docs\"\nname = \"docs\"\nlocal = \"{}\"\nremote = \"testremote:{}\"\nenabled = true\nfilters = [\"- *.bak\"]\n",
+        local.display(),
+        bed.remote("docs").display(),
+    ));
+    fs::write(local.join("old.txt"), "x").unwrap();
+    fs::write(local.join("x.bak"), "x").unwrap();
+    fs::write(local.join("d/f.txt"), "x").unwrap();
+    let now = Timestamp::now();
+    let later = now + SignedDuration::from_mins(1);
+    let denied = FileError {
+        path: "d/f.txt".to_owned(),
+        message: "Failed to copy: permission denied".to_owned(),
+    };
+    good_round(now - SignedDuration::from_mins(1), later, vec![denied])
+        .save(&bed.paths, "docs")
+        .await
+        .unwrap();
+    let mut env = WatchEnv::new(
+        bed.paths.clone(),
+        bed.rclone.clone(),
+        Arc::new(Recorder::default()),
+    );
+    env.wake_sources = false;
+    env.status_bus = Some(Bus::Address(bus.address.clone()));
+    let watcher = Watcher::start(env).await.unwrap();
+    let (stop, stopped) = oneshot::channel::<()>();
+    let task = tokio::spawn(async move {
+        watcher
+            .run(async {
+                let _ = stopped.await;
+            })
+            .await
+            .unwrap();
+    });
+    let proxy = client(&bus).await;
+    let root = local.to_str().unwrap().to_owned();
+    wait_for_roots(&proxy).await;
+
+    let listed = wait_for_directory(&proxy, &root, |found| !found.is_empty()).await;
+    let outside = directory(&proxy, "/nowhere").await;
+
+    assert_eq!(
+        listed,
+        [
+            entry("d", "error", "Failed to copy: permission denied"),
+            entry("old.txt", "synced", &later.to_string()),
+        ]
+    );
+    assert!(outside.is_empty());
+
+    let hour = SignedDuration::from_hours(1);
+    good_round(now - hour - hour, now - hour, Vec::new())
+        .save(&bed.paths, "docs")
+        .await
+        .unwrap();
+    fs::write(local.join("new.txt"), "x").unwrap();
+    let changed = wait_for_directory(&proxy, &root, |found| {
+        found.iter().all(|(_, state, _)| state == "pending") && found.len() == 3
+    })
+    .await;
+
+    assert_eq!(
+        changed,
+        [
+            entry("d", "pending", ""),
+            entry("new.txt", "pending", ""),
+            entry("old.txt", "pending", ""),
+        ]
+    );
+    let _ = stop.send(());
+    task.await.unwrap();
 }
 
 /// Asks `Roots` until the service has published the synced folder; empty

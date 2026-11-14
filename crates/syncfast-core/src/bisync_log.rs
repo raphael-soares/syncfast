@@ -235,6 +235,39 @@ pub struct RunSummary {
     pub renamed: Option<u32>,
     pub conflicts_new: Option<u32>,
     pub changes: Vec<Change>,
+    /// Files the round could not sync, relative to the sync's root.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<FileError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileError {
+    pub path: String,
+    pub message: String,
+}
+
+/// The files rclone's error lines name, first message per file, in the
+/// order they first failed. Lines about a whole remote (`*local.Fs`) name
+/// no file.
+#[must_use]
+pub fn file_errors(lines: &[LogLine]) -> Vec<FileError> {
+    let mut seen = HashSet::new();
+    lines
+        .iter()
+        .filter(|line| line.level.is_failure())
+        .filter(|line| {
+            line.object_type
+                .as_deref()
+                .is_some_and(|kind| kind.ends_with("Object"))
+        })
+        .filter_map(|line| {
+            let path = line.object.as_deref()?.trim_start_matches('/');
+            seen.insert(path.to_owned()).then(|| FileError {
+                path: path.to_owned(),
+                message: line.msg.clone(),
+            })
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -463,6 +496,7 @@ impl Tracker {
                 .completed
                 .then(|| u32::try_from(self.conflicts).unwrap_or(u32::MAX)),
             changes: self.changes,
+            errors: Vec::new(),
         }
     }
 }
@@ -513,7 +547,10 @@ pub fn summarize(lines: &[LogLine]) -> RunSummary {
     for line in lines {
         tracker.feed(line);
     }
-    tracker.finish()
+    RunSummary {
+        errors: file_errors(lines),
+        ..tracker.finish()
+    }
 }
 
 #[cfg(test)]
@@ -881,10 +918,16 @@ mod tests {
     }
 
     #[test]
-    fn summarize_of_a_critical_failure_has_no_counters_and_ignores_the_error_lines() {
+    fn summarize_of_a_critical_failure_has_no_counters_and_no_changes_from_the_error_lines() {
         let summary = summarize(&fixture("critical"));
 
-        assert_eq!(summary, RunSummary::default());
+        assert_eq!(
+            RunSummary {
+                errors: Vec::new(),
+                ..summary
+            },
+            RunSummary::default()
+        );
     }
 
     #[test]
@@ -1049,5 +1092,26 @@ mod tests {
         let lines = fixture("upload");
 
         assert_eq!(last_stats(&lines[..5]), None);
+    }
+
+    #[test]
+    fn errors_name_each_file_rclone_could_not_sync_once_and_no_remote() {
+        let summary = summarize(&fixture("critical"));
+
+        assert_eq!(
+            summary.errors,
+            [FileError {
+                path: "after.txt".to_owned(),
+                message: "Failed to copy: open /tmp/tmp.5DFmmplI3S/remote/after.txt.8ae0b957.partial: permission denied".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn an_old_summary_without_errors_still_reads_and_an_empty_list_is_not_written() {
+        let old: RunSummary = serde_json::from_str(r#"{"uploaded":1,"changes":[]}"#).unwrap();
+
+        assert!(old.errors.is_empty());
+        assert!(!serde_json::to_string(&old).unwrap().contains("errors"));
     }
 }

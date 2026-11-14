@@ -756,6 +756,7 @@ fn run(id: &str, started: &str, status: DisplayStatus) -> RunEntry {
             renamed: None,
             conflicts_new: Some(0),
             changes: Vec::new(),
+            errors: Vec::new(),
         },
         detail: None,
         auto_reviewed: None,
