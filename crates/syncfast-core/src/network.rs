@@ -85,7 +85,8 @@ pub async fn forward_system_events(wakes: mpsc::Sender<Wake>) {
 
 async fn forward(wakes: &mpsc::Sender<Wake>) -> zbus::Result<()> {
     let connection = zbus::Connection::system().await?;
-    let login = zbus::Proxy::new(&connection, LOGIND_SERVICE, LOGIND_PATH, LOGIND_INTERFACE).await?;
+    let login =
+        zbus::Proxy::new(&connection, LOGIND_SERVICE, LOGIND_PATH, LOGIND_INTERFACE).await?;
     let mut sleeping = login.receive_signal("PrepareForSleep").await?;
     let mut states = network_manager(&connection)
         .await?

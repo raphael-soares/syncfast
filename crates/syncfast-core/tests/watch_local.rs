@@ -723,7 +723,10 @@ async fn a_change_on_drive_fires_only_that_sync_after_the_debounce() {
     let run = start(&[("docs", true), ("notes", true)], |_| {}).await;
     let begun = Instant::now();
 
-    run.wakes.send(Wake::Remote("notes".to_owned())).await.unwrap();
+    run.wakes
+        .send(Wake::Remote("notes".to_owned()))
+        .await
+        .unwrap();
     sleep(DEBOUNCE / 2).await;
     let early = run.recorder.count();
     let fired = wait_for(&run.recorder, 1, Duration::from_secs(2)).await;
@@ -752,7 +755,11 @@ async fn a_change_on_drive_under_a_paused_or_unknown_sync_fires_nothing() {
 #[tokio::test]
 async fn resume_and_network_up_make_every_enabled_sync_due_watched_or_not() {
     for wake in [Wake::Resumed, Wake::NetworkUp] {
-        let run = start(&[("docs", true), ("quiet", true), ("paused", false)], |_| {}).await;
+        let run = start(
+            &[("docs", true), ("quiet", true), ("paused", false)],
+            |_| {},
+        )
+        .await;
         let begun = Instant::now();
 
         run.wakes.send(wake.clone()).await.unwrap();

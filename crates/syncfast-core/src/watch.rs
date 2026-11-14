@@ -1158,7 +1158,10 @@ mod tests {
     fn a_drive_wake_targets_only_its_own_sync() {
         let pairs = armed(&["docs", "notes"]);
 
-        assert_eq!(wake_targets(&Wake::Remote("notes".into()), &pairs), ["notes"]);
+        assert_eq!(
+            wake_targets(&Wake::Remote("notes".into()), &pairs),
+            ["notes"]
+        );
         assert!(wake_targets(&Wake::Remote("gone".into()), &pairs).is_empty());
     }
 

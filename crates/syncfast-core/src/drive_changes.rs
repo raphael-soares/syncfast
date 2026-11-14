@@ -106,7 +106,10 @@ pub fn marked_pairs(changes: &[Change], pairs: &mut [PairFolders]) -> Vec<String
                 continue;
             }
             *marked = true;
-            if inside && is_folder && let Some(id) = id {
+            if inside
+                && is_folder
+                && let Some(id) = id
+            {
                 pair.folders.insert(id.to_owned());
             }
         }
@@ -138,7 +141,13 @@ enum DriveError {
 impl DriveError {
     /// The page token or the folder ids can no longer be trusted.
     fn resets_session(&self) -> bool {
-        matches!(self, Self::Http { status: 400 | 404 | 410, .. })
+        matches!(
+            self,
+            Self::Http {
+                status: 400 | 404 | 410,
+                ..
+            }
+        )
     }
 }
 
@@ -300,17 +309,19 @@ impl Poller {
     /// The shared drive scope, when the account is one. `listing` adds what
     /// only the change list takes.
     fn scope_query(&self, listing: bool) -> Vec<(&'static str, String)> {
-        let shared = self.token.as_ref().and_then(|token| token.team_drive.clone());
+        let shared = self
+            .token
+            .as_ref()
+            .and_then(|token| token.team_drive.clone());
         match (shared, listing) {
             (Some(drive), true) => vec![
                 ("driveId", drive),
                 ("supportsAllDrives", "true".to_owned()),
                 ("includeItemsFromAllDrives", "true".to_owned()),
             ],
-            (Some(drive), false) => vec![
-                ("driveId", drive),
-                ("supportsAllDrives", "true".to_owned()),
-            ],
+            (Some(drive), false) => {
+                vec![("driveId", drive), ("supportsAllDrives", "true".to_owned())]
+            }
             (None, true) => vec![("restrictToMyDrive", "true".to_owned())],
             (None, false) => Vec::new(),
         }

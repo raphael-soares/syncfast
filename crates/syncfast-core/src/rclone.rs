@@ -660,8 +660,9 @@ impl DriveToken {
     /// True when the token has expired, or will within `margin`.
     #[must_use]
     pub fn expires_within(&self, now: jiff::Timestamp, margin: Duration) -> bool {
-        self.expiry
-            .is_some_and(|expiry| expiry.duration_since(now).as_secs() <= margin.as_secs().cast_signed())
+        self.expiry.is_some_and(|expiry| {
+            expiry.duration_since(now).as_secs() <= margin.as_secs().cast_signed()
+        })
     }
 }
 
