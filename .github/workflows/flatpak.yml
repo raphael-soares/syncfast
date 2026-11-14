@@ -27,6 +27,9 @@ permissions:
 env:
   APP_ID: io.github.raphael_soares.syncfast
   SITE_URL: https://raphael-soares.github.io/syncfast/
+  # The pull asks for exactly the parents the prune keeps: Pages answers 503,
+  # not 404, for the pruned commit past them, and ostree only stops on 404.
+  HISTORY_DEPTH: 10
 
 jobs:
   build:
@@ -50,7 +53,7 @@ jobs:
           status=$(curl -s -o /dev/null -w '%{http_code}' "${SITE_URL}refs/heads/app/$APP_ID/x86_64/master")
           case "$status" in
             404) echo "No published history yet; starting a new repository." ;;
-            200) ostree pull --repo=repo --mirror --depth=-1 published "app/$APP_ID/x86_64/master" ;;
+            200) ostree pull --repo=repo --mirror --depth="$HISTORY_DEPTH" published "app/$APP_ID/x86_64/master" ;;
             *) echo "Unexpected HTTP $status from the published repository" >&2; exit 1 ;;
           esac
 
@@ -78,7 +81,7 @@ jobs:
           GPG_KEY_ID: ${{ secrets.FLATPAK_GPG_KEY_ID }}
         run: |
           flatpak build-update-repo --gpg-sign="$GPG_KEY_ID" --title=syncfast \
-            --prune --prune-depth=10 --generate-static-deltas repo
+            --prune --prune-depth="$HISTORY_DEPTH" --generate-static-deltas repo
           cp packaging/flatpak/syncfast.flatpakrepo "packaging/flatpak/$APP_ID.flatpakref" repo/
 
       - uses: actions/upload-pages-artifact@v5.0.0
