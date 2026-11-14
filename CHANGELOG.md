@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.2](https://github.com/raphael-soares/syncfast/compare/v0.17.1...v0.17.2) (2026-11-14)
+
+
+### Bug fixes
+
+* say what stays when a restore stops before it finishes ([#102](https://github.com/raphael-soares/syncfast/issues/102)) ([3322d4e](https://github.com/raphael-soares/syncfast/commit/3322d4e0d8e84e8daf8aebd7d038ee639c730df6))
+
 ## [0.17.1](https://github.com/raphael-soares/syncfast/compare/v0.17.0...v0.17.1) (2026-11-09)
 
 

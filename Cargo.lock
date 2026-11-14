@@ -4526,7 +4526,7 @@ dependencies = [
 
 [[package]]
 name = "syncfast-cli"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -4543,7 +4543,7 @@ dependencies = [
 
 [[package]]
 name = "syncfast-core"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "cargo_metadata",
  "data-encoding",
@@ -4574,7 +4574,7 @@ dependencies = [
 
 [[package]]
 name = "syncfast-gui"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "anyhow",
  "eframe",
