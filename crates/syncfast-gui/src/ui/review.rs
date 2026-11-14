@@ -107,7 +107,7 @@ pub fn summary(preview: &Preview, remote: &str) -> String {
     if changes.is_empty() {
         deletions
     } else {
-        format!("{changes}; {deletions}")
+        format!("{changes}. {deletions}")
     }
 }
 
@@ -355,7 +355,7 @@ fn summary_line(ui: &mut Ui, palette: &Palette, preview: &Preview, remote: &str)
     let mut job = LayoutJob::default();
     if !changes.is_empty() {
         job.append(
-            &format!("{changes}; "),
+            &format!("{changes}. "),
             0.0,
             TextFormat::simple(theme::body(), palette.text),
         );
