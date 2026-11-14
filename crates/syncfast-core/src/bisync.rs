@@ -1,6 +1,7 @@
 //! The contract with `rclone bisync`: the fixed argument list and the
 //! classification of how a run ended. See ADR 0002.
 
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
@@ -98,6 +99,19 @@ const TOO_MANY_DELETES: &str = "too many deletes";
 const ALL_FILES_CHANGED: &str = "Safety abort: all files were changed";
 const MUST_RESYNC: &str = "Must run --resync to recover";
 const EMPTY_PRIOR_LISTINGS: [&str; 2] = ["Empty prior Path1 listing", "Empty prior Path2 listing"];
+const VANISHED_DIR_PATTERNS: [&str; 2] = [
+    "error reading source directory: directory not found",
+    "error reading destination directory: directory not found",
+];
+/// Renames become moves and do not count toward `--max-delete`. Never
+/// combined with `--slow-hash-sync-only`, which rclone rejects with a hash
+/// strategy (ADR 0002).
+const RENAME_ARGS: [&str; 4] = [
+    "--track-renames",
+    "--track-renames-strategy",
+    "hash,modtime",
+    "--max-delete-renames-aware",
+];
 pub(crate) const FAILED_TO_BISYNC: &str = "Failed to bisync";
 const EXIT_NOT_CRITICAL: i32 = 1;
 pub(crate) const EXIT_USAGE: i32 = 2;
@@ -185,6 +199,9 @@ pub fn bisync_args(
         "--max-delete".into(),
         behavior.max_delete.to_string().into(),
     ]);
+    if tracks_renames(mode) {
+        args.extend(RENAME_ARGS.map(OsString::from));
+    }
     if behavior.empty_dirs {
         args.push("--create-empty-src-dirs".into());
     }
@@ -251,6 +268,15 @@ fn mode_args(behavior: &Behavior, mode: RoundMode) -> Vec<OsString> {
     }
 }
 
+/// A resync is a copy, where rclone ignores `--track-renames` with an error
+/// line; every other mode applies renames as server-side moves.
+fn tracks_renames(mode: RoundMode) -> bool {
+    matches!(
+        mode,
+        RoundMode::Normal | RoundMode::Force | RoundMode::DryRun(ReviewKind::Force)
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NeedsReviewCause {
     CriticalError,
@@ -277,15 +303,38 @@ pub enum Outcome {
     Transient,
 }
 
-/// A workdir that cannot be read (other than being absent) counts as
-/// marked: assuming the listings are fine is the unsafe direction.
-fn has_lst_err(workdir: &Path) -> bool {
-    match std::fs::read_dir(workdir) {
+/// True when rclone renamed a listing to `.lst-err` in this run: the
+/// `.lst-err` has no `.lst` beside it. The rename keeps the mtime, so a
+/// stale `.lst-err` next to a valid listing is told apart only this way. A
+/// workdir that cannot be read (other than being absent) counts as lost:
+/// assuming the listings are fine is the unsafe direction.
+fn listings_lost(workdir: &Path) -> bool {
+    let names: HashSet<String> = match std::fs::read_dir(workdir) {
         Ok(entries) => entries
             .filter_map(Result::ok)
-            .any(|entry| entry.file_name().to_string_lossy().ends_with(".lst-err")),
-        Err(err) => err.kind() != std::io::ErrorKind::NotFound,
-    }
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect(),
+        Err(err) => return err.kind() != std::io::ErrorKind::NotFound,
+    };
+    names.iter().any(|name| {
+        name.strip_suffix(".lst-err")
+            .is_some_and(|base| !names.contains(&format!("{base}.lst")))
+    })
+}
+
+/// A subfolder that disappeared while rclone was listing it (renamed or
+/// deleted mid-run). The next round lists the new state.
+fn folder_vanished_mid_listing(lines: &[LogLine]) -> bool {
+    lines.iter().any(|line| {
+        line.level.is_failure()
+            && VANISHED_DIR_PATTERNS
+                .iter()
+                .any(|pattern| line.msg.starts_with(pattern))
+            && line
+                .object
+                .as_deref()
+                .is_some_and(|object| !object.is_empty())
+    })
 }
 
 /// Lines that can say why a run failed: errors, anything that was not JSON,
@@ -305,7 +354,7 @@ pub fn classify(exit_code: i32, lines: &[LogLine], workdir: &Path) -> Outcome {
     if exit_code == 0 {
         return Outcome::Ok;
     }
-    if has_lst_err(workdir) {
+    if listings_lost(workdir) {
         return Outcome::NeedsReview(NeedsReviewCause::CriticalError);
     }
     if failure_msgs(lines).any(|msg| fault_of(msg) == Some(Fault::Auth)) {
@@ -320,6 +369,9 @@ pub fn classify(exit_code: i32, lines: &[LogLine], workdir: &Path) -> Outcome {
         && failure_msgs(lines).any(|msg| msg.contains(ALL_FILES_CHANGED))
     {
         return Outcome::AllFilesChanged;
+    }
+    if folder_vanished_mid_listing(lines) {
+        return Outcome::Transient;
     }
     if let Some((fault, msg)) = failure_msgs(lines).find_map(|msg| fault_of(msg).map(|f| (f, msg)))
     {
@@ -358,6 +410,7 @@ mod tests {
     use super::*;
     use crate::behavior::{ConflictResolve, ResyncMode};
     use crate::bisync_log::fixtures::{exit_code, fixture, fixture_path};
+    use crate::bisync_log::parse_log;
 
     fn now() -> Zoned {
         date(2026, 1, 2)
@@ -427,11 +480,28 @@ mod tests {
         "/s/syncfast/pairs/drive/runs/20260102-150405.jsonl",
     ];
 
-    fn expected(log: &str, mode_flags: &[&str]) -> Vec<String> {
+    const RENAMES: [&str; 4] = [
+        "--track-renames",
+        "--track-renames-strategy",
+        "hash,modtime",
+        "--max-delete-renames-aware",
+    ];
+
+    fn expected_resync(log: &str, mode_flags: &[&str]) -> Vec<String> {
         let mut args: Vec<String> = COMMON.iter().map(|arg| (*arg).to_owned()).collect();
         *args.last_mut().unwrap() = log.to_owned();
         args.push("-v".to_owned());
         args.extend(mode_flags.iter().map(|arg| (*arg).to_owned()));
+        args
+    }
+
+    fn expected(log: &str, mode_flags: &[&str]) -> Vec<String> {
+        let mut args = expected_resync(log, mode_flags);
+        let after_max_delete = args.iter().position(|arg| arg == "--max-delete").unwrap() + 2;
+        args.splice(
+            after_max_delete..after_max_delete,
+            RENAMES.map(str::to_owned),
+        );
         args
     }
 
@@ -505,7 +575,7 @@ mod tests {
 
         assert_eq!(
             args,
-            expected(RUN_LOG, &["--resync", "--resync-mode", "newer"])
+            expected_resync(RUN_LOG, &["--resync", "--resync-mode", "newer"])
         );
     }
 
@@ -522,7 +592,7 @@ mod tests {
 
         assert_eq!(
             args,
-            expected(
+            expected_resync(
                 PREVIEW_LOG,
                 &["--resync", "--resync-mode", "newer", "--dry-run"]
             )
@@ -1014,6 +1084,52 @@ mod tests {
             classify_fixture("critical_retryable", workdir.path()),
             Outcome::Transient
         );
+    }
+
+    #[test]
+    fn stale_lst_err_beside_a_valid_listing_does_not_block() {
+        let workdir = workdir_with(&["x.path1.lst", "x.path1.lst-err"]);
+
+        assert_eq!(
+            classify_fixture("critical_retryable", workdir.path()),
+            Outcome::Transient
+        );
+    }
+
+    #[test]
+    fn a_folder_that_vanished_mid_listing_is_transient() {
+        let workdir = workdir_with(&["x.path1.lst", "x.path2.lst"]);
+        let log = parse_log(concat!(
+            r#"{"level":"error","msg":"error reading source directory: directory not found","object":"estrutura-de-dados-ii/provas/p1","objectType":"string","source":"march/march.go:566"}"#,
+            "\n",
+            r#"{"level":"error","msg":"There were errors while building listings. Aborting as it is too dangerous to continue."}"#,
+            "\n",
+            r#"{"level":"error","msg":"Bisync critical error: march failed with 29 error(s): first error: directory not found"}"#,
+            "\n",
+            r#"{"level":"error","msg":"Bisync aborted. Error is retryable without --resync due to --resilient mode."}"#,
+            "\n",
+            r#"{"level":"notice","msg":"Failed to bisync with 30 errors: last error was: bisync aborted"}"#,
+        ));
+
+        assert_eq!(classify(7, &log, workdir.path()), Outcome::Transient);
+    }
+
+    #[test]
+    fn a_subfolder_that_cannot_be_read_for_lack_of_permission_still_needs_attention() {
+        let workdir = workdir_with(&["x.path1.lst", "x.path2.lst"]);
+        let log = parse_log(concat!(
+            r#"{"level":"error","msg":"error reading source directory: googleapi: Error 403: The user does not have sufficient permissions for this file., insufficientFilePermissions","object":"estrutura-de-dados-ii/provas/p1","objectType":"string"}"#,
+            "\n",
+            r#"{"level":"notice","msg":"Failed to bisync with 2 errors: last error was: bisync aborted"}"#,
+        ));
+
+        assert!(matches!(
+            classify(7, &log, workdir.path()),
+            Outcome::NeedsAttention {
+                fault: Fault::Permission,
+                ..
+            }
+        ));
     }
 
     #[test]

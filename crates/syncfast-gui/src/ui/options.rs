@@ -600,7 +600,7 @@ fn label(key: &str) -> &'static str {
         "watch" => "Watch for changes",
         "debounce" => "Wait after changes",
         "max_wait" => "Longest wait while editing",
-        "interval" => "Check Drive every",
+        "interval" => "Full check every",
         "limit_upload" => "Limit uploads to",
         "limit_download" => "Limit downloads to",
         "conflict_resolve" => "When both sides change",
@@ -728,11 +728,16 @@ fn value_label(key: &str, value: &Value) -> String {
 
 fn schedule_summary(behavior: &Behavior) -> String {
     let interval = duration_label(behavior.interval.as_secs());
-    if behavior.watch {
-        let debounce = duration_label(behavior.debounce.as_secs());
-        format!("Syncs every {interval} and {debounce} after you stop editing.")
-    } else {
-        format!("Syncs every {interval}. Changes on this computer wait for the next round.")
+    match (behavior.watch, behavior.mode.downloads()) {
+        (true, true) => format!(
+            "Syncs seconds after a change here, within a minute of a change on Drive, after resume, and every {interval}."
+        ),
+        (true, false) => {
+            format!("Syncs seconds after a change here, after resume, and every {interval}.")
+        }
+        (false, _) => {
+            format!("Syncs every {interval}, after resume, and when the network comes back.")
+        }
     }
 }
 

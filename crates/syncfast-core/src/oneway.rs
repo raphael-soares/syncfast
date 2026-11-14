@@ -3,7 +3,7 @@
 //! 0008. The report of what a run changed comes from `--combined`, whose
 //! format is pinned by the `oneway_*` fixtures.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::PathBuf;
 
@@ -14,7 +14,7 @@ use crate::bisync::{
     EXIT_CRITICAL, EXIT_USAGE, Fault, Outcome, RoundMode, bwlimit_args, dir_arg, failure_msgs,
     fault_of, log_file, stamp,
 };
-use crate::bisync_log::{Change, ChangeKind, LogLine, RunSummary};
+use crate::bisync_log::{Change, ChangeKind, LogLine, RunSummary, renamed_from};
 use crate::config::{Pair, split_remote};
 use crate::paths::Paths;
 use crate::rclone::{Rclone, RcloneError};
@@ -25,6 +25,11 @@ pub const REMOTE_VERSIONS_DIR: &str = ".syncfast-versions";
 
 const STATS_INTERVAL: &str = "2s";
 const TOO_MANY_DELETES: &str = "--max-delete threshold reached";
+const RENAME_ARGS: [&str; 3] = [
+    "--track-renames",
+    "--track-renames-strategy",
+    "hash,modtime",
+];
 
 /// `<account>:.syncfast-versions/<id>`: where the remote versions of a
 /// `mirror_up` sync live. `None` for a remote without an account.
@@ -102,13 +107,16 @@ pub fn oneway_args(
         "--filter-from".into(),
         paths.filters_file(id).into_os_string(),
     ];
-    if behavior.mode.is_mirror() && mode == RoundMode::Normal {
-        args.extend([
-            "--max-delete".into(),
-            max_delete_limit(dest_files, behavior.max_delete)
-                .to_string()
-                .into(),
-        ]);
+    if behavior.mode.is_mirror() {
+        if mode == RoundMode::Normal {
+            args.extend([
+                "--max-delete".into(),
+                max_delete_limit(dest_files, behavior.max_delete)
+                    .to_string()
+                    .into(),
+            ]);
+        }
+        args.extend(RENAME_ARGS.map(OsString::from));
     }
     if behavior.empty_dirs {
         args.push("--create-empty-src-dirs".into());
@@ -199,9 +207,14 @@ fn entries(changes: &str) -> impl Iterator<Item = (char, &str)> {
 /// counters are known only for a run that finished (`exit_code` 0). A file
 /// rclone also marked as failed (`!`) did not change, whatever else the
 /// report says about it. What `copy` would remove from the destination is
-/// not a change of a `copy` mode.
+/// not a change of a `copy` mode. Mirror renames: ADR 0005.
 #[must_use]
-pub fn summarize_oneway(changes: &str, mode: SyncMode, exit_code: i32) -> RunSummary {
+pub fn summarize_oneway(
+    changes: &str,
+    lines: &[LogLine],
+    mode: SyncMode,
+    exit_code: i32,
+) -> RunSummary {
     let failed: HashSet<&str> = entries(changes)
         .filter(|(symbol, _)| *symbol == '!')
         .map(|(_, path)| path)
@@ -221,19 +234,27 @@ pub fn summarize_oneway(changes: &str, mode: SyncMode, exit_code: i32) -> RunSum
         ),
         SyncMode::Bisync => (ChangeKind::Other, ChangeKind::Other, None),
     };
+    let renamed = renames(changes, lines, &failed);
+    let renamed_away: HashSet<&str> = renamed.values().map(String::as_str).collect();
+    let rename = if mode.local_is_source() {
+        ChangeKind::RenameRemote
+    } else {
+        ChangeKind::RenameLocal
+    };
     let changes: Vec<Change> = entries(changes)
         .filter(|(_, path)| !failed.contains(path))
-        .filter_map(|(symbol, path)| {
-            let kind = match symbol {
-                '+' => new,
-                '*' => replaced,
-                '-' => removed?,
-                _ => return None,
-            };
-            Some(Change {
-                kind,
-                path: path.to_owned(),
-            })
+        .filter_map(|(symbol, path)| match symbol {
+            '+' => Some(match renamed.get(path) {
+                Some(from) => Change {
+                    kind: rename,
+                    path: path.to_owned(),
+                    from: Some(from.clone()),
+                },
+                None => Change::new(new, path),
+            }),
+            '*' => Some(Change::new(replaced, path)),
+            '-' if !renamed_away.contains(path) => Some(Change::new(removed?, path)),
+            _ => None,
         })
         .collect();
     let count = |kinds: &[ChangeKind]| {
@@ -245,9 +266,34 @@ pub fn summarize_oneway(changes: &str, mode: SyncMode, exit_code: i32) -> RunSum
         downloaded: count(&[ChangeKind::Download, ChangeKind::OverwriteLocal]),
         deleted_local: count(&[ChangeKind::DeleteLocal]),
         deleted_remote: count(&[ChangeKind::DeleteRemote]),
+        renamed: count(&[ChangeKind::RenameLocal, ChangeKind::RenameRemote]),
         conflicts_new: None,
         changes,
     }
+}
+
+/// New path to old path of each rename the log names and the report
+/// confirms with both its `+ new` and `- old` lines.
+fn renames<'a>(
+    changes: &'a str,
+    lines: &[LogLine],
+    failed: &HashSet<&str>,
+) -> HashMap<&'a str, String> {
+    let listed = |wanted: char| -> HashSet<&'a str> {
+        entries(changes)
+            .filter(|(symbol, path)| *symbol == wanted && !failed.contains(path))
+            .map(|(_, path)| path)
+            .collect()
+    };
+    let (added, removed) = (listed('+'), listed('-'));
+    lines
+        .iter()
+        .filter_map(|line| Some((line.object.as_deref()?, renamed_from(&line.msg)?)))
+        .filter_map(|(new, old)| {
+            let new = added.get(new)?;
+            removed.contains(old.as_str()).then_some((*new, old))
+        })
+        .collect()
 }
 
 /// How many files the destination holds after a round that wrote this
@@ -496,6 +542,9 @@ mod tests {
                 &[
                     "--max-delete",
                     "100",
+                    "--track-renames",
+                    "--track-renames-strategy",
+                    "hash,modtime",
                     "--create-empty-src-dirs",
                     "--drive-skip-gdocs",
                     "--backup-dir",
@@ -519,6 +568,9 @@ mod tests {
                 &[
                     "--max-delete",
                     "100",
+                    "--track-renames",
+                    "--track-renames-strategy",
+                    "hash,modtime",
                     "--create-empty-src-dirs",
                     "--drive-skip-gdocs",
                     "--backup-dir",
@@ -546,6 +598,17 @@ mod tests {
     }
 
     #[test]
+    fn only_a_mirror_tracks_renames() {
+        let tracks =
+            |mode| args(&behavior(mode), RoundMode::Normal).contains(&"--track-renames".to_owned());
+
+        assert!(tracks(SyncMode::MirrorUp));
+        assert!(tracks(SyncMode::MirrorDown));
+        assert!(!tracks(SyncMode::Upload));
+        assert!(!tracks(SyncMode::Download));
+    }
+
+    #[test]
     fn the_cap_is_a_share_of_the_files_the_last_round_left() {
         let mirror = Behavior {
             max_delete: 25,
@@ -569,6 +632,9 @@ mod tests {
                     "sync",
                     (REMOTE, LOCAL),
                     &[
+                        "--track-renames",
+                        "--track-renames-strategy",
+                        "hash,modtime",
                         "--create-empty-src-dirs",
                         "--drive-skip-gdocs",
                         "--backup-dir",
@@ -594,6 +660,9 @@ mod tests {
                 "sync",
                 (LOCAL, REMOTE),
                 &[
+                    "--track-renames",
+                    "--track-renames-strategy",
+                    "hash,modtime",
                     "--create-empty-src-dirs",
                     "--drive-skip-gdocs",
                     "--backup-dir",
@@ -753,14 +822,39 @@ mod tests {
     }
 
     fn summary(name: &str, mode: SyncMode) -> RunSummary {
-        summarize_oneway(&changes(name), mode, exit_code(name))
+        summarize_oneway(&changes(name), &fixture(name), mode, exit_code(name))
     }
 
     fn change(kind: ChangeKind, path: &str) -> Change {
-        Change {
-            kind,
-            path: path.to_owned(),
-        }
+        Change::new(kind, path)
+    }
+
+    #[test]
+    fn a_mirrored_rename_is_one_rename_per_file_and_no_deletion() {
+        let summary = summary("oneway_mirror_rename", SyncMode::MirrorUp);
+
+        let expected: Vec<Change> = (1..=3)
+            .map(|n| Change {
+                kind: ChangeKind::RenameRemote,
+                path: format!("1-disc/f{n}.txt"),
+                from: Some(format!("disc/f{n}.txt")),
+            })
+            .collect();
+        assert_eq!(summary.changes, expected);
+        assert_eq!(
+            (summary.renamed, summary.uploaded, summary.deleted_remote),
+            (Some(3), Some(0), Some(0))
+        );
+    }
+
+    #[test]
+    fn a_report_pair_without_a_rename_notice_stays_an_upload_and_a_deletion() {
+        let summary =
+            summarize_oneway(&changes("oneway_mirror_rename"), &[], SyncMode::MirrorUp, 0);
+
+        assert_eq!(summary.renamed, Some(0));
+        assert_eq!(summary.uploaded, Some(3));
+        assert_eq!(summary.deleted_remote, Some(3));
     }
 
     #[test]
@@ -847,13 +941,18 @@ mod tests {
     fn a_run_that_stopped_has_no_counters_and_leaves_out_the_files_it_did_not_delete() {
         let stopped = summary("oneway_sync_max_delete", SyncMode::MirrorUp);
 
-        assert_eq!(
-            stopped.changes,
-            [
-                change(ChangeKind::DeleteRemote, "f2.txt"),
-                change(ChangeKind::Upload, "keep.txt"),
-            ]
+        let deleted = stopped
+            .changes
+            .iter()
+            .filter(|change| change.kind == ChangeKind::DeleteRemote)
+            .count();
+        assert_eq!(deleted, 1);
+        assert!(
+            stopped
+                .changes
+                .contains(&change(ChangeKind::Upload, "keep.txt"))
         );
+        assert_eq!(stopped.changes.len(), 2);
         assert_eq!((stopped.uploaded, stopped.deleted_remote), (None, None));
     }
 
@@ -933,7 +1032,7 @@ mod tests {
     fn the_summary_reads_symbol_space_path_and_keeps_spaces_in_paths() {
         let text = "+ a b.txt\n* dir/c.txt\n= same.txt\nnot a line\n+nospace\n";
 
-        let summary = summarize_oneway(text, SyncMode::Download, 0);
+        let summary = summarize_oneway(text, &[], SyncMode::Download, 0);
 
         assert_eq!(
             summary.changes,

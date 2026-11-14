@@ -539,11 +539,13 @@ fn run(id: &str, started: &str, status: DisplayStatus) -> RunEntry {
             downloaded: Some(1),
             deleted_local: Some(0),
             deleted_remote: Some(3),
+            renamed: None,
             conflicts_new: Some(0),
             changes: Vec::new(),
         },
         detail: None,
         auto_reviewed: None,
+        idle: false,
         messages: vec!["Synching Path1".into(), "Bisync successful".into()],
     }
 }
@@ -591,6 +593,21 @@ fn activity_says_when_a_round_was_reviewed_automatically_beside_its_counters() {
 
     harness.get_by_label("Reviewed automatically  ↑ 2  ↓ 1  ✕ 3");
     harness.get_by_label("↑ 2  ↓ 1  ✕ 3");
+}
+
+#[test]
+fn activity_shows_an_idle_check_with_its_time_and_says_nothing_changed() {
+    let mut idle = run(
+        "b.idle.jsonl",
+        "2026-11-03T11:55:00Z",
+        DisplayStatus::UpToDate,
+    );
+    idle.idle = true;
+    idle.summary = RunSummary::default();
+    let harness = harness(with_runs(vec![idle]));
+
+    harness.get_by_label("Today 11:55");
+    harness.get_by_label("No changes");
 }
 
 #[test]

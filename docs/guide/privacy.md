@@ -6,6 +6,8 @@ syncfast has no server, no account of its own and no telemetry. It sends nothing
 
 Only what rclone sends to Google Drive to sync the folders you chose: file contents, names and dates, over HTTPS, to your own Drive account. Signing in happens in your browser, between you and Google.
 
+While `syncfast watch` runs, syncfast itself asks the Drive changes API (every 30 seconds) which files changed in your account, to start a sync soon after a change made elsewhere. It sends the access token that rclone saved after you signed in, only to Google, and reads back file IDs and parent folder IDs, not names or contents. See [ADR 0011](../adr/0011-drive-changes-api.md).
+
 Backups go through the same rclone, and only to the destination you chose when you created the backup: a folder in your Drive account, or a folder on this computer or a disk. restic encrypts everything on your computer first, so what reaches Drive (or your disk) is encrypted data files without readable names, sizes or contents. Only you hold the key. A destination on this computer or a disk sends nothing over the network. See [Backing up with syncfast](backup.md).
 
 ## What stays on your computer
@@ -17,7 +19,7 @@ Backups go through the same rclone, and only to the destination you chose when y
 
 ## Permissions of the Flatpak
 
-The sandbox is granted: your home folder (the folders you sync and the configs above), the network, a window (Wayland and X11, GPU), external disks under `/run/media` and `/mnt` (backup destinations), the Secret Service on the session bus (the backup key, when the Secret portal is missing), desktop notifications, the tray, the NetworkManager state (to tell offline from an error), and `flatpak-spawn --host` to manage its systemd user units. The full reasoning is in [ADR 0006](../adr/0006-flatpak-packaging.md).
+The sandbox is granted: your home folder (the folders you sync and the configs above), the network, a window (Wayland and X11, GPU), external disks under `/run/media` and `/mnt` (backup destinations), the Secret Service on the session bus (the backup key, when the Secret portal is missing), desktop notifications, the tray, the NetworkManager state (to tell offline from an error and to sync when the network comes back), the suspend and resume signal of systemd-logind (to sync after resuming), and `flatpak-spawn --host` to manage its systemd user units. The full reasoning is in [ADR 0006](../adr/0006-flatpak-packaging.md).
 
 ## AI agents
 

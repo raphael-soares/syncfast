@@ -106,6 +106,7 @@ pub enum Alert {
         uploaded: u32,
         downloaded: u32,
         deleted: u32,
+        renamed: u32,
     },
 }
 
@@ -116,10 +117,12 @@ impl Alert {
         let uploaded = summary.uploaded.unwrap_or(0);
         let downloaded = summary.downloaded.unwrap_or(0);
         let deleted = summary.deleted_local.unwrap_or(0) + summary.deleted_remote.unwrap_or(0);
-        (uploaded + downloaded + deleted > 0).then_some(Self::Synced {
+        let renamed = summary.renamed.unwrap_or(0);
+        (uploaded + downloaded + deleted + renamed > 0).then_some(Self::Synced {
             uploaded,
             downloaded,
             deleted,
+            renamed,
         })
     }
 }
@@ -220,9 +223,10 @@ pub fn notice(pair: &Pair, behavior: &Behavior, alert: &Alert) -> Notice {
             uploaded,
             downloaded,
             deleted,
+            renamed,
         } => (
             format!("{name}: synced"),
-            synced_body(*uploaded, *downloaded, *deleted),
+            synced_body(*uploaded, *downloaded, *deleted, *renamed),
         ),
         Alert::AutoReviewed { deleted } => (
             format!("{name}: reviewed automatically"),
@@ -239,11 +243,12 @@ pub fn notice(pair: &Pair, behavior: &Behavior, alert: &Alert) -> Notice {
     }
 }
 
-fn synced_body(uploaded: u32, downloaded: u32, deleted: u32) -> String {
+fn synced_body(uploaded: u32, downloaded: u32, deleted: u32, renamed: u32) -> String {
     [
         (uploaded, "uploaded"),
         (downloaded, "downloaded"),
         (deleted, "deleted"),
+        (renamed, "renamed"),
     ]
     .into_iter()
     .filter(|(count, _)| *count > 0)
@@ -956,6 +961,17 @@ mod tests {
                 "3 uploaded, 1 downloaded, 2 deleted".to_owned()
             )
         );
+    }
+
+    #[test]
+    fn a_round_that_only_renamed_files_says_so() {
+        let alert = Alert::synced(&RunSummary {
+            renamed: Some(4),
+            ..summary(0, 0, 0, 0)
+        })
+        .unwrap();
+
+        assert_eq!(text(&alert).1, "4 renamed");
     }
 
     #[test]

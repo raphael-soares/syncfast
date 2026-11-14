@@ -1,0 +1,87 @@
+{"time":"2026-11-13T22:55:19.750970563-03:00","level":"info","msg":"Bisyncing with Comparison Settings: \n{\n\t\"Modtime\": true,\n\t\"Size\": true,\n\t\"Checksum\": false,\n\t\"HashType1\": 1,\n\t\"HashType2\": 1,\n\t\"NoSlowHash\": false,\n\t\"SlowHashSyncOnly\": false,\n\t\"SlowHashDetected\": true,\n\t\"DownloadHash\": false\n}\n","source":"bisync/compare.go:118"}
+{"time":"2026-11-13T22:55:19.751570344-03:00","level":"info","msg":"lock file renewed for 2m0s. New expiration: 2026-11-13 22:57:19.751418444 -0300 -03 m=+120.072022927","source":"bisync/lockfile.go:91"}
+{"time":"2026-11-13T22:55:19.751890192-03:00","level":"info","msg":"Synching Path1 \"/tmp/tmp.5DFmmplI3S/local/\" with Path2 \"/tmp/tmp.5DFmmplI3S/remote/\"","source":"bisync/operations.go:254"}
+{"time":"2026-11-13T22:55:19.752084613-03:00","level":"info","msg":"Using filters file /tmp/tmp.5DFmmplI3S/state/filters/x.txt","source":"bisync/cmd.go:243"}
+{"time":"2026-11-13T22:55:19.753791717-03:00","level":"info","msg":"Building Path1 and Path2 listings","source":"bisync/operations.go:326"}
+{"time":"2026-11-13T22:55:19.755687668-03:00","level":"info","msg":"Path1 checking for diffs","source":"bisync/operations.go:336"}
+{"time":"2026-11-13T22:55:19.755936779-03:00","level":"info","msg":"Path2 checking for diffs","source":"bisync/operations.go:344"}
+{"time":"2026-11-13T22:55:19.756083487-03:00","level":"info","msg":"- Path2             File was deleted                            - disc","source":"bisync/deltas.go:186"}
+{"time":"2026-11-13T22:55:19.756135259-03:00","level":"info","msg":"- Path2             File was deleted                            - disc/f1.txt","source":"bisync/deltas.go:186"}
+{"time":"2026-11-13T22:55:19.756176412-03:00","level":"info","msg":"- Path2             File was deleted                            - disc/f10.txt","source":"bisync/deltas.go:186"}
+{"time":"2026-11-13T22:55:19.756238498-03:00","level":"info","msg":"- Path2             File was deleted                            - disc/f2.txt","source":"bisync/deltas.go:186"}
+{"time":"2026-11-13T22:55:19.756283906-03:00","level":"info","msg":"- Path2             File was deleted                            - disc/f3.txt","source":"bisync/deltas.go:186"}
+{"time":"2026-11-13T22:55:19.75632342-03:00","level":"info","msg":"- Path2             File was deleted                            - disc/f4.txt","source":"bisync/deltas.go:186"}
+{"time":"2026-11-13T22:55:19.75636234-03:00","level":"info","msg":"- Path2             File was deleted                            - disc/f5.txt","source":"bisync/deltas.go:186"}
+{"time":"2026-11-13T22:55:19.756400873-03:00","level":"info","msg":"- Path2             File was deleted                            - disc/f6.txt","source":"bisync/deltas.go:186"}
+{"time":"2026-11-13T22:55:19.756438993-03:00","level":"info","msg":"- Path2             File was deleted                            - disc/f7.txt","source":"bisync/deltas.go:186"}
+{"time":"2026-11-13T22:55:19.756478811-03:00","level":"info","msg":"- Path2             File was deleted                            - disc/f8.txt","source":"bisync/deltas.go:186"}
+{"time":"2026-11-13T22:55:19.756517391-03:00","level":"info","msg":"- Path2             File was deleted                            - disc/f9.txt","source":"bisync/deltas.go:186"}
+{"time":"2026-11-13T22:55:19.756560603-03:00","level":"info","msg":"- Path2             File is new                                 - 1-disc","source":"bisync/deltas.go:254"}
+{"time":"2026-11-13T22:55:19.756604427-03:00","level":"info","msg":"- Path2             File is new                                 - 1-disc/f1.txt","source":"bisync/deltas.go:254"}
+{"time":"2026-11-13T22:55:19.756646086-03:00","level":"info","msg":"- Path2             File is new                                 - 1-disc/f10.txt","source":"bisync/deltas.go:254"}
+{"time":"2026-11-13T22:55:19.75668921-03:00","level":"info","msg":"- Path2             File is new                                 - 1-disc/f2.txt","source":"bisync/deltas.go:254"}
+{"time":"2026-11-13T22:55:19.756736555-03:00","level":"info","msg":"- Path2             File is new                                 - 1-disc/f3.txt","source":"bisync/deltas.go:254"}
+{"time":"2026-11-13T22:55:19.756797187-03:00","level":"info","msg":"- Path2             File is new                                 - 1-disc/f4.txt","source":"bisync/deltas.go:254"}
+{"time":"2026-11-13T22:55:19.756840255-03:00","level":"info","msg":"- Path2             File is new                                 - 1-disc/f5.txt","source":"bisync/deltas.go:254"}
+{"time":"2026-11-13T22:55:19.756881154-03:00","level":"info","msg":"- Path2             File is new                                 - 1-disc/f6.txt","source":"bisync/deltas.go:254"}
+{"time":"2026-11-13T22:55:19.756946736-03:00","level":"info","msg":"- Path2             File is new                                 - 1-disc/f7.txt","source":"bisync/deltas.go:254"}
+{"time":"2026-11-13T22:55:19.756993966-03:00","level":"info","msg":"- Path2             File is new                                 - 1-disc/f8.txt","source":"bisync/deltas.go:254"}
+{"time":"2026-11-13T22:55:19.757036933-03:00","level":"info","msg":"- Path2             File is new                                 - 1-disc/f9.txt","source":"bisync/deltas.go:254"}
+{"time":"2026-11-13T22:55:19.757078877-03:00","level":"info","msg":"Path2:   22 changes:   11 new,    0 modified,   11 deleted","source":"bisync/deltas.go:127"}
+{"time":"2026-11-13T22:55:19.757171963-03:00","level":"info","msg":"Path2: excluding 10 tracked renames from --max-delete","source":"bisync/operations.go:374"}
+{"time":"2026-11-13T22:55:19.757238104-03:00","level":"info","msg":"Applying changes","source":"bisync/operations.go:409"}
+{"time":"2026-11-13T22:55:19.757613473-03:00","level":"info","msg":"- Path2             Queue copy to Path1                         - /tmp/tmp.5DFmmplI3S/local/1-disc","source":"bisync/deltas.go:474"}
+{"time":"2026-11-13T22:55:19.757679361-03:00","level":"info","msg":"- Path2             Queue copy to Path1                         - /tmp/tmp.5DFmmplI3S/local/1-disc/f1.txt","source":"bisync/deltas.go:474"}
+{"time":"2026-11-13T22:55:19.757734557-03:00","level":"info","msg":"- Path2             Queue copy to Path1                         - /tmp/tmp.5DFmmplI3S/local/1-disc/f10.txt","source":"bisync/deltas.go:474"}
+{"time":"2026-11-13T22:55:19.757786595-03:00","level":"info","msg":"- Path2             Queue copy to Path1                         - /tmp/tmp.5DFmmplI3S/local/1-disc/f2.txt","source":"bisync/deltas.go:474"}
+{"time":"2026-11-13T22:55:19.757840922-03:00","level":"info","msg":"- Path2             Queue copy to Path1                         - /tmp/tmp.5DFmmplI3S/local/1-disc/f3.txt","source":"bisync/deltas.go:474"}
+{"time":"2026-11-13T22:55:19.757894709-03:00","level":"info","msg":"- Path2             Queue copy to Path1                         - /tmp/tmp.5DFmmplI3S/local/1-disc/f4.txt","source":"bisync/deltas.go:474"}
+{"time":"2026-11-13T22:55:19.757945767-03:00","level":"info","msg":"- Path2             Queue copy to Path1                         - /tmp/tmp.5DFmmplI3S/local/1-disc/f5.txt","source":"bisync/deltas.go:474"}
+{"time":"2026-11-13T22:55:19.757999287-03:00","level":"info","msg":"- Path2             Queue copy to Path1                         - /tmp/tmp.5DFmmplI3S/local/1-disc/f6.txt","source":"bisync/deltas.go:474"}
+{"time":"2026-11-13T22:55:19.758052311-03:00","level":"info","msg":"- Path2             Queue copy to Path1                         - /tmp/tmp.5DFmmplI3S/local/1-disc/f7.txt","source":"bisync/deltas.go:474"}
+{"time":"2026-11-13T22:55:19.758112507-03:00","level":"info","msg":"- Path2             Queue copy to Path1                         - /tmp/tmp.5DFmmplI3S/local/1-disc/f8.txt","source":"bisync/deltas.go:474"}
+{"time":"2026-11-13T22:55:19.758168638-03:00","level":"info","msg":"- Path2             Queue copy to Path1                         - /tmp/tmp.5DFmmplI3S/local/1-disc/f9.txt","source":"bisync/deltas.go:474"}
+{"time":"2026-11-13T22:55:19.758240489-03:00","level":"info","msg":"- Path1             Queue delete                                - /tmp/tmp.5DFmmplI3S/local/disc","source":"bisync/deltas.go:478"}
+{"time":"2026-11-13T22:55:19.758309565-03:00","level":"info","msg":"- Path1             Queue delete                                - /tmp/tmp.5DFmmplI3S/local/disc/f1.txt","source":"bisync/deltas.go:478"}
+{"time":"2026-11-13T22:55:19.758366755-03:00","level":"info","msg":"- Path1             Queue delete                                - /tmp/tmp.5DFmmplI3S/local/disc/f10.txt","source":"bisync/deltas.go:478"}
+{"time":"2026-11-13T22:55:19.758420502-03:00","level":"info","msg":"- Path1             Queue delete                                - /tmp/tmp.5DFmmplI3S/local/disc/f2.txt","source":"bisync/deltas.go:478"}
+{"time":"2026-11-13T22:55:19.758480246-03:00","level":"info","msg":"- Path1             Queue delete                                - /tmp/tmp.5DFmmplI3S/local/disc/f3.txt","source":"bisync/deltas.go:478"}
+{"time":"2026-11-13T22:55:19.758535241-03:00","level":"info","msg":"- Path1             Queue delete                                - /tmp/tmp.5DFmmplI3S/local/disc/f4.txt","source":"bisync/deltas.go:478"}
+{"time":"2026-11-13T22:55:19.758590509-03:00","level":"info","msg":"- Path1             Queue delete                                - /tmp/tmp.5DFmmplI3S/local/disc/f5.txt","source":"bisync/deltas.go:478"}
+{"time":"2026-11-13T22:55:19.758644301-03:00","level":"info","msg":"- Path1             Queue delete                                - /tmp/tmp.5DFmmplI3S/local/disc/f6.txt","source":"bisync/deltas.go:478"}
+{"time":"2026-11-13T22:55:19.75869709-03:00","level":"info","msg":"- Path1             Queue delete                                - /tmp/tmp.5DFmmplI3S/local/disc/f7.txt","source":"bisync/deltas.go:478"}
+{"time":"2026-11-13T22:55:19.758757637-03:00","level":"info","msg":"- Path1             Queue delete                                - /tmp/tmp.5DFmmplI3S/local/disc/f8.txt","source":"bisync/deltas.go:478"}
+{"time":"2026-11-13T22:55:19.758822312-03:00","level":"info","msg":"- Path1             Queue delete                                - /tmp/tmp.5DFmmplI3S/local/disc/f9.txt","source":"bisync/deltas.go:478"}
+{"time":"2026-11-13T22:55:19.758871938-03:00","level":"info","msg":"- Path2             Do queued copies to                         - Path1","source":"bisync/deltas.go:486"}
+{"time":"2026-11-13T22:55:19.760864878-03:00","level":"info","msg":"Made directory with metadata (mtime=2026-11-13T22:55:19.538567204-03:00)","object":"1-disc","objectType":"string","source":"operations/operations.go:1130"}
+{"time":"2026-11-13T22:55:19.764220866-03:00","level":"info","msg":"Making map for --track-renames","object":"Local file system at /tmp/tmp.5DFmmplI3S/local","objectType":"*local.Fs","source":"sync/sync.go:725"}
+{"time":"2026-11-13T22:55:19.764684541-03:00","level":"info","msg":"Finished making map for --track-renames","object":"Local file system at /tmp/tmp.5DFmmplI3S/local","objectType":"*local.Fs","source":"sync/sync.go:755"}
+{"time":"2026-11-13T22:55:19.764970522-03:00","level":"info","msg":"Moved (server-side) to: 1-disc/f1.txt","object":"disc/f1.txt","objectType":"*local.Object","source":"operations/operations.go:499"}
+{"time":"2026-11-13T22:55:19.765058698-03:00","level":"info","msg":"Renamed from \"disc/f1.txt\"","object":"1-disc/f1.txt","objectType":"*local.Object","source":"sync/sync.go:782"}
+{"time":"2026-11-13T22:55:19.765182569-03:00","level":"info","msg":"Moved (server-side) to: 1-disc/f10.txt","object":"disc/f10.txt","objectType":"*local.Object","source":"operations/operations.go:499"}
+{"time":"2026-11-13T22:55:19.765260503-03:00","level":"info","msg":"Renamed from \"disc/f10.txt\"","object":"1-disc/f10.txt","objectType":"*local.Object","source":"sync/sync.go:782"}
+{"time":"2026-11-13T22:55:19.765376545-03:00","level":"info","msg":"Moved (server-side) to: 1-disc/f4.txt","object":"disc/f4.txt","objectType":"*local.Object","source":"operations/operations.go:499"}
+{"time":"2026-11-13T22:55:19.765485319-03:00","level":"info","msg":"Renamed from \"disc/f4.txt\"","object":"1-disc/f4.txt","objectType":"*local.Object","source":"sync/sync.go:782"}
+{"time":"2026-11-13T22:55:19.765516137-03:00","level":"info","msg":"Moved (server-side) to: 1-disc/f8.txt","object":"disc/f8.txt","objectType":"*local.Object","source":"operations/operations.go:499"}
+{"time":"2026-11-13T22:55:19.765449095-03:00","level":"info","msg":"Moved (server-side) to: 1-disc/f3.txt","object":"disc/f3.txt","objectType":"*local.Object","source":"operations/operations.go:499"}
+{"time":"2026-11-13T22:55:19.765714784-03:00","level":"info","msg":"Renamed from \"disc/f8.txt\"","object":"1-disc/f8.txt","objectType":"*local.Object","source":"sync/sync.go:782"}
+{"time":"2026-11-13T22:55:19.765729005-03:00","level":"info","msg":"Renamed from \"disc/f3.txt\"","object":"1-disc/f3.txt","objectType":"*local.Object","source":"sync/sync.go:782"}
+{"time":"2026-11-13T22:55:19.765567429-03:00","level":"info","msg":"Moved (server-side) to: 1-disc/f9.txt","object":"disc/f9.txt","objectType":"*local.Object","source":"operations/operations.go:499"}
+{"time":"2026-11-13T22:55:19.765796364-03:00","level":"info","msg":"Renamed from \"disc/f9.txt\"","object":"1-disc/f9.txt","objectType":"*local.Object","source":"sync/sync.go:782"}
+{"time":"2026-11-13T22:55:19.76538317-03:00","level":"info","msg":"Moved (server-side) to: 1-disc/f2.txt","object":"disc/f2.txt","objectType":"*local.Object","source":"operations/operations.go:499"}
+{"time":"2026-11-13T22:55:19.7658736-03:00","level":"info","msg":"Renamed from \"disc/f2.txt\"","object":"1-disc/f2.txt","objectType":"*local.Object","source":"sync/sync.go:782"}
+{"time":"2026-11-13T22:55:19.765976165-03:00","level":"info","msg":"Moved (server-side) to: 1-disc/f7.txt","object":"disc/f7.txt","objectType":"*local.Object","source":"operations/operations.go:499"}
+{"time":"2026-11-13T22:55:19.765772217-03:00","level":"info","msg":"Moved (server-side) to: 1-disc/f5.txt","object":"disc/f5.txt","objectType":"*local.Object","source":"operations/operations.go:499"}
+{"time":"2026-11-13T22:55:19.765971775-03:00","level":"info","msg":"Moved (server-side) to: 1-disc/f6.txt","object":"disc/f6.txt","objectType":"*local.Object","source":"operations/operations.go:499"}
+{"time":"2026-11-13T22:55:19.766047298-03:00","level":"info","msg":"Renamed from \"disc/f7.txt\"","object":"1-disc/f7.txt","objectType":"*local.Object","source":"sync/sync.go:782"}
+{"time":"2026-11-13T22:55:19.766137095-03:00","level":"info","msg":"Renamed from \"disc/f6.txt\"","object":"1-disc/f6.txt","objectType":"*local.Object","source":"sync/sync.go:782"}
+{"time":"2026-11-13T22:55:19.766092923-03:00","level":"info","msg":"Renamed from \"disc/f5.txt\"","object":"1-disc/f5.txt","objectType":"*local.Object","source":"sync/sync.go:782"}
+{"time":"2026-11-13T22:55:19.766466678-03:00","level":"info","msg":"Set directory modification time (using SetModTime)","object":"1-disc","objectType":"*local.Directory","source":"operations/operations.go:2862"}
+{"time":"2026-11-13T22:55:19.766744632-03:00","level":"info","msg":"Removing directory","object":"disc","objectType":"string","source":"operations/operations.go:1176"}
+{"time":"2026-11-13T22:55:19.766861288-03:00","level":"info","msg":"There was nothing to transfer","source":"sync/sync.go:890"}
+{"time":"2026-11-13T22:55:19.769132712-03:00","level":"info","msg":"Making directory","object":"1-disc","objectType":"string","source":"operations/operations.go:1096"}
+{"time":"2026-11-13T22:55:19.76932831-03:00","level":"info","msg":"Removing directory","object":"disc","objectType":"string","source":"operations/operations.go:1176"}
+{"time":"2026-11-13T22:55:19.769397193-03:00","level":"info","msg":"Updating listings","source":"bisync/operations.go:423"}
+{"time":"2026-11-13T22:55:19.771112448-03:00","level":"info","msg":"Validating listings for Path1 \"/tmp/tmp.5DFmmplI3S/local/\" vs Path2 \"/tmp/tmp.5DFmmplI3S/remote/\"","source":"bisync/operations.go:462"}
+{"time":"2026-11-13T22:55:19.771515016-03:00","level":"info","msg":"Bisync successful","source":"bisync/operations.go:234"}
+{"time":"2026-11-13T22:55:19.771671863-03:00","level":"notice","msg":"\nTransferred:   \t          0 B / 0 B, -, 0 B/s, ETA -\nChecks:                51 / 51, 100%, Listed 48\nDeleted:                0 (files), 2 (dirs), 0 B (freed)\nUpdated dirs:           2\nRenamed:               10\nServer Side Moves:     10 @ 121 B\nElapsed time:         0.0s\n\n","stats":{"bytes":0,"checks":51,"deletedDirs":2,"deletes":0,"elapsedTime":0.017604669,"errors":0,"eta":null,"fatalError":false,"listed":48,"renames":10,"retryError":false,"serverSideCopies":0,"serverSideCopyBytes":0,"serverSideMoveBytes":121,"serverSideMoves":10,"speed":0,"totalBytes":0,"totalChecks":51,"totalTransfers":0,"transferTime":0.002123251,"transfers":0,"updatedDirs":2},"source":"accounting/stats.go:554"}

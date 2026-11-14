@@ -24,6 +24,7 @@ use syncfast_core::preview::preview;
 use syncfast_core::rclone::Rclone;
 use syncfast_core::run::{RunEnv, RunReport, run};
 use syncfast_core::run_decision::SkipReason;
+use syncfast_core::runs;
 use syncfast_core::state::{ConfirmMarker, GateKind, State};
 
 const PAIR: &str = "docs";
@@ -645,4 +646,41 @@ async fn remote_versions_are_purged_by_the_date_in_the_folder_name() {
     assert!(!versions.join(&old).exists());
     assert!(versions.join(&recent).join("recent.txt").exists());
     assert!(versions.join("not-a-stamp").join("other.txt").exists());
+}
+
+#[tokio::test]
+async fn an_idle_one_way_round_keeps_its_report_with_its_log_until_the_next_check() {
+    let Some(bed) = bed("upload") else {
+        return;
+    };
+    write(&bed.local, "a.txt", "a");
+    bed.first_sync().await;
+
+    assert_eq!(bed.run().await, ran_ok(RoundMode::Normal));
+    let idle = |bed: &Bed| -> Vec<String> {
+        names(&bed.paths.runs_dir(PAIR))
+            .into_iter()
+            .filter(|name| name.ends_with(".idle.jsonl"))
+            .collect()
+    };
+    let first = idle(&bed);
+    let stamp = |name: &String| name.split('.').next().unwrap().to_owned();
+    let report = |bed: &Bed, stamp: &str| {
+        bed.paths
+            .runs_dir(PAIR)
+            .join(format!("{stamp}.upload.changes"))
+            .exists()
+    };
+    assert_eq!(first.len(), 1);
+    assert!(report(&bed, &stamp(&first[0])), "the report stays linked");
+    let rounds = runs::load(&bed.paths, PAIR, false).await;
+    assert!(rounds.iter().any(|round| round.idle));
+
+    assert_eq!(bed.run().await, ran_ok(RoundMode::Normal));
+
+    let second = idle(&bed);
+    assert_eq!(second.len(), 1);
+    assert_ne!(first, second);
+    assert!(!report(&bed, &stamp(&first[0])), "pruned with its log");
+    assert!(report(&bed, &stamp(&second[0])));
 }

@@ -17,8 +17,8 @@ use syncfast_core::config::Pair;
 use syncfast_core::network::BoxFuture;
 use syncfast_core::state::try_lock_pair;
 use syncfast_core::units::{Systemctl, SystemdMode, UserSystemctl};
-use syncfast_core::watch::{Trigger, WatchEnv, Watcher, trigger_for};
-use tokio::sync::oneshot;
+use syncfast_core::watch::{Trigger, Wake, WatchEnv, Watcher, trigger_for};
+use tokio::sync::{mpsc, oneshot};
 
 const DEBOUNCE: Duration = Duration::from_millis(300);
 const MAX_WAIT: Duration = Duration::from_millis(1200);
@@ -70,6 +70,7 @@ impl Recorder {
 struct Running {
     bed: Bed,
     recorder: Arc<Recorder>,
+    wakes: mpsc::Sender<Wake>,
     stop: Option<oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -111,7 +112,9 @@ async fn start_using(
     env.behavior_for = behavior_for;
     env.lock_recheck = RECHECK;
     env.root_recheck = RECHECK;
+    env.wake_sources = false;
     let watcher = Watcher::start(env).await.unwrap();
+    let wakes = watcher.wakes();
     let (stop, stopped) = oneshot::channel();
     let task = tokio::spawn(async move {
         watcher
@@ -124,6 +127,7 @@ async fn start_using(
     Running {
         bed,
         recorder,
+        wakes,
         stop: Some(stop),
         task,
     }
@@ -710,6 +714,66 @@ async fn watch_keeps_the_sync_in_upload_and_mirror_up() {
         let docs = wait_for_id(&run.recorder, "docs", Duration::from_secs(9)).await;
 
         assert!(docs, "{mode}");
+        run.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn a_change_on_drive_fires_only_that_sync_after_the_debounce() {
+    let run = start(&[("docs", true), ("notes", true)], |_| {}).await;
+    let begun = Instant::now();
+
+    run.wakes
+        .send(Wake::Remote("notes".to_owned()))
+        .await
+        .unwrap();
+    sleep(DEBOUNCE / 2).await;
+    let early = run.recorder.count();
+    let fired = wait_for(&run.recorder, 1, Duration::from_secs(2)).await;
+    sleep(DEBOUNCE * 2).await;
+
+    assert_eq!(early, 0);
+    assert!(fired);
+    assert!(begun.elapsed() >= DEBOUNCE);
+    assert_eq!(run.recorder.ids(), ["notes"]);
+    run.stop().await;
+}
+
+#[tokio::test]
+async fn a_change_on_drive_under_a_paused_or_unknown_sync_fires_nothing() {
+    let run = start(&[("docs", true), ("paused", false)], |_| {}).await;
+
+    for id in ["paused", "gone"] {
+        run.wakes.send(Wake::Remote(id.to_owned())).await.unwrap();
+    }
+    sleep(DEBOUNCE * 2).await;
+
+    assert_eq!(run.recorder.count(), 0);
+    run.stop().await;
+}
+
+#[tokio::test]
+async fn resume_and_network_up_make_every_enabled_sync_due_watched_or_not() {
+    for wake in [Wake::Resumed, Wake::NetworkUp] {
+        let run = start(
+            &[("docs", true), ("quiet", true), ("paused", false)],
+            |_| {},
+        )
+        .await;
+        let begun = Instant::now();
+
+        run.wakes.send(wake.clone()).await.unwrap();
+        sleep(DEBOUNCE / 2).await;
+        let early = run.recorder.count();
+        let fired = wait_for(&run.recorder, 2, Duration::from_secs(2)).await;
+        sleep(DEBOUNCE * 2).await;
+
+        let mut ids = run.recorder.ids();
+        ids.sort();
+        assert_eq!(early, 0, "{wake:?}");
+        assert!(fired, "{wake:?}");
+        assert!(begun.elapsed() >= DEBOUNCE, "{wake:?}");
+        assert_eq!(ids, ["docs", "quiet"], "{wake:?}");
         run.stop().await;
     }
 }

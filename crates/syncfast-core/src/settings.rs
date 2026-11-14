@@ -739,7 +739,7 @@ mod tests {
                 "watch=true",
                 "debounce=30s",
                 "max_wait=5m",
-                "interval=5m",
+                "interval=1h",
                 "limit_upload=off",
                 "limit_download=off",
                 "conflict_resolve=newer",

@@ -1,7 +1,8 @@
 //! The Review sheet: what a first sync, a resync or a mass deletion would
 //! change, shown before the user confirms it.
 
-use std::collections::HashMap;
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 
 use egui::epaint::CornerRadius;
 use egui::text::LayoutJob;
@@ -24,11 +25,13 @@ const NOTE: &str =
     "Preview from a dry run. A few listed deletions may not happen in the real sync.";
 
 /// Sections in the order they are listed.
-const ORDER: [ChangeKind; 7] = [
+const ORDER: [ChangeKind; 9] = [
     ChangeKind::Upload,
     ChangeKind::Download,
     ChangeKind::OverwriteLocal,
     ChangeKind::OverwriteRemote,
+    ChangeKind::RenameLocal,
+    ChangeKind::RenameRemote,
     ChangeKind::DeleteLocal,
     ChangeKind::DeleteRemote,
     ChangeKind::Other,
@@ -184,27 +187,45 @@ fn forget_toggles(ui: &Ui, id: Id) {
 }
 
 struct Section<'a> {
-    kind: ChangeKind,
     title: String,
-    paths: Vec<&'a str>,
+    rows: Vec<Cow<'a, str>>,
+    open_by_default: bool,
 }
 
-fn sections<'a>(changes: &'a [Change], remote: &str, kept_days: Option<u32>) -> Vec<Section<'a>> {
-    ORDER
-        .into_iter()
-        .filter_map(|kind| {
-            let paths: Vec<&str> = changes
-                .iter()
-                .filter(|change| change.kind == kind)
-                .map(|change| change.path.as_str())
-                .collect();
-            (!paths.is_empty()).then(|| Section {
-                kind,
-                title: section_title(kind, remote, kept_days),
-                paths,
-            })
+fn row(change: &Change) -> Cow<'_, str> {
+    match &change.from {
+        Some(from) => Cow::Owned(format!("{from} → {}", change.path)),
+        None => Cow::Borrowed(change.path.as_str()),
+    }
+}
+
+fn sections<'a>(preview: &'a Preview, remote: &str, kept_days: Option<u32>) -> Vec<Section<'a>> {
+    let coming_back: HashSet<(ChangeKind, &str)> = preview
+        .returning
+        .iter()
+        .map(|change| (change.kind, change.path.as_str()))
+        .collect();
+    let back = (!preview.returning.is_empty()).then(|| Section {
+        title: "Would come back".to_owned(),
+        rows: preview.returning.iter().map(row).collect(),
+        open_by_default: true,
+    });
+    let by_kind = ORDER.into_iter().filter_map(|kind| {
+        let rows: Vec<Cow<'_, str>> = preview
+            .summary
+            .changes
+            .iter()
+            .filter(|change| change.kind == kind)
+            .filter(|change| !coming_back.contains(&(change.kind, change.path.as_str())))
+            .map(row)
+            .collect();
+        (!rows.is_empty()).then(|| Section {
+            title: section_title(kind, remote, kept_days),
+            rows,
+            open_by_default: is_delete(kind),
         })
-        .collect()
+    });
+    back.into_iter().chain(by_kind).collect()
 }
 
 fn section_title(kind: ChangeKind, remote: &str, kept_days: Option<u32>) -> String {
@@ -220,6 +241,8 @@ fn section_title(kind: ChangeKind, remote: &str, kept_days: Option<u32>) -> Stri
             }
         ),
         ChangeKind::OverwriteRemote => format!("Would replace on {remote}"),
+        ChangeKind::RenameLocal => "Would rename on this computer".to_owned(),
+        ChangeKind::RenameRemote => format!("Would rename on {remote}"),
         ChangeKind::DeleteLocal => "Would delete on this computer".to_owned(),
         ChangeKind::DeleteRemote => format!("Would delete on {remote}"),
         ChangeKind::Other => "Other changes".to_owned(),
@@ -228,8 +251,7 @@ fn section_title(kind: ChangeKind, remote: &str, kept_days: Option<u32>) -> Stri
 
 fn ready(ui: &mut Ui, remote: &str, kept_days: Option<u32>, preview: &Preview, toggles_id: Id) {
     let palette = theme::palette(ui.ctx());
-    let changes = &preview.summary.changes;
-    if changes.is_empty() {
+    if preview.summary.changes.is_empty() {
         forget_toggles(ui, toggles_id);
         ui.label(
             RichText::new("Nothing to change.")
@@ -239,12 +261,13 @@ fn ready(ui: &mut Ui, remote: &str, kept_days: Option<u32>, preview: &Preview, t
         left_out_repos(ui, &palette, &preview.excluded_repos);
         return;
     }
+    coming_back_notice(ui, &palette, preview.returning.len());
     let mut toggles = ui
         .data(|data| data.get_temp::<Toggles>(toggles_id))
         .unwrap_or_default();
     let before = toggles.0.clone();
-    for (index, section) in sections(changes, remote, kept_days).iter().enumerate() {
-        let default_open = index == 0 || is_delete(section.kind);
+    for (index, section) in sections(preview, remote, kept_days).iter().enumerate() {
+        let default_open = index == 0 || section.open_by_default;
         let open = toggles
             .0
             .get(&section.title)
@@ -265,6 +288,23 @@ fn ready(ui: &mut Ui, remote: &str, kept_days: Option<u32>, preview: &Preview, t
     );
 }
 
+fn coming_back_notice(ui: &mut Ui, palette: &Palette, count: usize) {
+    let message = match count {
+        0 => return,
+        1 => "1 file deleted or renamed since the last sync will come back.".to_owned(),
+        n => format!("{n} files deleted or renamed since the last sync will come back."),
+    };
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = space::XS;
+        ui.add(Icon::CircleAlert.image(palette.warning, size::ICON));
+        ui.label(
+            RichText::new(message)
+                .font(theme::callout())
+                .color(palette.warning),
+        );
+    });
+}
+
 fn left_out_repos(ui: &mut Ui, palette: &Palette, repos: &[String]) {
     if repos.is_empty() {
         return;
@@ -274,8 +314,11 @@ fn left_out_repos(ui: &mut Ui, palette: &Palette, repos: &[String]) {
             .font(theme::callout())
             .color(palette.secondary),
     );
-    let paths: Vec<&str> = repos.iter().map(String::as_str).collect();
-    list(ui, palette, &paths);
+    let rows: Vec<Cow<'_, str>> = repos
+        .iter()
+        .map(|repo| Cow::Borrowed(repo.as_str()))
+        .collect();
+    list(ui, palette, &rows);
 }
 
 /// One collapsible section. Returns `true` when its header was clicked.
@@ -288,14 +331,14 @@ fn group(ui: &mut Ui, palette: &Palette, section: &Section<'_>, open: bool) -> b
             ui.spacing_mut().item_spacing.y = 0.0;
             clicked = header(ui, palette, section, open);
             if open != clicked {
-                list(ui, palette, &section.paths);
+                list(ui, palette, &section.rows);
             }
         });
     clicked
 }
 
 fn header(ui: &mut Ui, palette: &Palette, section: &Section<'_>, open: bool) -> bool {
-    let count = section.paths.len().to_string();
+    let count = section.rows.len().to_string();
     let label = format!("{} ({count})", section.title);
     let (rect, response) = ui.allocate_exact_size(
         Vec2::new(ui.available_width(), size::SIDEBAR_ROW_HEIGHT),
@@ -391,7 +434,7 @@ fn header(ui: &mut Ui, palette: &Palette, section: &Section<'_>, open: bool) -> 
     clicked
 }
 
-fn list(ui: &mut Ui, palette: &Palette, paths: &[&str]) {
+fn list(ui: &mut Ui, palette: &Palette, rows: &[Cow<'_, str>]) {
     let top = ui.cursor().top();
     ui.painter().hline(
         ui.max_rect().x_range(),
@@ -408,16 +451,16 @@ fn list(ui: &mut Ui, palette: &Palette, paths: &[&str]) {
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 2.0;
-            for path in paths.iter().take(MAX_LISTED) {
+            for path in rows.iter().take(MAX_LISTED) {
                 ui.label(
-                    RichText::new(*path)
+                    RichText::new(path.as_ref())
                         .font(theme::monospace())
                         .color(palette.secondary),
                 );
             }
-            if paths.len() > MAX_LISTED {
+            if rows.len() > MAX_LISTED {
                 ui.label(
-                    RichText::new(format!("and {} more", paths.len() - MAX_LISTED))
+                    RichText::new(format!("and {} more", rows.len() - MAX_LISTED))
                         .font(theme::callout())
                         .color(palette.secondary),
                 );

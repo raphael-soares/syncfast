@@ -15,6 +15,7 @@ const DURATION_WIDTH: f32 = 60.0;
 const RESULT_WIDTH: f32 = 130.0;
 /// The expanded log scrolls past this height.
 const LOG_MAX_HEIGHT: f32 = 220.0;
+const NO_CHANGES: &str = "No changes";
 const REVIEWED_AUTOMATICALLY: &str = "Reviewed automatically";
 
 pub fn show(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
@@ -95,8 +96,9 @@ fn cell(ui: &mut Ui, width: f32, content: impl FnOnce(&mut Ui)) {
     );
 }
 
-/// `↑ <uploaded>  ↓ <downloaded>  ✕ <deletes>`, the reason of a failed
-/// round, or how far the round in progress is.
+/// `↑ <uploaded>  ↓ <downloaded>  ✕ <deletes>` (and `<n> renamed`), the
+/// reason of a failed round, `No changes` for an idle check, or how far the
+/// round in progress is.
 fn counters(pair: &PairRow, run: &RunEntry) -> String {
     if run.running() {
         return match &pair.progress {
@@ -109,6 +111,9 @@ fn counters(pair: &PairRow, run: &RunEntry) -> String {
     }
     if let Some(detail) = &run.detail {
         return detail.clone();
+    }
+    if run.idle {
+        return NO_CHANGES.to_owned();
     }
     let counts = transfer_counts(&run.summary);
     match (&run.auto_reviewed, counts.is_empty()) {
@@ -123,11 +128,15 @@ fn transfer_counts(summary: &RunSummary) -> String {
         return String::new();
     }
     let deletes = summary.deleted_local.unwrap_or(0) + summary.deleted_remote.unwrap_or(0);
-    format!(
+    let counts = format!(
         "↑ {}  ↓ {}  ✕ {deletes}",
         summary.uploaded.unwrap_or(0),
         summary.downloaded.unwrap_or(0),
-    )
+    );
+    match summary.renamed.unwrap_or(0) {
+        0 => counts,
+        renamed => format!("{counts}  {renamed} renamed"),
+    }
 }
 
 fn log_view(ui: &mut Ui, run: &RunEntry, palette: &Palette) {

@@ -1,5 +1,6 @@
 //! `syncfast watch` (spec step 9): inotify on every enabled sync's local
-//! tree, and a debounced round trigger per sync.
+//! tree, changes on Drive, resume from suspend and the network coming back,
+//! each turned into a debounced round trigger per sync.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -15,14 +16,17 @@ use futures_core::Stream as _;
 use inotify::{EventMask, EventStream, Inotify, WatchDescriptor, WatchMask, Watches};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep_until};
 
 use crate::behavior::Behavior;
-use crate::config::{Config, GlobalConfigError, Pair};
+use crate::config::{Config, GlobalConfigError, Pair, split_remote};
+use crate::drive_changes::{self, DrivePair};
 use crate::filters::{self, DirMatcher};
-use crate::network::BoxFuture;
+use crate::network::{self, BoxFuture};
 use crate::paths::Paths;
-use crate::rclone::{Rclone, RcloneError};
+use crate::rclone::{DRIVE_TYPE, Rclone, RcloneError};
 use crate::state::is_running;
 use crate::units::{Systemctl, SystemdMode, backup_service_name, command_text, service_name};
 
@@ -34,6 +38,7 @@ pub const ROOT_RECHECK: Duration = Duration::from_secs(10);
 /// Quiet time after `config.toml` changes before the watches are rebuilt.
 const CONFIG_RELOAD_DELAY: Duration = Duration::from_millis(500);
 const EVENT_BUFFER_BYTES: usize = 4096;
+const WAKE_BUFFER: usize = 64;
 
 /// The masks carry `MASK_ADD` because the folder that holds `config.toml`
 /// can also be a directory of a synced tree; both uses share one watch.
@@ -191,6 +196,9 @@ pub struct WatchEnv {
     pub behavior_for: fn(&Behavior, &Pair) -> Behavior,
     pub lock_recheck: Duration,
     pub root_recheck: Duration,
+    /// Listen for Drive changes, resume from suspend and the network
+    /// coming back. Tests turn it off and feed [`Watcher::wakes`] instead.
+    pub wake_sources: bool,
 }
 
 impl WatchEnv {
@@ -203,6 +211,7 @@ impl WatchEnv {
             behavior_for: Behavior::for_pair,
             lock_recheck: LOCK_RECHECK,
             root_recheck: ROOT_RECHECK,
+            wake_sources: true,
         }
     }
 }
@@ -213,6 +222,36 @@ impl std::fmt::Debug for WatchEnv {
             .field("paths", &self.paths)
             .field("rclone", &self.rclone)
             .finish_non_exhaustive()
+    }
+}
+
+/// Something other than a change in a local folder that makes a sync due.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Wake {
+    /// Drive changed under the sync with this id.
+    Remote(String),
+    /// The computer woke from suspend.
+    Resumed,
+    /// The network came back.
+    NetworkUp,
+}
+
+/// Every enabled sync, watched or not: the ones the wakes can make due.
+#[derive(Debug)]
+struct Armed {
+    id: String,
+    timing: Timing,
+}
+
+/// The ids of the syncs `wake` makes due.
+fn wake_targets(wake: &Wake, armed: &[Armed]) -> Vec<String> {
+    match wake {
+        Wake::Remote(id) => armed
+            .iter()
+            .filter(|pair| pair.id == *id)
+            .map(|pair| pair.id.clone())
+            .collect(),
+        Wake::Resumed | Wake::NetworkUp => armed.iter().map(|pair| pair.id.clone()).collect(),
     }
 }
 
@@ -331,7 +370,15 @@ struct Watched {
     id: String,
     root: PathBuf,
     matcher: DirMatcher,
-    timing: Timing,
+}
+
+/// What the config asks the watcher to follow.
+#[derive(Debug)]
+struct Loaded {
+    watched: Vec<Watched>,
+    armed: Vec<Armed>,
+    /// The syncs that read from Drive and want its changes.
+    drive: Vec<DrivePair>,
 }
 
 /// The directories with a watch, by descriptor.
@@ -392,6 +439,7 @@ pub struct Watcher {
     stream: EventStream<Vec<u8>>,
     watches: Watches,
     pairs: Vec<Watched>,
+    armed: Vec<Armed>,
     dirs: HashMap<WatchDescriptor, Dir>,
     /// Syncs that ran into the inotify limit and are left to the timer.
     limit_hit: HashSet<usize>,
@@ -402,6 +450,10 @@ pub struct Watcher {
     /// [`ROOT_RECHECK`].
     missing_roots: HashSet<usize>,
     roots_check_at: Option<Instant>,
+    wakes_tx: mpsc::Sender<Wake>,
+    wakes_rx: mpsc::Receiver<Wake>,
+    pollers: Vec<JoinHandle<()>>,
+    system_events: Option<JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for Watcher {
@@ -410,6 +462,12 @@ impl std::fmt::Debug for Watcher {
             .field("pairs", &self.pairs)
             .field("directories", &self.dirs.len())
             .finish_non_exhaustive()
+    }
+}
+
+impl Drop for Watcher {
+    fn drop(&mut self) {
+        self.stop_wake_sources();
     }
 }
 
@@ -425,12 +483,14 @@ impl Watcher {
         let stream = inotify
             .into_event_stream(vec![0; EVENT_BUFFER_BYTES])
             .map_err(WatchError::Inotify)?;
-        let pairs = load_pairs(&env).await?;
+        let loaded = load_pairs(&env).await?;
+        let (wakes_tx, wakes_rx) = mpsc::channel(WAKE_BUFFER);
         let mut watcher = Self {
             env,
             stream,
             watches: registry,
-            pairs,
+            pairs: loaded.watched,
+            armed: loaded.armed,
             dirs: HashMap::new(),
             limit_hit: HashSet::new(),
             schedules: HashMap::new(),
@@ -438,10 +498,40 @@ impl Watcher {
             reload_at: None,
             missing_roots: HashSet::new(),
             roots_check_at: None,
+            wakes_tx,
+            wakes_rx,
+            pollers: Vec::new(),
+            system_events: None,
         };
         watcher.watch_config().await;
         watcher.watch_trees();
+        if watcher.env.wake_sources {
+            watcher.system_events = Some(tokio::spawn(network::forward_system_events(
+                watcher.wakes_tx.clone(),
+            )));
+            watcher.start_pollers(loaded.drive);
+        }
         Ok(watcher)
+    }
+
+    /// A sender for the wakes, for whoever wants to make syncs due without
+    /// a folder change.
+    #[must_use]
+    pub fn wakes(&self) -> mpsc::Sender<Wake> {
+        self.wakes_tx.clone()
+    }
+
+    fn start_pollers(&mut self, drive: Vec<DrivePair>) {
+        self.pollers = drive_changes::spawn_pollers(&self.env.rclone, drive, &self.wakes_tx);
+    }
+
+    fn stop_wake_sources(&mut self) {
+        for poller in self.pollers.drain(..) {
+            poller.abort();
+        }
+        if let Some(system) = self.system_events.take() {
+            system.abort();
+        }
     }
 
     /// Serves events and fires triggers until `shutdown` completes.
@@ -465,6 +555,7 @@ impl Watcher {
                     }
                 }
                 () = wait_until(deadline) => self.tick().await,
+                Some(wake) = self.wakes_rx.recv() => self.on_wake(&wake),
             }
         }
     }
@@ -479,10 +570,26 @@ impl Watcher {
     }
 
     fn mark(&mut self, pair: usize, now: Instant) {
-        let watched = &self.pairs[pair];
+        let id = self.pairs[pair].id.clone();
+        self.mark_id(&id, now);
+    }
+
+    fn mark_id(&mut self, id: &str, now: Instant) {
         let paths = &self.env.paths;
-        if let Some(schedule) = self.schedules.get_mut(&watched.id) {
-            schedule.event(now, || is_running(paths, &watched.id));
+        if let Some(schedule) = self.schedules.get_mut(id) {
+            schedule.event(now, || is_running(paths, id));
+        }
+    }
+
+    fn on_wake(&mut self, wake: &Wake) {
+        match wake {
+            Wake::Remote(id) => log::debug!("Drive changed under \"{id}\""),
+            Wake::Resumed => log::info!("resumed from suspend; checking every sync"),
+            Wake::NetworkUp => log::info!("network is back; checking every sync"),
+        }
+        let now = Instant::now();
+        for id in wake_targets(wake, &self.armed) {
+            self.mark_id(&id, now);
         }
     }
 
@@ -523,8 +630,8 @@ impl Watcher {
             self.rewatch_missing_roots(now);
         }
         let mut fire = Vec::new();
-        for index in 0..self.pairs.len() {
-            let id = &self.pairs[index].id;
+        for index in 0..self.armed.len() {
+            let id = &self.armed[index].id;
             let running = || is_running(&self.env.paths, id);
             if self
                 .schedules
@@ -608,7 +715,7 @@ impl Watcher {
         self.missing_roots.clear();
         self.roots_check_at = None;
         let timings: Vec<(String, Timing)> = self
-            .pairs
+            .armed
             .iter()
             .map(|pair| (pair.id.clone(), pair.timing))
             .collect();
@@ -736,12 +843,22 @@ impl Watcher {
     }
 
     async fn reload(&mut self) {
-        match load_pairs(&self.env).await {
-            Ok(pairs) => self.pairs = pairs,
+        let drive = match load_pairs(&self.env).await {
+            Ok(loaded) => {
+                self.pairs = loaded.watched;
+                self.armed = loaded.armed;
+                loaded.drive
+            }
             Err(err) => {
                 log::warn!("keeping the previous configuration: {err}");
                 return;
             }
+        };
+        if self.env.wake_sources {
+            for poller in self.pollers.drain(..) {
+                poller.abort();
+            }
+            self.start_pollers(drive);
         }
         self.watch_config().await;
         self.watch_trees();
@@ -755,30 +872,52 @@ async fn wait_until(deadline: Option<Instant>) {
     }
 }
 
-/// The valid, enabled syncs that want their folder watched.
-async fn load_pairs(env: &WatchEnv) -> Result<Vec<Watched>, WatchError> {
+/// The valid, enabled syncs, with the ones that want their folder watched
+/// and the ones that want Drive's changes.
+async fn load_pairs(env: &WatchEnv) -> Result<Loaded, WatchError> {
     let config = Config::load(&env.paths).await?;
-    let accounts = env.rclone.listremotes().await?;
+    let remotes = env.rclone.remote_types().await?;
+    let accounts: Vec<String> = remotes.iter().map(|(name, _)| name.clone()).collect();
     let validation = config.validate(&env.paths, &accounts);
     let defaults = config.defaults();
-    let mut watched = Vec::new();
+    let mut loaded = Loaded {
+        watched: Vec::new(),
+        armed: Vec::new(),
+        drive: Vec::new(),
+    };
     for pair in validation.pairs.iter().filter(|pair| pair.enabled) {
         let behavior = (env.behavior_for)(&defaults, pair);
-        if !behavior.watch || !behavior.mode.local_is_source() {
-            continue;
-        }
-        watched.push(Watched {
+        loaded.armed.push(Armed {
             id: pair.id.clone(),
-            root: pair.local.clone(),
-            matcher: DirMatcher::new(&filters::render_live(pair).await.text),
             timing: Timing {
                 debounce: behavior.debounce,
                 max_wait: behavior.max_wait,
                 recheck: env.lock_recheck,
             },
         });
+        if !behavior.watch {
+            continue;
+        }
+        if behavior.mode.local_is_source() {
+            loaded.watched.push(Watched {
+                id: pair.id.clone(),
+                root: pair.local.clone(),
+                matcher: DirMatcher::new(&filters::render_live(pair).await.text),
+            });
+        }
+        let on_drive = split_remote(&pair.remote).is_some_and(|(account, _)| {
+            remotes
+                .iter()
+                .any(|(name, kind)| name == account && kind == DRIVE_TYPE)
+        });
+        if behavior.mode.downloads() && on_drive {
+            loaded.drive.push(DrivePair {
+                id: pair.id.clone(),
+                remote: pair.remote.clone(),
+            });
+        }
     }
-    Ok(watched)
+    Ok(loaded)
 }
 
 #[cfg(test)]
@@ -1000,5 +1139,48 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         panic!("the child never wrote its arguments");
+    }
+
+    fn armed(ids: &[&str]) -> Vec<Armed> {
+        ids.iter()
+            .map(|id| Armed {
+                id: (*id).to_owned(),
+                timing: Timing {
+                    debounce: DEBOUNCE,
+                    max_wait: MAX_WAIT,
+                    recheck: RECHECK,
+                },
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_drive_wake_targets_only_its_own_sync() {
+        let pairs = armed(&["docs", "notes"]);
+
+        assert_eq!(
+            wake_targets(&Wake::Remote("notes".into()), &pairs),
+            ["notes"]
+        );
+        assert!(wake_targets(&Wake::Remote("gone".into()), &pairs).is_empty());
+    }
+
+    #[test]
+    fn resume_and_network_up_target_every_armed_sync() {
+        let pairs = armed(&["docs", "notes"]);
+
+        for wake in [Wake::Resumed, Wake::NetworkUp] {
+            assert_eq!(wake_targets(&wake, &pairs), ["docs", "notes"]);
+        }
+    }
+
+    #[test]
+    fn a_wake_fires_a_debounce_later_like_a_folder_event() {
+        let (mut schedule, now) = schedule();
+
+        schedule.event(now, || false);
+
+        assert!(!schedule.due(now + DEBOUNCE - secs(1), || false));
+        assert!(schedule.due(now + DEBOUNCE, || false));
     }
 }

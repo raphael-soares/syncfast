@@ -308,7 +308,7 @@ impl Default for Behavior {
             watch: true,
             debounce: Duration::from_secs(30),
             max_wait: Duration::from_mins(5),
-            interval: Duration::from_mins(5),
+            interval: Duration::from_hours(1),
             limit_upload: Bandwidth::Off,
             limit_download: Bandwidth::Off,
             conflict_resolve: ConflictResolve::Newer,
@@ -429,7 +429,7 @@ mod tests {
         assert!(behavior.watch);
         assert_eq!(behavior.debounce, Duration::from_secs(30));
         assert_eq!(behavior.max_wait, Duration::from_secs(300));
-        assert_eq!(behavior.interval, Duration::from_secs(300));
+        assert_eq!(behavior.interval, Duration::from_hours(1));
         assert_eq!(behavior.limit_upload, Bandwidth::Off);
         assert_eq!(behavior.limit_download, Bandwidth::Off);
         assert_eq!(behavior.conflict_resolve, ConflictResolve::Newer);

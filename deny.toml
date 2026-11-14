@@ -15,6 +15,9 @@ allow = [
     "Ubuntu-font-1.0",
     "Unlicense",
 ]
+exceptions = [
+    { allow = ["CDLA-Permissive-2.0"], crate = "webpki-root-certs" }, # rustls-platform-verifier, never linked on Linux
+]
 
 [advisories]
 ignore = [

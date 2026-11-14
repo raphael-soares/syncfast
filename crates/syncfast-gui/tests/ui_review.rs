@@ -73,10 +73,7 @@ fn open_sheet_keeping(
 }
 
 fn change(kind: ChangeKind, path: &str) -> Change {
-    Change {
-        kind,
-        path: path.to_owned(),
-    }
+    Change::new(kind, path)
 }
 
 fn changes(kind: ChangeKind, prefix: &str, count: usize) -> Vec<Change> {
@@ -98,6 +95,7 @@ fn preview_with_repos(changes: Vec<Change>, excluded_repos: Vec<String>) -> Revi
             changes,
             ..RunSummary::default()
         },
+        returning: Vec::new(),
     })
 }
 
@@ -302,6 +300,57 @@ fn delete_and_sync_confirms_on_click() {
     harness.run_steps(3);
 
     assert_eq!(harness.state().actions, review(ReviewAction::Confirm));
+}
+
+#[test]
+fn a_rename_shows_both_names_and_confirms_without_deleting() {
+    let renamed = Change {
+        from: Some("disc/a.txt".to_owned()),
+        ..change(ChangeKind::RenameRemote, "1-disc/a.txt")
+    };
+    let harness = ready_sheet(vec![renamed]);
+
+    assert!(
+        harness
+            .query_by_label("Would rename on devremote (1)")
+            .is_some()
+    );
+    assert!(
+        harness
+            .query_by_label("disc/a.txt → 1-disc/a.txt")
+            .is_some()
+    );
+    assert!(harness.query_by_label("Sync").is_some());
+    assert!(harness.query_by_label("Delete and Sync").is_none());
+}
+
+#[test]
+fn a_resync_that_brings_files_back_warns_and_lists_them_apart() {
+    let back = change(ChangeKind::Download, "old/a.txt");
+    let phase = ReviewPhase::Ready(Preview {
+        mode: SyncMode::Bisync,
+        filters_hash: "hash".to_owned(),
+        excluded_repos: Vec::new(),
+        summary: RunSummary {
+            changes: vec![back.clone(), change(ChangeKind::Download, "new/b.txt")],
+            ..RunSummary::default()
+        },
+        returning: vec![back],
+    });
+    let harness = open_sheet(GateKind::NeedsReviewCriticalError, phase);
+
+    assert!(
+        harness
+            .query_by_label("1 file deleted or renamed since the last sync will come back.")
+            .is_some()
+    );
+    assert!(harness.query_by_label("Would come back (1)").is_some());
+    assert!(harness.query_by_label("old/a.txt").is_some());
+    assert!(
+        harness
+            .query_by_label("Would download to this computer (1)")
+            .is_some()
+    );
 }
 
 #[test]

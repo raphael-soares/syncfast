@@ -1210,7 +1210,7 @@ async fn settings_lists_every_key_with_origin_and_default() {
     );
     assert_eq!(
         described(&of_sync, "interval"),
-        (json!("5m"), "builtin", json!("5m"))
+        (json!("1h"), "builtin", json!("1h"))
     );
     assert_eq!(of_defaults.scope, "defaults");
     assert_eq!(

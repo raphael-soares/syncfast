@@ -1,0 +1,33 @@
+{"time":"2026-11-13T22:55:16.798232297-03:00","level":"info","msg":"Bisyncing with Comparison Settings: \n{\n\t\"Modtime\": true,\n\t\"Size\": true,\n\t\"Checksum\": false,\n\t\"HashType1\": 1,\n\t\"HashType2\": 1,\n\t\"NoSlowHash\": false,\n\t\"SlowHashSyncOnly\": false,\n\t\"SlowHashDetected\": true,\n\t\"DownloadHash\": false\n}\n","source":"bisync/compare.go:118"}
+{"time":"2026-11-13T22:55:16.798442881-03:00","level":"info","msg":"lock file renewed for 2m0s. New expiration: 2026-11-13 22:57:16.798394036 -0300 -03 m=+120.043905813","source":"bisync/lockfile.go:91"}
+{"time":"2026-11-13T22:55:16.798567769-03:00","level":"info","msg":"Synching Path1 \"/tmp/tmp.5DFmmplI3S/local/\" with Path2 \"/tmp/tmp.5DFmmplI3S/remote/\"","source":"bisync/operations.go:254"}
+{"time":"2026-11-13T22:55:16.798641425-03:00","level":"info","msg":"Using filters file /tmp/tmp.5DFmmplI3S/state/filters/x.txt","source":"bisync/cmd.go:243"}
+{"time":"2026-11-13T22:55:16.799513222-03:00","level":"info","msg":"Building Path1 and Path2 listings","source":"bisync/operations.go:326"}
+{"time":"2026-11-13T22:55:16.799953462-03:00","level":"info","msg":"Path1 checking for diffs","source":"bisync/operations.go:336"}
+{"time":"2026-11-13T22:55:16.800043526-03:00","level":"info","msg":"- Path1             File changed: size (larger), time (newer)   - doc.txt","source":"bisync/deltas.go:227"}
+{"time":"2026-11-13T22:55:16.800107035-03:00","level":"info","msg":"Path1:    1 changes:    0 new,    1 modified,    0 deleted","source":"bisync/deltas.go:127"}
+{"time":"2026-11-13T22:55:16.800139278-03:00","level":"info","msg":"(Modified:    1 newer,    0 older,    1 larger,    0 smaller)","source":"bisync/deltas.go:146"}
+{"time":"2026-11-13T22:55:16.800167682-03:00","level":"info","msg":"Path2 checking for diffs","source":"bisync/operations.go:344"}
+{"time":"2026-11-13T22:55:16.800243376-03:00","level":"info","msg":"- Path2             File changed: size (larger), time (newer)   - doc.txt","source":"bisync/deltas.go:227"}
+{"time":"2026-11-13T22:55:16.800286978-03:00","level":"info","msg":"Path2:    1 changes:    0 new,    1 modified,    0 deleted","source":"bisync/deltas.go:127"}
+{"time":"2026-11-13T22:55:16.800315205-03:00","level":"info","msg":"(Modified:    1 newer,    0 older,    1 larger,    0 smaller)","source":"bisync/deltas.go:146"}
+{"time":"2026-11-13T22:55:16.800342632-03:00","level":"info","msg":"Applying changes","source":"bisync/operations.go:409"}
+{"time":"2026-11-13T22:55:16.800449662-03:00","level":"notice","msg":"- WARNING           New or changed in both paths                - doc.txt","source":"bisync/deltas.go:386"}
+{"time":"2026-11-13T22:55:16.800492772-03:00","level":"notice","msg":"- Path1             Renaming Path1 copy                         - /tmp/tmp.5DFmmplI3S/local/doc.txt.path1","source":"bisync/resolve.go:318"}
+{"time":"2026-11-13T22:55:16.800690205-03:00","level":"info","msg":"Moved (server-side) to: doc.txt.path1","object":"doc.txt","objectType":"*local.Object","source":"operations/operations.go:499"}
+{"time":"2026-11-13T22:55:16.80079055-03:00","level":"notice","msg":"- Path1             Queue copy to Path2                         - /tmp/tmp.5DFmmplI3S/remote/doc.txt.path1","source":"bisync/resolve.go:329"}
+{"time":"2026-11-13T22:55:16.800829376-03:00","level":"notice","msg":"- Path2             Renaming Path2 copy                         - /tmp/tmp.5DFmmplI3S/remote/doc.txt.path2","source":"bisync/resolve.go:318"}
+{"time":"2026-11-13T22:55:16.800919356-03:00","level":"info","msg":"Moved (server-side) to: doc.txt.path2","object":"doc.txt","objectType":"*local.Object","source":"operations/operations.go:499"}
+{"time":"2026-11-13T22:55:16.800968336-03:00","level":"notice","msg":"- Path2             Queue copy to Path1                         - /tmp/tmp.5DFmmplI3S/local/doc.txt.path2","source":"bisync/resolve.go:329"}
+{"time":"2026-11-13T22:55:16.801001887-03:00","level":"info","msg":"- Path2             Do queued copies to                         - Path1","source":"bisync/deltas.go:486"}
+{"time":"2026-11-13T22:55:16.802316725-03:00","level":"info","msg":"Making map for --track-renames","object":"Local file system at /tmp/tmp.5DFmmplI3S/local","objectType":"*local.Fs","source":"sync/sync.go:725"}
+{"time":"2026-11-13T22:55:16.802418902-03:00","level":"info","msg":"Finished making map for --track-renames","object":"Local file system at /tmp/tmp.5DFmmplI3S/local","objectType":"*local.Fs","source":"sync/sync.go:755"}
+{"time":"2026-11-13T22:55:16.802640758-03:00","level":"info","msg":"Copied (new)","size":19,"object":"doc.txt.path2","objectType":"*local.Object","source":"operations/copy.go:387"}
+{"time":"2026-11-13T22:55:16.802965971-03:00","level":"info","msg":"- Path1             Do queued copies to                         - Path2","source":"bisync/deltas.go:502"}
+{"time":"2026-11-13T22:55:16.803395493-03:00","level":"info","msg":"Making map for --track-renames","object":"Local file system at /tmp/tmp.5DFmmplI3S/remote","objectType":"*local.Fs","source":"sync/sync.go:725"}
+{"time":"2026-11-13T22:55:16.803475892-03:00","level":"info","msg":"Finished making map for --track-renames","object":"Local file system at /tmp/tmp.5DFmmplI3S/remote","objectType":"*local.Fs","source":"sync/sync.go:755"}
+{"time":"2026-11-13T22:55:16.803776513-03:00","level":"info","msg":"Copied (new)","size":11,"object":"doc.txt.path1","objectType":"*local.Object","source":"operations/copy.go:387"}
+{"time":"2026-11-13T22:55:16.803938299-03:00","level":"info","msg":"Updating listings","source":"bisync/operations.go:423"}
+{"time":"2026-11-13T22:55:16.804288917-03:00","level":"info","msg":"Validating listings for Path1 \"/tmp/tmp.5DFmmplI3S/local/\" vs Path2 \"/tmp/tmp.5DFmmplI3S/remote/\"","source":"bisync/operations.go:462"}
+{"time":"2026-11-13T22:55:16.804371067-03:00","level":"info","msg":"Bisync successful","source":"bisync/operations.go:234"}
+{"time":"2026-11-13T22:55:16.804437139-03:00","level":"notice","msg":"\nTransferred:   \t         60 B / 60 B, 100%, 0 B/s, ETA -\nChecks:                 4 / 4, 100%, Listed 6\nRenamed:                2\nTransferred:            4 / 4, 100%\nServer Side Moves:      2 @ 30 B\nElapsed time:         0.0s\n\n","stats":{"bytes":60,"checks":4,"deletedDirs":0,"deletes":0,"elapsedTime":0.004811859,"errors":0,"eta":null,"fatalError":false,"listed":6,"renames":2,"retryError":false,"serverSideCopies":0,"serverSideCopyBytes":0,"serverSideMoveBytes":30,"serverSideMoves":2,"speed":0,"totalBytes":60,"totalChecks":4,"totalTransfers":4,"transferTime":0.000785538,"transfers":4,"updatedDirs":0},"source":"accounting/stats.go:554"}

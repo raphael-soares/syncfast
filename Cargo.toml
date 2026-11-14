@@ -28,6 +28,7 @@ oo7 = "=0.7.0-beta"
 regex = "1"
 resvg = { version = "0.45", default-features = false }
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "wayland"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustix = { version = "1", default-features = false, features = ["process", "std", "system"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -37,6 +38,7 @@ thiserror = "2"
 tokio = "1"
 toml = "0.9"
 toml_edit = "0.23"
+ureq = { version = "3.5", default-features = false, features = ["rustls-no-provider", "platform-verifier", "json"] }
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 zeroize = "1"
 rmcp = { version = "3.8", default-features = false, features = ["server", "macros", "transport-io"] }

@@ -1,0 +1,32 @@
+{"time":"2026-11-13T22:55:15.547991279-03:00","level":"info","msg":"Bisyncing with Comparison Settings: \n{\n\t\"Modtime\": true,\n\t\"Size\": true,\n\t\"Checksum\": false,\n\t\"HashType1\": 1,\n\t\"HashType2\": 1,\n\t\"NoSlowHash\": false,\n\t\"SlowHashSyncOnly\": false,\n\t\"SlowHashDetected\": true,\n\t\"DownloadHash\": false\n}\n","source":"bisync/compare.go:118"}
+{"time":"2026-11-13T22:55:15.548246125-03:00","level":"info","msg":"lock file renewed for 2m0s. New expiration: 2026-11-13 22:57:15.548182654 -0300 -03 m=+120.057362867","source":"bisync/lockfile.go:91"}
+{"time":"2026-11-13T22:55:15.548518543-03:00","level":"info","msg":"Synching Path1 \"/tmp/tmp.5DFmmplI3S/local/\" with Path2 \"/tmp/tmp.5DFmmplI3S/remote/\"","source":"bisync/operations.go:254"}
+{"time":"2026-11-13T22:55:15.548553865-03:00","level":"info","msg":"Using filters file /tmp/tmp.5DFmmplI3S/state/filters/x.txt","source":"bisync/cmd.go:243"}
+{"time":"2026-11-13T22:55:15.549053314-03:00","level":"info","msg":"Building Path1 and Path2 listings","source":"bisync/operations.go:326"}
+{"time":"2026-11-13T22:55:15.549506359-03:00","level":"info","msg":"Path1 checking for diffs","source":"bisync/operations.go:336"}
+{"time":"2026-11-13T22:55:15.549574697-03:00","level":"info","msg":"- Path1             File is new                                 - dir","source":"bisync/deltas.go:254"}
+{"time":"2026-11-13T22:55:15.549600312-03:00","level":"info","msg":"- Path1             File is new                                 - dir/nested.txt","source":"bisync/deltas.go:254"}
+{"time":"2026-11-13T22:55:15.549618932-03:00","level":"info","msg":"- Path1             File is new                                 - empty","source":"bisync/deltas.go:254"}
+{"time":"2026-11-13T22:55:15.549637181-03:00","level":"info","msg":"- Path1             File is new                                 - empty/inner","source":"bisync/deltas.go:254"}
+{"time":"2026-11-13T22:55:15.549654222-03:00","level":"info","msg":"Path1:    4 changes:    4 new,    0 modified,    0 deleted","source":"bisync/deltas.go:127"}
+{"time":"2026-11-13T22:55:15.54967007-03:00","level":"info","msg":"Path2 checking for diffs","source":"bisync/operations.go:344"}
+{"time":"2026-11-13T22:55:15.54970357-03:00","level":"info","msg":"Applying changes","source":"bisync/operations.go:409"}
+{"time":"2026-11-13T22:55:15.549778524-03:00","level":"info","msg":"- Path1             Queue copy to Path2                         - /tmp/tmp.5DFmmplI3S/remote/dir","source":"bisync/deltas.go:379"}
+{"time":"2026-11-13T22:55:15.549801697-03:00","level":"info","msg":"- Path1             Queue copy to Path2                         - /tmp/tmp.5DFmmplI3S/remote/dir/nested.txt","source":"bisync/deltas.go:379"}
+{"time":"2026-11-13T22:55:15.549822001-03:00","level":"info","msg":"- Path1             Queue copy to Path2                         - /tmp/tmp.5DFmmplI3S/remote/empty","source":"bisync/deltas.go:379"}
+{"time":"2026-11-13T22:55:15.549841748-03:00","level":"info","msg":"- Path1             Queue copy to Path2                         - /tmp/tmp.5DFmmplI3S/remote/empty/inner","source":"bisync/deltas.go:379"}
+{"time":"2026-11-13T22:55:15.549859428-03:00","level":"info","msg":"- Path1             Do queued copies to                         - Path2","source":"bisync/deltas.go:502"}
+{"time":"2026-11-13T22:55:15.550269323-03:00","level":"info","msg":"Made directory with metadata (mtime=2026-11-13T22:55:15.465513413-03:00)","object":"dir","objectType":"string","source":"operations/operations.go:1130"}
+{"time":"2026-11-13T22:55:15.55037169-03:00","level":"info","msg":"Made directory with metadata (mtime=2026-11-13T22:55:15.460513347-03:00)","object":"empty","objectType":"string","source":"operations/operations.go:1130"}
+{"time":"2026-11-13T22:55:15.550616849-03:00","level":"info","msg":"Making map for --track-renames","object":"Local file system at /tmp/tmp.5DFmmplI3S/remote","objectType":"*local.Fs","source":"sync/sync.go:725"}
+{"time":"2026-11-13T22:55:15.550714302-03:00","level":"info","msg":"Finished making map for --track-renames","object":"Local file system at /tmp/tmp.5DFmmplI3S/remote","objectType":"*local.Fs","source":"sync/sync.go:755"}
+{"time":"2026-11-13T22:55:15.55097111-03:00","level":"info","msg":"Copied (new)","size":7,"object":"dir/nested.txt","objectType":"*local.Object","source":"operations/copy.go:387"}
+{"time":"2026-11-13T22:55:15.551038888-03:00","level":"info","msg":"Set directory modification time (using SetModTime)","object":"empty","objectType":"*local.Directory","source":"operations/operations.go:2862"}
+{"time":"2026-11-13T22:55:15.551048032-03:00","level":"info","msg":"Set directory modification time (using SetModTime)","object":"dir","objectType":"*local.Directory","source":"operations/operations.go:2862"}
+{"time":"2026-11-13T22:55:15.55130886-03:00","level":"info","msg":"Making directory","object":"dir","objectType":"string","source":"operations/operations.go:1096"}
+{"time":"2026-11-13T22:55:15.551346191-03:00","level":"info","msg":"Making directory","object":"empty","objectType":"string","source":"operations/operations.go:1096"}
+{"time":"2026-11-13T22:55:15.551373203-03:00","level":"info","msg":"Making directory","object":"empty/inner","objectType":"string","source":"operations/operations.go:1096"}
+{"time":"2026-11-13T22:55:15.551406244-03:00","level":"info","msg":"Updating listings","source":"bisync/operations.go:423"}
+{"time":"2026-11-13T22:55:15.551815087-03:00","level":"info","msg":"Validating listings for Path1 \"/tmp/tmp.5DFmmplI3S/local/\" vs Path2 \"/tmp/tmp.5DFmmplI3S/remote/\"","source":"bisync/operations.go:462"}
+{"time":"2026-11-13T22:55:15.551912819-03:00","level":"info","msg":"Bisync successful","source":"bisync/operations.go:234"}
+{"time":"2026-11-13T22:55:15.551995877-03:00","level":"notice","msg":"\nTransferred:   \t          7 B / 7 B, 100%, 0 B/s, ETA -\nChecks:                13 / 13, 100%, Listed 9\nUpdated dirs:           4\nTransferred:            1 / 1, 100%\nElapsed time:         0.0s\n\n","stats":{"bytes":7,"checks":13,"deletedDirs":0,"deletes":0,"elapsedTime":0.0028274,"errors":0,"eta":null,"fatalError":false,"listed":9,"renames":0,"retryError":false,"serverSideCopies":0,"serverSideCopyBytes":0,"serverSideMoveBytes":0,"serverSideMoves":0,"speed":0,"totalBytes":7,"totalChecks":13,"totalTransfers":1,"transferTime":0.000297827,"transfers":1,"updatedDirs":4},"source":"accounting/stats.go:554"}

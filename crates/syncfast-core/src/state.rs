@@ -20,8 +20,10 @@ use crate::config::Pair;
 use crate::paths::Paths;
 use crate::preview::ChangeCounts;
 
-/// How many rounds keep their log in `runs/`.
+/// How many rounds with something to show keep their log in `runs/`. The
+/// newest round that found nothing to do is kept besides them.
 pub const RUNS_KEPT: usize = 50;
+const IDLE_SUFFIX: &str = ".idle.jsonl";
 pub const PREVIEWS_KEPT: Duration = Duration::from_hours(24);
 /// Key in [`State::notified`] for the "sync failing" notification.
 pub const NOTIFIED_FAILURES: &str = "failures";
@@ -402,36 +404,67 @@ pub(crate) fn try_lock(paths: &Paths, path: PathBuf) -> Result<Option<File>, Sta
 
 /// Keeps the [`RUNS_KEPT`] newest `.jsonl` logs in the pair's `runs/`
 /// folder (names are timestamps, so the highest names are the newest) and
-/// deletes the rest with the `.changes` report of each, then the preview
-/// logs older than [`PREVIEWS_KEPT`]. A file that cannot be deleted is a
-/// warning, not a stop. A missing folder is fine.
+/// the newest idle log (see [`idle_log_path`]) on top of them, and deletes
+/// the rest with the `.changes` report of each, then the preview logs older
+/// than [`PREVIEWS_KEPT`]. A file that cannot be deleted is a warning, not a
+/// stop. A missing folder is fine.
 ///
 /// # Errors
 /// The runs folder cannot be listed.
 pub async fn prune_runs(paths: &Paths, pair_id: &str) -> Result<(), StateError> {
     let dir = paths.runs_dir(pair_id);
     let files = file_names(&dir).await?;
-    let mut logs: Vec<&OsString> = files.iter().filter(|name| is_jsonl(name)).collect();
-    logs.sort();
-    let excess = logs.len().saturating_sub(RUNS_KEPT);
-    for name in logs.drain(..excess) {
+    let (mut idle, mut real): (Vec<&OsString>, Vec<&OsString>) = files
+        .iter()
+        .filter(|name| is_jsonl(name))
+        .partition(|name| name.to_str().is_some_and(is_idle_log));
+    real.sort();
+    idle.sort();
+    let stale_idle = idle.len().saturating_sub(1);
+    let excess = real.len().saturating_sub(RUNS_KEPT);
+    for name in idle.drain(..stale_idle).chain(real.drain(..excess)) {
         remove_or_warn(&dir.join(name));
     }
-    let kept: Vec<&str> = logs
+    let kept: Vec<&str> = idle
         .iter()
-        .filter_map(|name| name.to_str()?.strip_suffix(".jsonl"))
+        .chain(&real)
+        .filter_map(|name| name.to_str().map(stamp_of))
         .collect();
     for name in &files {
-        let stem = name
+        let stamp = name
             .to_str()
             .filter(|text| text.ends_with(".changes"))
-            .and_then(|text| text.split('.').next());
-        if stem.is_some_and(|stem| !kept.contains(&stem)) {
+            .map(stamp_of);
+        if stamp.is_some_and(|stamp| !kept.contains(&stamp)) {
             remove_or_warn(&dir.join(name));
         }
     }
     prune_previews(&paths.pair_state_dir(pair_id)).await;
     Ok(())
+}
+
+/// Whether a log in `runs/` is a round that found nothing to do.
+#[must_use]
+pub fn is_idle_log(name: &str) -> bool {
+    name.ends_with(IDLE_SUFFIX)
+}
+
+/// A run file's stamp: the text before the first dot, shared by the log and
+/// the `.changes` report of a round.
+#[must_use]
+pub fn stamp_of(name: &str) -> &str {
+    name.split('.').next().unwrap_or(name)
+}
+
+/// Where the log of a round that found nothing to do goes, next to the
+/// original: `<stamp>.jsonl` becomes `<stamp>.idle.jsonl`.
+#[must_use]
+pub fn idle_log_path(log: &Path) -> PathBuf {
+    let stamp = log
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map_or("", stamp_of);
+    log.with_file_name(format!("{stamp}{IDLE_SUFFIX}"))
 }
 
 fn is_jsonl(name: &OsStr) -> bool {
@@ -682,10 +715,10 @@ mod tests {
                 exit_code: 1,
                 summary: RunSummary {
                     uploaded: Some(1),
-                    changes: vec![crate::bisync_log::Change {
-                        kind: crate::bisync_log::ChangeKind::Upload,
-                        path: "a.txt".into(),
-                    }],
+                    changes: vec![crate::bisync_log::Change::new(
+                        crate::bisync_log::ChangeKind::Upload,
+                        "a.txt",
+                    )],
                     ..RunSummary::default()
                 },
                 log_file: "/s/runs/x.jsonl".into(),
@@ -994,6 +1027,82 @@ mod tests {
             names.last().map(String::as_str),
             Some("20260101-000052.jsonl")
         );
+    }
+
+    fn write_runs(paths: &Paths, names: &[&str]) {
+        let dir = paths.runs_dir("drive");
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in names {
+            std::fs::write(dir.join(name), "").unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn the_newest_idle_log_stays_on_top_of_the_fifty_real_ones() {
+        let (_dir, paths) = temp_paths();
+        make_runs(&paths, 52);
+        write_runs(
+            &paths,
+            &["20200101-000000.idle.jsonl", "20200101-000001.idle.jsonl"],
+        );
+
+        prune_runs(&paths, "drive").await.unwrap();
+
+        let names = run_names(&paths);
+        assert_eq!(names.len(), 51);
+        assert!(names.contains(&"20200101-000001.idle.jsonl".to_owned()));
+        assert!(!names.contains(&"20200101-000000.idle.jsonl".to_owned()));
+        assert!(!names.contains(&"20260101-000001.jsonl".to_owned()));
+        assert!(names.contains(&"20260101-000002.jsonl".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn an_idle_log_does_not_push_a_real_one_out() {
+        let (_dir, paths) = temp_paths();
+        make_runs(&paths, 50);
+        write_runs(&paths, &["20270101-000000.idle.jsonl"]);
+
+        prune_runs(&paths, "drive").await.unwrap();
+
+        assert_eq!(run_names(&paths).len(), 51);
+        assert!(
+            run_names(&paths).contains(&"20260101-000000.jsonl".to_owned()),
+            "the oldest real log stays"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_changes_report_of_an_idle_round_goes_with_its_log() {
+        let (_dir, paths) = temp_paths();
+        write_runs(
+            &paths,
+            &[
+                "20260101-000000.idle.jsonl",
+                "20260101-000000.mirror_up.changes",
+                "20260101-000001.idle.jsonl",
+                "20260101-000001.mirror_up.changes",
+            ],
+        );
+
+        prune_runs(&paths, "drive").await.unwrap();
+
+        assert_eq!(
+            run_names(&paths),
+            [
+                "20260101-000001.idle.jsonl",
+                "20260101-000001.mirror_up.changes"
+            ]
+        );
+    }
+
+    #[test]
+    fn an_idle_log_keeps_the_stamp_of_the_log_it_replaces() {
+        let idle = idle_log_path(Path::new("/s/runs/20260101-000001.jsonl"));
+
+        assert_eq!(idle, Path::new("/s/runs/20260101-000001.idle.jsonl"));
+        assert!(is_idle_log("20260101-000001.idle.jsonl"));
+        assert!(!is_idle_log("20260101-000001.jsonl"));
+        assert_eq!(stamp_of("20260101-000001.idle.jsonl"), "20260101-000001");
     }
 
     #[tokio::test]

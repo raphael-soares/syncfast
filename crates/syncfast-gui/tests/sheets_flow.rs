@@ -52,6 +52,7 @@ fn found(hash: &str) -> Preview {
         filters_hash: hash.into(),
         excluded_repos: Vec::new(),
         summary: RunSummary::default(),
+        returning: Vec::new(),
     }
 }
 
