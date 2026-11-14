@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.0](https://github.com/raphael-soares/syncfast/compare/v0.17.2...v0.18.0) (2026-11-14)
+
+
+### Features
+
+* sync renames as moves and wake rounds on events ([#105](https://github.com/raphael-soares/syncfast/issues/105)) ([ca1ce30](https://github.com/raphael-soares/syncfast/commit/ca1ce30c5fcf6a3d5468cbfb64c74cd4c2d8a8c9)), closes [#104](https://github.com/raphael-soares/syncfast/issues/104)
+
 ## [0.17.2](https://github.com/raphael-soares/syncfast/compare/v0.17.1...v0.17.2) (2026-11-14)
 
 
