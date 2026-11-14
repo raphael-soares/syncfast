@@ -1,0 +1,19 @@
+# Maintainer: Raphael Soares
+pkgname=syncfast-nautilus
+pkgver=0.18.0
+pkgrel=1
+pkgdesc='Nautilus emblems and Sync Now for syncfast folders'
+arch=('any')
+url='https://github.com/raphael-soares/syncfast'
+license=('MIT')
+depends=('python-nautilus' 'python-gobject')
+optdepends=('flatpak: runs the syncfast app that publishes the status')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+  cd "syncfast-$pkgver"
+  install -Dm644 packaging/nautilus/syncfast_nautilus.py \
+    "$pkgdir/usr/share/nautilus-python/extensions/syncfast_nautilus.py"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

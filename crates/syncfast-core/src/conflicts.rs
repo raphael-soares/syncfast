@@ -191,7 +191,7 @@ pub fn list_conflicts(
 }
 
 /// `a/b.txt.conflict1` gives `a/b.txt`.
-fn original_path(conflict: &Path, naming: Naming) -> Option<PathBuf> {
+pub(crate) fn original_path(conflict: &Path, naming: Naming) -> Option<PathBuf> {
     let name = conflict.file_name()?.to_str()?;
     let (original, _) = split_conflict_name(name, naming)?;
     Some(conflict.with_file_name(original))

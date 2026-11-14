@@ -113,6 +113,7 @@ async fn start_using(
     env.lock_recheck = RECHECK;
     env.root_recheck = RECHECK;
     env.wake_sources = false;
+    env.status_bus = None;
     let watcher = Watcher::start(env).await.unwrap();
     let wakes = watcher.wakes();
     let (stop, stopped) = oneshot::channel();
