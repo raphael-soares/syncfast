@@ -5,12 +5,14 @@ use syncfast_core::behavior::SyncMode;
 use syncfast_core::bisync::ReviewKind;
 use syncfast_core::bisync_log::{Change, ChangeKind, RunSummary};
 use syncfast_core::preview::Preview;
-use syncfast_core::state::GateKind;
+use syncfast_core::state::{DisplayStatus, GateKind};
+use syncfast_gui::backend::Event;
+use syncfast_gui::sheets::{Sheets, Surroundings};
 use syncfast_gui::theme::{self, Palette};
-use syncfast_gui::ui::Action;
 use syncfast_gui::ui::review::{
-    ReviewAction, ReviewPhase, ReviewView, review_kind, show, subtitle,
+    ReviewAction, ReviewPhase, ReviewView, review_kind, show, subtitle, summary,
 };
+use syncfast_gui::ui::{Action, PairRow, RemoteRow};
 
 const REMOTE: &str = "devremote";
 
@@ -107,6 +109,18 @@ fn review(action: ReviewAction) -> Vec<Action> {
     vec![Action::Review(action)]
 }
 
+fn open_section(harness: &mut Harness<'_, Case>, title: &str) {
+    harness.get_by_label(title).click();
+    harness.run_steps(3);
+}
+
+fn ready_preview(changes: Vec<Change>) -> Preview {
+    match preview(changes) {
+        ReviewPhase::Ready(preview) => preview,
+        _ => unreachable!(),
+    }
+}
+
 fn is_disabled(harness: &Harness<'_, Case>, label: &str) -> bool {
     harness.get_by_label(label).accesskit_node().is_disabled()
 }
@@ -167,10 +181,58 @@ fn sheet_shows_the_subtitle_of_each_gate() {
 }
 
 #[test]
-fn sheet_title_names_the_sync() {
+fn the_first_run_asks_to_check_before_syncing() {
     let harness = ready_sheet(Vec::new());
 
+    assert!(harness.query_by_label("Check Before Syncing").is_some());
+}
+
+#[test]
+fn later_reviews_name_the_sync_in_the_title() {
+    let harness = open_sheet(GateKind::NeedsReviewFiltersChanged, preview(Vec::new()));
+
     assert!(harness.query_by_label("Review Changes for Docs").is_some());
+}
+
+#[test]
+fn the_summary_of_an_upload_says_where_files_go_and_that_nothing_is_deleted() {
+    let preview = ready_preview(changes(ChangeKind::Upload, "up/", 3));
+
+    assert_eq!(
+        summary(&preview, "a@b.com"),
+        "3 files will be copied to a@b.com; Nothing will be deleted."
+    );
+}
+
+#[test]
+fn the_summary_counts_each_kind_and_ends_with_the_deletions() {
+    let mut all = changes(ChangeKind::Download, "down/", 1);
+    all.extend(changes(ChangeKind::OverwriteLocal, "a/", 1));
+    all.extend(changes(ChangeKind::OverwriteRemote, "b/", 1));
+    all.extend(changes(ChangeKind::RenameRemote, "c/", 2));
+    all.extend(changes(ChangeKind::DeleteLocal, "d/", 1));
+    all.extend(changes(ChangeKind::DeleteRemote, "e/", 1));
+
+    assert_eq!(
+        summary(&ready_preview(all), "a@b.com"),
+        "1 file will be copied to this computer; 2 files will be replaced; \
+         2 files will be renamed; 2 files will be deleted."
+    );
+}
+
+#[test]
+fn the_sheet_shows_the_summary_above_the_sections() {
+    let mut all = changes(ChangeKind::Upload, "up/", 1);
+    all.extend(changes(ChangeKind::DeleteRemote, "gone/", 2));
+    let harness = ready_sheet(all);
+
+    let line = harness
+        .get_by_label("1 file will be copied to devremote; 2 files will be deleted.")
+        .rect();
+    let section = harness.get_by_label("Would upload to devremote (1)").rect();
+
+    assert!(line.bottom() <= section.top());
+    assert!(harness.query_by_label("Delete and Sync").is_some());
 }
 
 #[test]
@@ -193,7 +255,7 @@ fn empty_preview_has_no_dry_run_footnote() {
 }
 
 #[test]
-fn non_empty_preview_shows_the_dry_run_footnote() {
+fn non_empty_preview_explains_the_dry_run_next_to_the_summary() {
     let harness = ready_sheet(changes(ChangeKind::Upload, "up/", 1));
 
     assert!(
@@ -236,13 +298,10 @@ fn a_review_without_git_repos_has_no_left_out_section() {
 
 #[test]
 fn uploads_section_is_labelled_with_remote_and_count_and_lists_its_paths() {
-    let harness = ready_sheet(changes(ChangeKind::Upload, "up/", 2));
+    let mut harness = ready_sheet(changes(ChangeKind::Upload, "up/", 2));
 
-    assert!(
-        harness
-            .query_by_label("Would upload to devremote (2)")
-            .is_some()
-    );
+    open_section(&mut harness, "Would upload to devremote (2)");
+
     assert!(harness.query_by_label("up/000.txt").is_some());
     assert!(harness.query_by_label("up/001.txt").is_some());
 }
@@ -308,13 +367,9 @@ fn a_rename_shows_both_names_and_confirms_without_deleting() {
         from: Some("disc/a.txt".to_owned()),
         ..change(ChangeKind::RenameRemote, "1-disc/a.txt")
     };
-    let harness = ready_sheet(vec![renamed]);
+    let mut harness = ready_sheet(vec![renamed]);
+    open_section(&mut harness, "Would rename on devremote (1)");
 
-    assert!(
-        harness
-            .query_by_label("Would rename on devremote (1)")
-            .is_some()
-    );
     assert!(
         harness
             .query_by_label("disc/a.txt → 1-disc/a.txt")
@@ -383,13 +438,15 @@ fn local_delete_section_is_open_by_default() {
 }
 
 #[test]
-fn only_the_first_non_empty_section_is_open_by_default() {
-    let mut all = changes(ChangeKind::Download, "down/", 1);
+fn sections_other_than_deletions_start_closed() {
+    let mut all = changes(ChangeKind::Upload, "up/", 1);
+    all.extend(changes(ChangeKind::Download, "down/", 1));
     all.extend(changes(ChangeKind::OverwriteRemote, "over/", 1));
     let harness = ready_sheet(all);
 
-    assert!(harness.query_by_label("down/000.txt").is_some());
-    assert!(harness.query_by_label("over/000.txt").is_none());
+    for path in ["up/000.txt", "down/000.txt", "over/000.txt"] {
+        assert!(harness.query_by_label(path).is_none(), "{path}");
+    }
 }
 
 #[test]
@@ -499,26 +556,22 @@ fn clicking_a_closed_section_opens_it() {
 
 #[test]
 fn clicking_an_open_section_closes_it_and_the_choice_is_kept() {
-    let mut harness = ready_sheet(changes(ChangeKind::Upload, "up/", 1));
+    let mut harness = ready_sheet(changes(ChangeKind::DeleteRemote, "gone/", 1));
 
     harness
-        .get_by_label("Would upload to devremote (1)")
+        .get_by_label("Would delete on devremote (1)")
         .click();
     harness.run_steps(3);
     harness.run_steps(3);
 
-    assert!(harness.query_by_label("up/000.txt").is_none());
+    assert!(harness.query_by_label("gone/000.txt").is_none());
 }
 
 #[test]
 fn section_with_150_paths_lists_100_and_counts_the_rest() {
-    let harness = ready_sheet(changes(ChangeKind::Upload, "dir/file-", 150));
+    let mut harness = ready_sheet(changes(ChangeKind::Upload, "dir/file-", 150));
 
-    assert!(
-        harness
-            .query_by_label("Would upload to devremote (150)")
-            .is_some()
-    );
+    open_section(&mut harness, "Would upload to devremote (150)");
     assert_eq!(
         harness.query_all_by_label_contains("dir/file-").count(),
         100
@@ -528,7 +581,8 @@ fn section_with_150_paths_lists_100_and_counts_the_rest() {
 
 #[test]
 fn section_with_exactly_100_paths_has_no_more_line() {
-    let harness = ready_sheet(changes(ChangeKind::Upload, "dir/file-", 100));
+    let mut harness = ready_sheet(changes(ChangeKind::Upload, "dir/file-", 100));
+    open_section(&mut harness, "Would upload to devremote (100)");
 
     assert_eq!(
         harness.query_all_by_label_contains("dir/file-").count(),
@@ -685,5 +739,59 @@ fn cancel_and_sync_stay_clickable_under_the_scrim() {
             Action::Review(ReviewAction::Confirm),
             Action::Review(ReviewAction::Cancel)
         ]
+    );
+}
+
+#[test]
+fn the_review_names_the_account_by_its_email() {
+    let pairs = [PairRow {
+        id: "notes".into(),
+        name: "Notes".into(),
+        local: "/home/ada/notes".into(),
+        remote: "gdrive:Notes".into(),
+        enabled: true,
+        status: DisplayStatus::NeedsReview,
+        gate: Some(GateKind::NeedsReviewFirstRun),
+        last_success: None,
+        progress: None,
+        gate_detail: String::new(),
+        gate_fault: None,
+        consecutive_failures: 0,
+        realtime_off: false,
+        presets: Vec::new(),
+        filters: Vec::new(),
+        effective: syncfast_core::settings::Effective::default(),
+    }];
+    let around = Surroundings {
+        pairs: &pairs,
+        welcome: false,
+    };
+    let mut sheets = Sheets::new("/home/ada".into(), "/home/ada/.local/share/syncfast".into());
+    sheets.handle_event(&Event::Remotes(vec![RemoteRow {
+        name: "gdrive".into(),
+        kind: "drive".into(),
+        own_client_id: true,
+        email: Some("ada@example.com".into()),
+    }]));
+    sheets.apply(&Action::OpenReview("notes".into()), &around);
+    sheets.handle_event(&Event::Preview {
+        pair_id: "notes".into(),
+        result: Ok(ready_preview(changes(ChangeKind::Upload, "up/", 2))),
+    });
+    let mut harness = Harness::new_ui_state(
+        |ui, sheets: &mut Sheets| {
+            if ready(ui) {
+                let _ = sheets.show(ui.ctx(), &[], None);
+            }
+        },
+        sheets,
+    );
+    harness.run_ok();
+    harness.run_steps(3);
+
+    assert!(
+        harness
+            .query_by_label("2 files will be copied to ada@example.com; Nothing will be deleted.")
+            .is_some()
     );
 }

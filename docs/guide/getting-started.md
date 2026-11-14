@@ -28,7 +28,7 @@ Pick folders that are not inside each other: two syncs cannot overlap, and a syn
 
 ## Review the first sync
 
-A new sync is held until you review it. **Review changes** shows, from a dry run, what would be uploaded, downloaded, replaced, renamed or deleted on each side. Nothing is copied before you press **Sync**. When the review would delete files, the button reads **Delete and Sync**; read that list first. A review after an error can bring back files you deleted or renamed since the last sync; they are listed under **Would come back**.
+A new sync is held until you check it. **Check Before Syncing** opens with one line that says how many files would be copied, replaced, renamed and deleted, and lists them by kind below; deletions are listed open, the rest opens on a click. It comes from a dry run, and nothing is copied before you press **Sync**. When the review would delete files, the button reads **Delete and Sync**; read that list first. A review after an error can bring back files you deleted or renamed since the last sync; they are listed under **Would come back**.
 
 Afterwards the status reads **Up to date** and syncfast runs a round seconds after files change on this computer, within a minute of a change on Drive, after the computer wakes or the network comes back, and as a safety net every hour by default. **Sync Now** runs one immediately. Change these in the **Options** tab of a sync, or for all syncs in **Settings › Defaults**.
 

@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use egui::epaint::CornerRadius;
-use egui::text::LayoutJob;
+use egui::text::{LayoutJob, TextFormat};
 use egui::{Id, RichText, Sense, Ui, Vec2};
 use syncfast_core::bisync::ReviewKind;
 use syncfast_core::bisync_log::{Change, ChangeKind};
@@ -98,10 +98,71 @@ pub fn subtitle(gate: GateKind) -> &'static str {
     }
 }
 
+/// One sentence on what the round would do. It always says whether
+/// anything is deleted.
+#[must_use]
+pub fn summary(preview: &Preview, remote: &str) -> String {
+    let (changes, deletions) = summary_parts(preview, remote);
+    if changes.is_empty() {
+        deletions
+    } else {
+        format!("{changes}; {deletions}")
+    }
+}
+
+fn summary_parts(preview: &Preview, remote: &str) -> (String, String) {
+    let count = |kinds: &[ChangeKind]| {
+        preview
+            .summary
+            .changes
+            .iter()
+            .filter(|change| kinds.contains(&change.kind))
+            .count()
+    };
+    let changes: Vec<String> = [
+        (count(&[ChangeKind::Upload]), format!("copied to {remote}")),
+        (
+            count(&[ChangeKind::Download]),
+            "copied to this computer".to_owned(),
+        ),
+        (
+            count(&[ChangeKind::OverwriteLocal, ChangeKind::OverwriteRemote]),
+            "replaced".to_owned(),
+        ),
+        (
+            count(&[ChangeKind::RenameLocal, ChangeKind::RenameRemote]),
+            "renamed".to_owned(),
+        ),
+    ]
+    .into_iter()
+    .filter(|(n, _)| *n > 0)
+    .map(|(n, what)| format!("{} will be {what}", files(n)))
+    .collect();
+    let deleted = count(&[ChangeKind::DeleteLocal, ChangeKind::DeleteRemote]);
+    let deletions = if deleted == 0 {
+        "Nothing will be deleted.".to_owned()
+    } else {
+        format!("{} will be deleted.", files(deleted))
+    };
+    (changes.join("; "), deletions)
+}
+
+fn files(n: usize) -> String {
+    if n == 1 {
+        "1 file".to_owned()
+    } else {
+        format!("{n} files")
+    }
+}
+
 /// Draws the sheet and returns the `Action::Review(..)` the user chose.
 #[must_use]
 pub fn show(ctx: &egui::Context, view: &ReviewView<'_>) -> Vec<Action> {
-    let title = format!("Review Changes for {}", view.name);
+    let title = if view.gate == GateKind::NeedsReviewFirstRun {
+        "Check Before Syncing".to_owned()
+    } else {
+        format!("Review Changes for {}", view.name)
+    };
     let deleting = matches!(view.phase, ReviewPhase::Ready(preview) if has_deletes(preview));
     let mut buttons = SheetButtons::new(if deleting { "Delete and Sync" } else { "Sync" });
     if deleting {
@@ -262,17 +323,17 @@ fn ready(ui: &mut Ui, remote: &str, kept_days: Option<u32>, preview: &Preview, t
         return;
     }
     coming_back_notice(ui, &palette, preview.returning.len());
+    summary_line(ui, &palette, preview, remote);
     let mut toggles = ui
         .data(|data| data.get_temp::<Toggles>(toggles_id))
         .unwrap_or_default();
     let before = toggles.0.clone();
-    for (index, section) in sections(preview, remote, kept_days).iter().enumerate() {
-        let default_open = index == 0 || section.open_by_default;
+    for section in &sections(preview, remote, kept_days) {
         let open = toggles
             .0
             .get(&section.title)
             .copied()
-            .unwrap_or(default_open);
+            .unwrap_or(section.open_by_default);
         if group(ui, &palette, section, open) {
             toggles.0.insert(section.title.clone(), !open);
         }
@@ -281,11 +342,39 @@ fn ready(ui: &mut Ui, remote: &str, kept_days: Option<u32>, preview: &Preview, t
         ui.data_mut(|data| data.insert_temp(toggles_id, toggles));
     }
     left_out_repos(ui, &palette, &preview.excluded_repos);
-    ui.label(
-        RichText::new(NOTE)
-            .font(theme::footnote())
-            .color(palette.dim),
+}
+
+fn summary_line(ui: &mut Ui, palette: &Palette, preview: &Preview, remote: &str) {
+    let (changes, deletions) = summary_parts(preview, remote);
+    let deletion_color = if has_deletes(preview) {
+        palette.danger
+    } else {
+        palette.text
+    };
+    let mut job = LayoutJob::default();
+    if !changes.is_empty() {
+        job.append(
+            &format!("{changes}; "),
+            0.0,
+            TextFormat::simple(theme::body(), palette.text),
+        );
+    }
+    job.append(
+        &deletions,
+        0.0,
+        TextFormat::simple(theme::body(), deletion_color),
     );
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = space::XS;
+        ui.label(job);
+        let info = ui.add(
+            Icon::Info
+                .image(palette.dim, size::ICON)
+                .sense(Sense::hover()),
+        );
+        info.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, NOTE));
+        info.on_hover_text(NOTE);
+    });
 }
 
 fn coming_back_notice(ui: &mut Ui, palette: &Palette, count: usize) {

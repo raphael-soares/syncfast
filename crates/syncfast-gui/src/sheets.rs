@@ -694,7 +694,11 @@ impl Sheets {
             Current::Review(session) => {
                 let view = ReviewView {
                     name: &session.name,
-                    remote: &session.remote,
+                    remote: self
+                        .remotes
+                        .iter()
+                        .find(|remote| remote.name == session.remote)
+                        .map_or(session.remote.as_str(), RemoteRow::label),
                     kept_days: pairs
                         .iter()
                         .find(|pair| pair.id == session.pair_id)
