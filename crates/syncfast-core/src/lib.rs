@@ -23,6 +23,7 @@ pub mod runs;
 pub mod settings;
 pub mod state;
 pub mod status;
+pub mod status_bus;
 pub mod units;
 pub mod versions;
 pub mod watch;

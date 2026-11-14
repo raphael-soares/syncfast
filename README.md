@@ -47,7 +47,7 @@ flatpak run io.github.raphael_soares.syncfast
   <img src="assets/screenshot-review.png" alt="A new sync waiting for the review of its first round" width="45%">
 </p>
 
-The full walkthrough is in [Getting started](docs/guide/getting-started.md). If something stops, see [Troubleshooting](docs/guide/troubleshooting.md) and [Privacy](docs/guide/privacy.md).
+The full walkthrough is in [Getting started](docs/guide/getting-started.md). If something stops, see [Troubleshooting](docs/guide/troubleshooting.md) and [Privacy](docs/guide/privacy.md). On Arch with Nautilus, [emblems and Sync Now](docs/guide/nautilus.md) are optional.
 
 ## AI agents
 

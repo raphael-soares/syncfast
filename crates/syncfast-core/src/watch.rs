@@ -22,12 +22,14 @@ use tokio::time::{Instant, sleep_until};
 
 use crate::behavior::Behavior;
 use crate::config::{Config, GlobalConfigError, Pair, split_remote};
+use crate::conflicts::Naming;
 use crate::drive_changes::{self, DrivePair};
 use crate::filters::{self, DirMatcher};
 use crate::network::{self, BoxFuture};
 use crate::paths::Paths;
 use crate::rclone::{DRIVE_TYPE, Rclone, RcloneError};
 use crate::state::is_running;
+use crate::status_bus::{self, Bus, StatusHandle, SyncInfo};
 use crate::units::{Systemctl, SystemdMode, backup_service_name, command_text, service_name};
 
 /// How often a trigger blocked by a running round looks at the lock again.
@@ -199,6 +201,9 @@ pub struct WatchEnv {
     /// Listen for Drive changes, resume from suspend and the network
     /// coming back. Tests turn it off and feed [`Watcher::wakes`] instead.
     pub wake_sources: bool,
+    /// Where to publish the sync status for the file manager; `None` keeps
+    /// the watcher off every bus.
+    pub status_bus: Option<Bus>,
 }
 
 impl WatchEnv {
@@ -212,6 +217,7 @@ impl WatchEnv {
             lock_recheck: LOCK_RECHECK,
             root_recheck: ROOT_RECHECK,
             wake_sources: true,
+            status_bus: Some(Bus::Session),
         }
     }
 }
@@ -313,6 +319,12 @@ impl Schedule {
         };
     }
 
+    /// A trigger is on its way: events were seen, or the sync waits for a
+    /// running round and the settle time after it.
+    fn is_waiting(&self) -> bool {
+        self.phase != Phase::Idle
+    }
+
     fn deadline(&self) -> Option<Instant> {
         match self.phase {
             Phase::Idle => None,
@@ -379,6 +391,8 @@ struct Loaded {
     armed: Vec<Armed>,
     /// The syncs that read from Drive and want its changes.
     drive: Vec<DrivePair>,
+    /// Every enabled sync, for the status service.
+    statuses: Vec<SyncInfo>,
 }
 
 /// The directories with a watch, by descriptor.
@@ -454,6 +468,7 @@ pub struct Watcher {
     wakes_rx: mpsc::Receiver<Wake>,
     pollers: Vec<JoinHandle<()>>,
     system_events: Option<JoinHandle<()>>,
+    status: Option<StatusHandle>,
 }
 
 impl std::fmt::Debug for Watcher {
@@ -484,6 +499,11 @@ impl Watcher {
             .into_event_stream(vec![0; EVENT_BUFFER_BYTES])
             .map_err(WatchError::Inotify)?;
         let loaded = load_pairs(&env).await?;
+        let status = env.status_bus.clone().map(|bus| {
+            let handle = status_bus::spawn(bus, env.paths.clone(), env.trigger.clone());
+            handle.set_syncs(loaded.statuses);
+            handle
+        });
         let (wakes_tx, wakes_rx) = mpsc::channel(WAKE_BUFFER);
         let mut watcher = Self {
             env,
@@ -502,6 +522,7 @@ impl Watcher {
             wakes_rx,
             pollers: Vec::new(),
             system_events: None,
+            status,
         };
         watcher.watch_config().await;
         watcher.watch_trees();
@@ -557,6 +578,19 @@ impl Watcher {
                 () = wait_until(deadline) => self.tick().await,
                 Some(wake) = self.wakes_rx.recv() => self.on_wake(&wake),
             }
+            self.publish_waiting();
+        }
+    }
+
+    fn publish_waiting(&self) {
+        if let Some(status) = &self.status {
+            status.set_waiting(
+                self.schedules
+                    .iter()
+                    .filter(|(_, schedule)| schedule.is_waiting())
+                    .map(|(id, _)| id.clone())
+                    .collect(),
+            );
         }
     }
 
@@ -847,6 +881,9 @@ impl Watcher {
             Ok(loaded) => {
                 self.pairs = loaded.watched;
                 self.armed = loaded.armed;
+                if let Some(status) = &self.status {
+                    status.set_syncs(loaded.statuses);
+                }
                 loaded.drive
             }
             Err(err) => {
@@ -884,9 +921,17 @@ async fn load_pairs(env: &WatchEnv) -> Result<Loaded, WatchError> {
         watched: Vec::new(),
         armed: Vec::new(),
         drive: Vec::new(),
+        statuses: Vec::new(),
     };
     for pair in validation.pairs.iter().filter(|pair| pair.enabled) {
         let behavior = (env.behavior_for)(&defaults, pair);
+        let matcher = DirMatcher::new(&filters::render_live(pair).await.text);
+        loaded.statuses.push(SyncInfo::new(
+            pair.id.clone(),
+            pair.local.clone(),
+            Naming::from(behavior.conflict_loser),
+            matcher.clone(),
+        ));
         loaded.armed.push(Armed {
             id: pair.id.clone(),
             timing: Timing {
@@ -902,7 +947,7 @@ async fn load_pairs(env: &WatchEnv) -> Result<Loaded, WatchError> {
             loaded.watched.push(Watched {
                 id: pair.id.clone(),
                 root: pair.local.clone(),
-                matcher: DirMatcher::new(&filters::render_live(pair).await.text),
+                matcher,
             });
         }
         let on_drive = split_remote(&pair.remote).is_some_and(|(account, _)| {
