@@ -43,7 +43,7 @@ flatpak run io.github.raphael_soares.syncfast
 4. Review the first sync. After you confirm it, syncfast keeps both sides equal by itself.
 
 <p align="center">
-  <img src="assets/screenshot-add-sync.png" alt="Adding a sync: account, folder on Drive, folder on this computer, filters and name" width="45%">
+  <img src="assets/screenshot-add-sync.png" alt="New Sync: folder on this computer, folder on Google Drive and what to keep" width="45%">
   <img src="assets/screenshot-review.png" alt="A new sync waiting for the review of its first round" width="45%">
 </p>
 
