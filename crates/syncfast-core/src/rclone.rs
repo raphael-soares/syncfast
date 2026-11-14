@@ -12,6 +12,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt as _, BufReader};
 use tokio::process::{Child, Command};
+use zeroize::Zeroizing;
 
 use crate::flatpak;
 use crate::paths::Paths;
@@ -19,7 +20,7 @@ use crate::paths::Paths;
 const BINARY_NAME: &str = "rclone";
 const BINARY_OVERRIDE_VAR: &str = "SYNCFAST_RCLONE";
 const CONFIG_VAR: &str = "RCLONE_CONFIG";
-const DRIVE_TYPE: &str = "drive";
+pub(crate) const DRIVE_TYPE: &str = "drive";
 /// rclone's exit codes for a folder and for a file that is not there.
 const NOT_FOUND: i32 = 3;
 const FILE_NOT_FOUND: i32 = 4;
@@ -249,6 +250,58 @@ impl Rclone {
                 remote.client_secret.unwrap_or_default(),
             )
         }))
+    }
+
+    /// The sign-in saved for the Drive remote `name`, to call the Drive API
+    /// with. `None` when the remote or its token is missing. rclone owns the
+    /// token: it renews it and writes it back; syncfast only reads it, and
+    /// never logs the dump.
+    ///
+    /// # Errors
+    /// rclone cannot run or fails, or prints something that is not the
+    /// expected JSON.
+    pub async fn drive_token(&self, name: &str) -> Result<Option<DriveToken>, RcloneError> {
+        let stdout = self
+            .output("config dump", vec!["config".into(), "dump".into()], false)
+            .await?;
+        let mut remotes: BTreeMap<String, DumpedRemote> =
+            serde_json::from_slice(&stdout).map_err(|_| RcloneError::BadOutput("config dump"))?;
+        let Some(remote) = remotes.remove(name) else {
+            return Ok(None);
+        };
+        let Some(saved) = remote.token.filter(|token| !token.is_empty()) else {
+            return Ok(None);
+        };
+        let token: SavedToken =
+            serde_json::from_str(&saved).map_err(|_| RcloneError::BadOutput("config dump"))?;
+        let present = |value: Option<String>| value.filter(|text| !text.is_empty());
+        Ok(Some(DriveToken {
+            access_token: Zeroizing::new(token.access_token),
+            expiry: present(token.expiry).and_then(|text| text.parse().ok()),
+            team_drive: present(remote.team_drive),
+            root_folder_id: present(remote.root_folder_id),
+        }))
+    }
+
+    /// The folders under `remote_path` (or only the ones directly inside it)
+    /// with their Drive ids. Entries the backend gives no id are left out.
+    ///
+    /// # Errors
+    /// rclone cannot run or fails.
+    pub async fn list_folder_ids(
+        &self,
+        remote_path: &str,
+        recursive: bool,
+    ) -> Result<Vec<FolderId>, RcloneError> {
+        let mut args: Vec<OsString> = ["lsjson", "--dirs-only", "--no-modtime", "--no-mimetype"]
+            .map(OsString::from)
+            .to_vec();
+        if recursive {
+            args.extend(["-R", "--fast-list"].map(OsString::from));
+        }
+        args.extend(["--".into(), remote_path.into()]);
+        let stdout = self.output("lsjson", args, true).await?;
+        folder_ids(&stdout).ok_or(RcloneError::BadOutput("lsjson"))
     }
 
     /// Creates the folder `remote_path` (`gdrive:Notes/2026`) and the
@@ -581,6 +634,74 @@ struct DumpedRemote {
     kind: Option<String>,
     client_id: Option<String>,
     client_secret: Option<String>,
+    token: Option<String>,
+    team_drive: Option<String>,
+    root_folder_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SavedToken {
+    access_token: String,
+    expiry: Option<String>,
+}
+
+/// What the Drive API needs from the rclone config of one remote. The
+/// access token is kept in a zeroizing buffer and left out of `Debug`.
+pub struct DriveToken {
+    pub access_token: Zeroizing<String>,
+    pub expiry: Option<jiff::Timestamp>,
+    /// The shared drive the remote is scoped to, when it is.
+    pub team_drive: Option<String>,
+    /// The folder the remote treats as its root, when it is not My Drive.
+    pub root_folder_id: Option<String>,
+}
+
+impl DriveToken {
+    /// True when the token has expired, or will within `margin`.
+    #[must_use]
+    pub fn expires_within(&self, now: jiff::Timestamp, margin: Duration) -> bool {
+        self.expiry
+            .is_some_and(|expiry| expiry.duration_since(now).as_secs() <= margin.as_secs().cast_signed())
+    }
+}
+
+impl std::fmt::Debug for DriveToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DriveToken")
+            .field("expiry", &self.expiry)
+            .field("team_drive", &self.team_drive)
+            .field("root_folder_id", &self.root_folder_id)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A Drive folder: its path relative to the listed folder and its id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FolderId {
+    pub path: String,
+    pub id: String,
+}
+
+#[derive(Deserialize)]
+struct ListedFolder {
+    #[serde(rename = "Path")]
+    path: String,
+    #[serde(rename = "ID", default)]
+    id: String,
+}
+
+fn folder_ids(lsjson: &[u8]) -> Option<Vec<FolderId>> {
+    let entries: Vec<ListedFolder> = serde_json::from_slice(lsjson).ok()?;
+    Some(
+        entries
+            .into_iter()
+            .filter(|entry| !entry.id.is_empty())
+            .map(|entry| FolderId {
+                path: entry.path,
+                id: entry.id,
+            })
+            .collect(),
+    )
 }
 
 /// One line of `rclone lsjson -R`.
@@ -933,6 +1054,95 @@ type = drive
         );
         assert_eq!(shared, Some((String::new(), String::new())));
         assert_eq!(unknown, None);
+    }
+
+    #[tokio::test]
+    async fn drive_token_reads_the_saved_sign_in_and_none_when_there_is_none() {
+        let config = "\
+[mine]
+type = drive
+team_drive = 0Abc
+root_folder_id = fld1
+token = {\"access_token\":\"ya29.secret\",\"token_type\":\"Bearer\",\"refresh_token\":\"1//r\",\"expiry\":\"2026-11-13T10:00:00.5-03:00\"}
+
+[signed_out]
+type = drive
+";
+        let Some((rclone, _dir)) = rclone_with(config) else {
+            return;
+        };
+
+        let mine = rclone.drive_token("mine").await.unwrap().unwrap();
+        let signed_out = rclone.drive_token("signed_out").await.unwrap();
+        let unknown = rclone.drive_token("absent").await.unwrap();
+
+        assert_eq!(mine.access_token.as_str(), "ya29.secret");
+        assert_eq!(
+            mine.expiry,
+            Some("2026-11-13T13:00:00.5Z".parse::<jiff::Timestamp>().unwrap())
+        );
+        assert_eq!(mine.team_drive.as_deref(), Some("0Abc"));
+        assert_eq!(mine.root_folder_id.as_deref(), Some("fld1"));
+        assert!(signed_out.is_none());
+        assert!(unknown.is_none());
+    }
+
+    #[test]
+    fn a_token_counts_as_expired_inside_the_margin() {
+        let expiry: jiff::Timestamp = "2026-11-13T10:00:00Z".parse().unwrap();
+        let token = DriveToken {
+            access_token: Zeroizing::new("t".to_owned()),
+            expiry: Some(expiry),
+            team_drive: None,
+            root_folder_id: None,
+        };
+        let margin = Duration::from_secs(60);
+
+        let early = expiry - jiff::SignedDuration::from_secs(61);
+        let inside = expiry - jiff::SignedDuration::from_secs(59);
+        let after = expiry + jiff::SignedDuration::from_secs(1);
+
+        assert!(!token.expires_within(early, margin));
+        assert!(token.expires_within(inside, margin));
+        assert!(token.expires_within(after, margin));
+    }
+
+    #[test]
+    fn the_debug_output_of_a_token_never_shows_it() {
+        let token = DriveToken {
+            access_token: Zeroizing::new("ya29.secret".to_owned()),
+            expiry: None,
+            team_drive: None,
+            root_folder_id: None,
+        };
+
+        assert!(!format!("{token:?}").contains("ya29"));
+    }
+
+    #[test]
+    fn folder_ids_keep_the_entries_that_have_an_id() {
+        let lsjson = br#"[
+            {"Path":"a","Name":"a","IsDir":true,"ID":"id-a"},
+            {"Path":"a/b","Name":"b","IsDir":true,"ID":"id-b"},
+            {"Path":"local","Name":"local","IsDir":true}
+        ]"#;
+
+        let ids = folder_ids(lsjson).unwrap();
+
+        assert_eq!(
+            ids,
+            [
+                FolderId {
+                    path: "a".to_owned(),
+                    id: "id-a".to_owned()
+                },
+                FolderId {
+                    path: "a/b".to_owned(),
+                    id: "id-b".to_owned()
+                }
+            ]
+        );
+        assert_eq!(folder_ids(b"not json"), None);
     }
 
     #[tokio::test]

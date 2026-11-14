@@ -13,6 +13,7 @@ fastframe-file.workspace = true
 fastframe-instance.workspace = true
 fastframe-notifications.workspace = true
 futures-core.workspace = true
+futures-util.workspace = true
 getrandom.workspace = true
 globset.workspace = true
 inotify.workspace = true
@@ -21,6 +22,7 @@ log.workspace = true
 oo7.workspace = true
 regex.workspace = true
 rustix.workspace = true
+rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -28,6 +30,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "process", "fs", "io-util", "time", "signal", "macros", "sync"] }
 toml.workspace = true
 toml_edit.workspace = true
+ureq.workspace = true
 zbus.workspace = true
 zeroize.workspace = true
 

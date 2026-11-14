@@ -4,6 +4,7 @@ pub mod bisync;
 pub mod bisync_log;
 pub mod config;
 pub mod conflicts;
+pub mod drive_changes;
 pub mod filters;
 pub mod flatpak;
 pub mod listing;
