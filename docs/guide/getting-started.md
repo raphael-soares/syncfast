@@ -29,7 +29,7 @@ Pick folders that are not inside each other: two syncs cannot overlap, and a syn
 
 A new sync is held until you review it. **Review changes** shows, from a dry run, what would be uploaded, downloaded, replaced or deleted on each side. Nothing is copied before you press **Sync**. When the review would delete files, the button reads **Delete and Sync**; read that list first.
 
-Afterwards the status reads **Up to date** and syncfast runs a round on a schedule: by default every 5 minutes, and about 30 seconds after files change on this computer. **Sync Now** runs one immediately. Change these in the **Options** tab of a sync, or for all syncs in **Settings › Defaults**.
+Afterwards the status reads **Up to date** and syncfast runs a round seconds after files change on this computer, within a minute of a change on Drive, after the computer wakes or the network comes back, and as a safety net every hour by default. **Sync Now** runs one immediately. Change these in the **Options** tab of a sync, or for all syncs in **Settings › Defaults**.
 
 ## Day to day
 

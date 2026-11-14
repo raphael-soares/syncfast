@@ -6,7 +6,7 @@ Syncs must run on a timer and on local changes even when the GUI is closed or cr
 ## Decision
 The app generates, from its config, one oneshot service and one timer per sync, plus a single `syncfast-watch.service` that runs the inotify watcher. `syncfast apply` reconciles the units with the config (write, enable, disable, remove) and is the only code that touches them.
 - Overlap is prevented with a per-sync file lock under `$XDG_RUNTIME_DIR/syncfast/`, not with unit ordering.
-- The timer fires 5 minutes after the previous round ended; the watcher starts a round 30 seconds after local changes settle, at most 5 minutes into continuous editing.
+- The timer fires 1 hour after the previous round ended (the default `interval`, a safety net); the watcher starts a round 30 seconds after local changes settle, at most 5 minutes into continuous editing.
 - `SYNCFAST_SYSTEMD=off` writes the units to a preview folder and runs the CLI directly, for tests and dev mode.
 
 ## Consequences

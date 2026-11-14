@@ -26,6 +26,8 @@ pub struct RoundView {
     pub detail: Option<String>,
     /// Set when syncfast confirmed the review this round ran after.
     pub auto_reviewed: Option<AutoReviewed>,
+    /// A check that found nothing to do; only the newest one is listed.
+    pub idle: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -52,6 +54,7 @@ impl From<&RunEntry> for RoundView {
             conflicts_new: entry.summary.conflicts_new,
             detail: entry.detail.clone(),
             auto_reviewed: entry.auto_reviewed,
+            idle: entry.idle,
         }
     }
 }

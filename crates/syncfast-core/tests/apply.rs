@@ -131,7 +131,7 @@ async fn off_mode_writes_the_units_to_the_preview_folder_and_never_runs_systemct
         rclone.display()
     )));
     let timer = fs::read_to_string(preview.join("syncfast-docs.timer")).unwrap();
-    assert!(timer.contains("OnUnitInactiveSec=300s\n"));
+    assert!(timer.contains("OnUnitInactiveSec=3600s\n"));
     assert!(systemctl.take().is_empty());
     assert!(!bed.paths.systemd_user_dir().exists());
 }
@@ -713,15 +713,15 @@ async fn changing_the_interval_in_preview_mode_rewrites_the_preview_timer() {
     let bed = Bed::new();
     bed.write_config_text(&format!("version = 2\n{}", pair_text(&bed, "docs", "")));
     apply_with(&bed, SystemdMode::Off, &FakeSystemctl::default(), &[]).await;
-    assert_eq!(timer_interval(&bed, "docs"), "300s");
+    assert_eq!(timer_interval(&bed, "docs"), "3600s");
     bed.write_config_text(&format!(
         "version = 2\n{}",
-        pair_text(&bed, "docs", "interval = \"1h\"\n")
+        pair_text(&bed, "docs", "interval = \"30m\"\n")
     ));
 
     apply_with(&bed, SystemdMode::Off, &FakeSystemctl::default(), &[]).await;
 
-    assert_eq!(timer_interval(&bed, "docs"), "3600s");
+    assert_eq!(timer_interval(&bed, "docs"), "1800s");
 }
 
 #[tokio::test]
@@ -738,7 +738,7 @@ async fn apply_migrates_a_v1_config_and_keeps_a_copy_of_the_old_file() {
     assert!(migrated.contains("id = \"docs\""));
     let backup = bed.paths.config_file().with_file_name("config.toml.v1");
     assert_eq!(fs::read_to_string(backup).unwrap(), old);
-    assert_eq!(timer_interval(&bed, "docs"), "300s");
+    assert_eq!(timer_interval(&bed, "docs"), "3600s");
 }
 
 fn backup_text(bed: &Bed, id: &str, extra: &str) -> String {

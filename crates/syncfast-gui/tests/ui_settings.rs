@@ -563,7 +563,7 @@ fn a_default_that_was_changed_says_what_it_replaces_and_how_many_syncs_override_
     let mut harness = harness(defaults(), screen());
     harness.run();
 
-    harness.get_by_label("Built-in default: 5 min · Overridden by 2 syncs");
+    harness.get_by_label("Built-in default: 1 h · Overridden by 2 syncs");
 }
 
 #[test]
@@ -647,7 +647,7 @@ fn the_defaults_pane_fits_the_minimum_window_in_both_themes() {
         for control in harness.get_all_by_label("Reset to Default") {
             assert!(fits(control.rect()));
         }
-        for row in ["Check Drive every", "Watch for changes"] {
+        for row in ["Full check every", "Watch for changes"] {
             let rect = harness.get_all_by_label(row).next().unwrap().rect();
             assert!(fits(rect), "{row} sticks out: {rect:?}");
         }

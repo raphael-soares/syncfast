@@ -33,7 +33,7 @@ use crate::run_decision::{
 };
 use crate::state::{
     AutoReviewed, ConfirmMarker, Gate, GateKind, LastOutcome, LastRun, NOTIFIED_FAILURES, State,
-    StateError, prune_runs, try_lock_pair,
+    StateError, idle_log_path, prune_runs, try_lock_pair,
 };
 use crate::versions;
 
@@ -355,9 +355,15 @@ pub(crate) async fn read_log_or_empty(path: &Path) -> Vec<LogLine> {
 }
 
 /// A free log name: two rounds that start in the same second must not
-/// share a log file, because rclone appends to an existing one.
+/// share a log file, because rclone appends to an existing one, nor a stamp,
+/// which ties a log to its `.changes` report (an idle round's log has
+/// another name but keeps its stamp).
 pub(crate) fn fresh_start(paths: &Paths, pair_id: &str, mode: RoundMode, mut now: Zoned) -> Zoned {
-    while log_file(paths, pair_id, mode, &now).exists() {
+    let taken = |at: &Zoned| {
+        let log = log_file(paths, pair_id, mode, at);
+        log.exists() || idle_log_path(&log).exists()
+    };
+    while taken(&now) {
         match now.checked_add(SignedDuration::from_secs(1)) {
             Ok(next) => now = next,
             Err(_) => break,
@@ -677,6 +683,28 @@ struct Ended {
     dest_files: Option<u64>,
 }
 
+/// A round that succeeded with nothing to report: no change and no new
+/// conflict.
+fn is_idle(outcome: &Outcome, summary: &RunSummary) -> bool {
+    *outcome == Outcome::Ok
+        && summary.changes.is_empty()
+        && summary.conflicts_new.is_none_or(|count| count == 0)
+}
+
+/// Renames the log of an idle round so Activity and the pruning can tell it
+/// from the rounds that did something. A log that cannot be renamed stays
+/// where it is.
+async fn rename_to_idle(log: PathBuf) -> PathBuf {
+    let idle = idle_log_path(&log);
+    match tokio::fs::rename(&log, &idle).await {
+        Ok(()) => idle,
+        Err(err) => {
+            log::warn!("cannot rename {}: {err}", log.display());
+            log
+        }
+    }
+}
+
 /// Reads the `--combined` report of a one-way round; a report that was
 /// never written reads as empty.
 pub(crate) async fn read_changes(path: &Path) -> String {
@@ -834,13 +862,16 @@ impl Round<'_> {
         }
         let Attempt {
             exit_code,
-            log_path,
+            mut log_path,
             lines,
             changes,
         } = attempt;
         let finished = env.now().timestamp();
         let behavior = self.behavior;
         let (outcome, mut summary) = self.judge(exit_code, &lines, &changes);
+        if mode == RoundMode::Normal && auto_reviewed.is_none() && is_idle(&outcome, &summary) {
+            log_path = rename_to_idle(log_path).await;
+        }
         let alerts: Vec<Alert> = summary
             .conflicts_new
             .filter(|count| *count > 0)

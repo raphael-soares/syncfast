@@ -11,7 +11,7 @@ use crate::notify::last_error_message;
 use crate::oneway::{classify_oneway, exit_code_from_log, mode_of_changes_file, summarize_oneway};
 use crate::paths::Paths;
 use crate::run::read_changes;
-use crate::state::{AutoReviewed, DisplayStatus, LastRun, RUNS_KEPT, State};
+use crate::state::{AutoReviewed, DisplayStatus, LastRun, RUNS_KEPT, State, is_idle_log, stamp_of};
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, Zoned};
 use serde::Deserialize;
@@ -49,6 +49,8 @@ pub struct RunEntry {
     pub messages: Vec<String>,
     /// Set on the latest round when syncfast confirmed the review before it.
     pub auto_reviewed: Option<AutoReviewed>,
+    /// A check that found nothing to do. Only the newest one is kept.
+    pub idle: bool,
 }
 
 impl RunEntry {
@@ -164,6 +166,7 @@ fn entry(file_name: &str, text: &str, known: &Known<'_>) -> RunEntry {
         detail,
         messages,
         auto_reviewed: None,
+        idle: is_idle_log(file_name),
     }
 }
 
@@ -189,16 +192,22 @@ fn log_names(names: &[String]) -> Vec<&str> {
         })
         .collect();
     logs.sort_unstable_by(|a, b| b.cmp(a));
-    logs.truncate(RUNS_KEPT);
+    let mut idle_seen = false;
+    logs.retain(|name| !is_idle_log(name) || !std::mem::replace(&mut idle_seen, true));
+    let mut real = 0;
+    logs.retain(|name| {
+        real += usize::from(!is_idle_log(name));
+        is_idle_log(name) || real <= RUNS_KEPT
+    });
     logs
 }
 
 /// The report a one-way round kept next to `log`, `<stamp>.<mode>.changes`.
 async fn one_way_of(runs: &Path, names: &[String], log: &str) -> Option<OneWay> {
-    let stem = log.strip_suffix(".jsonl")?;
+    let stamp = stamp_of(log);
     let name = names
         .iter()
-        .find(|name| name.starts_with(stem) && mode_of_changes_file(name).is_some())?;
+        .find(|name| stamp_of(name) == stamp && mode_of_changes_file(name).is_some())?;
     Some(OneWay {
         mode: mode_of_changes_file(name)?,
         changes: read_changes(&runs.join(name)).await,
@@ -305,6 +314,70 @@ mod tests {
             last: None,
             one_way: None,
         }
+    }
+
+    fn names_of(names: &[String]) -> Vec<String> {
+        log_names(names).into_iter().map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn fifty_real_logs_are_listed_with_the_newest_idle_one_whatever_its_age() {
+        let mut names: Vec<String> = (10..70)
+            .map(|n| format!("20260101-0000{n}.jsonl"))
+            .collect();
+        names
+            .extend(["20250101-000000.idle.jsonl", "20250101-000001.idle.jsonl"].map(String::from));
+        names.push("20260101-000010.upload.changes".to_owned());
+
+        let listed = names_of(&names);
+
+        assert_eq!(listed.len(), 51);
+        assert_eq!(listed[0], "20260101-000069.jsonl");
+        assert_eq!(listed[49], "20260101-000020.jsonl");
+        assert_eq!(listed[50], "20250101-000001.idle.jsonl");
+    }
+
+    #[test]
+    fn an_idle_log_sits_among_the_real_ones_by_its_stamp() {
+        let names = [
+            "20260101-000001.jsonl",
+            "20260101-000002.idle.jsonl",
+            "20260101-000003.jsonl",
+        ]
+        .map(String::from);
+
+        assert_eq!(
+            names_of(&names),
+            [
+                "20260101-000003.jsonl",
+                "20260101-000002.idle.jsonl",
+                "20260101-000001.jsonl"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_report_of_an_idle_one_way_round_is_found_by_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("20260102-150405.upload.changes"), "").unwrap();
+        let names = [
+            "20260102-150405.idle.jsonl".to_owned(),
+            "20260102-150405.upload.changes".to_owned(),
+            "20260102-150406.mirror_up.changes".to_owned(),
+        ];
+
+        let found = one_way_of(dir.path(), &names, "20260102-150405.idle.jsonl").await;
+
+        assert_eq!(found.map(|one_way| one_way.mode), Some(SyncMode::Upload));
+    }
+
+    #[test]
+    fn an_entry_knows_its_log_is_idle() {
+        let idle = entry("20261103-134545.idle.jsonl", OK, &finished());
+        let real = entry("20261103-134545.jsonl", OK, &finished());
+
+        assert!(idle.idle);
+        assert!(!real.idle);
     }
 
     #[test]

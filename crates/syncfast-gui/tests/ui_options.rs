@@ -85,7 +85,7 @@ fn the_rows_are_grouped_in_sections() {
         "Watch for changes",
         "Wait after changes",
         "Longest wait while editing",
-        "Check Drive every",
+        "Full check every",
         "Limit uploads to",
         "Limit downloads to",
         "When both sides change",
@@ -117,7 +117,7 @@ fn an_overridden_setting_says_what_it_overrides_and_can_be_reset() {
     let mut harness = harness(options("", "interval = \"30m\"\n"), screen());
     harness.run();
 
-    harness.get_by_label("Overrides the default (5 min)");
+    harness.get_by_label("Overrides the default (1 h)");
     harness.get_by_label("Reset to Default").click();
     harness.run();
 
@@ -135,7 +135,7 @@ fn a_valid_duration_is_saved_when_the_field_is_committed() {
     let mut harness = harness(options("", ""), screen());
     harness.run();
 
-    type_into(&mut harness, "Check Drive every", "10m");
+    type_into(&mut harness, "Full check every", "10m");
     assert!(harness.state().actions.is_empty(), "nothing before Enter");
     commit(&mut harness);
 
@@ -213,7 +213,7 @@ fn committing_the_value_that_is_already_set_asks_for_nothing() {
     harness.run();
 
     harness
-        .get_by_role_and_label(Role::TextInput, "Check Drive every")
+        .get_by_role_and_label(Role::TextInput, "Full check every")
         .click();
     harness.run_steps(2);
     commit(&mut harness);
@@ -309,7 +309,7 @@ fn the_options_fit_the_minimum_window_in_both_themes() {
         let fits = |rect: egui::Rect| rect.left() >= 0.0 && rect.right() <= size.x;
         for label in [
             "Watch for changes",
-            "Check Drive every",
+            "Full check every",
             "Limit uploads to",
             "Limit downloads to",
             "Stop when more than this share would be deleted",
@@ -383,7 +383,7 @@ fn a_default_unrelated_to_what_another_sync_sets_is_saved() {
     let mut harness = harness(with_a_sync_that_waits("1m", ""), defaults_screen());
     harness.run();
 
-    type_into(&mut harness, "Check Drive every", "10m");
+    type_into(&mut harness, "Full check every", "10m");
     commit(&mut harness);
 
     assert_eq!(
@@ -519,7 +519,7 @@ fn every_number_field_of_the_options_ends_at_the_same_edge() {
             .rect()
             .right()
     };
-    let reference = right(&harness, "Check Drive every");
+    let reference = right(&harness, "Full check every");
     for label in [
         "Wait after changes",
         "Limit uploads to",
@@ -602,26 +602,30 @@ fn the_summary_says_when_a_sync_runs_with_watching_on() {
     let mut harness = harness(options("", ""), screen());
     harness.run();
 
-    harness.get_by_label("Syncs every 5 min and 30 s after you stop editing.");
+    harness.get_by_label(
+        "Syncs seconds after a change here, within a minute of a change on Drive, after resume, and every 1 h.",
+    );
 }
 
 #[test]
-fn the_summary_says_changes_wait_for_the_next_round_with_watching_off() {
+fn the_summary_says_when_a_sync_runs_with_watching_off() {
     let mut harness = harness(options("", "watch = false\ninterval = \"10m\"\n"), screen());
     harness.run();
 
-    harness.get_by_label("Syncs every 10 min. Changes on this computer wait for the next round.");
+    harness.get_by_label("Syncs every 10 min, after resume, and when the network comes back.");
 }
 
 #[test]
 fn the_summary_follows_the_timing_the_sync_resolves() {
     let mut harness = harness(
-        options("debounce = \"1m\"", "interval = \"1h\"\n"),
+        options("interval = \"15m\"", "interval = \"2h\"\n"),
         screen(),
     );
     harness.run();
 
-    harness.get_by_label("Syncs every 1 h and 1 min after you stop editing.");
+    harness.get_by_label(
+        "Syncs seconds after a change here, within a minute of a change on Drive, after resume, and every 2 h.",
+    );
 }
 
 #[test]

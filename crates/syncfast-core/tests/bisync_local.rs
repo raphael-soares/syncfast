@@ -21,6 +21,7 @@ use syncfast_core::preview::{PreviewError, preview};
 use syncfast_core::rclone::Rclone;
 use syncfast_core::run::{RunEnv, RunReport, STORED_CHANGES, run};
 use syncfast_core::run_decision::SkipReason;
+use syncfast_core::runs;
 use syncfast_core::state::{ConfirmMarker, GateKind, LastOutcome, State, try_lock_pair};
 
 const PAIR: &str = "docs";
@@ -1603,6 +1604,75 @@ async fn a_successful_round_prunes_expired_versions_and_old_run_logs() {
     assert_eq!(names(&bed.paths.runs_dir(PAIR)).len(), 50);
     let newest = bed.state().await.last_run.unwrap().log_file;
     assert!(newest.exists(), "the newest log is kept");
+}
+
+fn idle_logs(bed: &Bed) -> Vec<String> {
+    names(&bed.paths.runs_dir(PAIR))
+        .into_iter()
+        .filter(|name| name.ends_with(".idle.jsonl"))
+        .collect()
+}
+
+#[tokio::test]
+async fn two_rounds_with_nothing_to_do_leave_one_idle_log_that_the_state_points_at() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "base.txt", "base");
+    bed.first_sync().await;
+
+    assert_eq!(bed.run().await, ran_ok(RoundMode::Normal));
+    let first = idle_logs(&bed);
+    assert_eq!(bed.run().await, ran_ok(RoundMode::Normal));
+
+    let second = idle_logs(&bed);
+    assert_eq!((first.len(), second.len()), (1, 1));
+    assert_ne!(
+        first, second,
+        "the older check is replaced by the newer one"
+    );
+    let last = bed.state().await.last_run.unwrap();
+    assert_eq!(
+        last.log_file.file_name().unwrap().to_string_lossy(),
+        second[0]
+    );
+    assert!(last.log_file.exists());
+}
+
+#[tokio::test]
+async fn a_round_with_changes_between_idle_checks_stays_in_the_history() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "base.txt", "base");
+    bed.first_sync().await;
+    bed.run().await;
+    write(&bed.local, "new.txt", "hello");
+    assert_eq!(bed.run().await, ran_ok(RoundMode::Normal));
+    let real = bed.state().await.last_run.unwrap().log_file;
+    assert!(!real.to_string_lossy().ends_with(".idle.jsonl"));
+
+    bed.run().await;
+
+    assert!(real.exists(), "the round that uploaded stays");
+    assert_eq!(idle_logs(&bed).len(), 1);
+    let rounds = runs::load(&bed.paths, PAIR, false).await;
+    assert_eq!(rounds.len(), 3, "the first sync, the upload and one check");
+    assert_eq!(rounds.iter().filter(|round| round.idle).count(), 1);
+    let uploaded = rounds
+        .iter()
+        .find(|round| round.summary.uploaded == Some(1));
+    assert!(uploaded.is_some_and(|round| !round.idle));
+}
+
+#[tokio::test]
+async fn a_round_that_synced_nothing_new_but_found_a_conflict_is_not_idle() {
+    let Some(bed) = bed() else { return };
+    write(&bed.local, "doc.txt", "base");
+    bed.first_sync().await;
+    write(&bed.local, "doc.txt", "local edit");
+    write(&bed.remote, "doc.txt", "remote edit");
+    set_age(&bed.local, "doc.txt", 60);
+
+    bed.run().await;
+
+    assert!(idle_logs(&bed).is_empty());
 }
 
 #[tokio::test]

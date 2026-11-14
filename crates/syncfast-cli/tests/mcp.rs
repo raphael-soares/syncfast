@@ -347,7 +347,7 @@ fn settings_over_mcp_answer_as_the_commands_do() {
     assert!(!reset_error, "{reset}");
     assert_eq!(
         serde_json::from_str::<Value>(&reset).unwrap()["setting"]["value"],
-        "5m"
+        "1h"
     );
 }
 
