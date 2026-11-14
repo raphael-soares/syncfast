@@ -112,6 +112,9 @@ const RENAME_ARGS: [&str; 4] = [
     "hash,modtime",
     "--max-delete-renames-aware",
 ];
+/// Deletions on Drive go to its trash even when `rclone.conf` turns it off:
+/// Recently Deleted and the review that confirms itself count on it.
+pub(crate) const USE_TRASH: &str = "--drive-use-trash";
 pub(crate) const FAILED_TO_BISYNC: &str = "Failed to bisync";
 const EXIT_NOT_CRITICAL: i32 = 1;
 pub(crate) const EXIT_USAGE: i32 = 2;
@@ -214,6 +217,7 @@ pub fn bisync_args(
     }
     args.extend(bwlimit_args(behavior));
     args.extend([
+        USE_TRASH.into(),
         "--stats".into(),
         STATS_INTERVAL.into(),
         "--stats-log-level".into(),
@@ -449,7 +453,7 @@ mod tests {
             .collect()
     }
 
-    const COMMON: [&str; 28] = [
+    const COMMON: [&str; 29] = [
         "bisync",
         "/home/ada/Drive",
         "gdrive:Notes",
@@ -471,6 +475,7 @@ mod tests {
         "--drive-skip-gdocs",
         "--backup-dir1",
         "/d/syncfast/versions/drive/20260102-150405/",
+        "--drive-use-trash",
         "--stats",
         "2s",
         "--stats-log-level",

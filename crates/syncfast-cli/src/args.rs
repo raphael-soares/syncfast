@@ -7,6 +7,7 @@ use syncfast_core::bisync::ReviewKind;
 use syncfast_core::ops::{
     DEFAULT_DEPTH, DEFAULT_FILE_LIMIT, DEFAULT_MAX_FOLDERS, DEFAULT_WAIT_SECONDS, Keep,
 };
+use syncfast_core::recently_deleted::DeletedSide;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -148,6 +149,9 @@ pub enum Operation {
     /// Conflicts: both versions of a file were kept
     #[command(subcommand)]
     Conflicts(ConflictsCommand),
+    /// Files a sync deleted or replaced that can still be restored
+    #[command(subcommand)]
+    Deleted(DeletedCommand),
     /// The recent rounds of a sync
     Activity {
         /// The sync id
@@ -485,6 +489,44 @@ pub enum ConflictsCommand {
         #[arg(long, value_enum)]
         keep: Choice,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DeletedCommand {
+    /// List what the sync deleted or replaced that can still come back
+    List {
+        /// The sync id
+        id: String,
+    },
+    /// Restore a file into the sync's folder, never over another, and sync it
+    Restore {
+        /// The sync id
+        id: String,
+        /// The key `deleted list` shows
+        key: String,
+        #[arg(long, value_enum)]
+        side: Side,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum Side {
+    /// The versions folder of the sync, on this computer
+    Local,
+    /// The versions a mirror to Drive keeps on the account
+    Remote,
+    /// The Drive trash
+    Drive,
+}
+
+impl From<Side> for DeletedSide {
+    fn from(side: Side) -> Self {
+        match side {
+            Side::Local => Self::Local,
+            Side::Remote => Self::Remote,
+            Side::Drive => Self::Drive,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]

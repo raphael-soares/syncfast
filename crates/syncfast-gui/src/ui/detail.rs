@@ -1,6 +1,6 @@
 //! The right side of the window: toolbar, status card and the tabs.
 
-use egui::{Frame, Margin, RichText, Ui};
+use egui::{Frame, Id, Margin, RichText, Ui};
 use syncfast_core::behavior::SyncMode;
 use syncfast_core::bisync_log::Progress;
 use syncfast_core::notify::attention_body;
@@ -14,7 +14,7 @@ use super::widgets::{
     BadgeSize, ButtonKind, button_with_icon, chip, icon_button, inline_error, primary_button,
     progress_bar, segmented, status_badge, toolbar,
 };
-use super::{Action, PairRow, ViewModel, activity, conflicts, filters, options};
+use super::{Action, PairRow, ViewModel, activity, conflicts, filters, options, recently_deleted};
 use crate::icons::Icon;
 use crate::theme::{self, Palette, radius, size, space};
 
@@ -22,18 +22,20 @@ use crate::theme::{self, Palette, radius, size, space};
 const SIDE: i8 = 20;
 
 /// What the detail shows under the status card.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum DetailTab {
     #[default]
     Activity,
+    RecentlyDeleted,
     Conflicts,
     Filters,
     Options,
 }
 
 impl DetailTab {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Activity,
+        Self::RecentlyDeleted,
         Self::Conflicts,
         Self::Filters,
         Self::Options,
@@ -43,6 +45,7 @@ impl DetailTab {
     pub fn label(self) -> &'static str {
         match self {
             Self::Activity => "Activity",
+            Self::RecentlyDeleted => "Recently Deleted",
             Self::Conflicts => "Conflicts",
             Self::Filters => "Filters",
             Self::Options => "Options",
@@ -92,6 +95,20 @@ pub(super) fn padded<R>(ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> R {
         .inner
 }
 
+/// True on the first frame `tab` is drawn for `pair_id`, and again when
+/// frames stopped for a while (another tab, another sync): what the tab
+/// lists is read again when the user comes back to it.
+pub(super) fn just_opened(ctx: &egui::Context, tab: DetailTab, pair_id: &str) -> bool {
+    let frame = ctx.cumulative_frame_nr();
+    let key = Id::new(("detail-tab-frame", tab, pair_id));
+    let previous = ctx.data_mut(|data| {
+        let previous = data.get_temp::<u64>(key);
+        data.insert_temp(key, frame);
+        previous
+    });
+    previous.is_none_or(|previous| previous.saturating_add(1) < frame)
+}
+
 fn pair_detail(ui: &mut Ui, vm: &ViewModel, pair: &PairRow, palette: &Palette) -> Vec<Action> {
     let mut actions = Vec::new();
     let sync_mode = pair.effective.behavior.mode;
@@ -117,7 +134,7 @@ fn pair_detail(ui: &mut Ui, vm: &ViewModel, pair: &PairRow, palette: &Palette) -
     let tab = if tabs.contains(&vm.tab) {
         vm.tab
     } else {
-        DetailTab::default()
+        tabs.first().copied().unwrap_or_default()
     };
     padded(ui, |ui| {
         ui.add_space(space::L);
@@ -133,6 +150,7 @@ fn pair_detail(ui: &mut Ui, vm: &ViewModel, pair: &PairRow, palette: &Palette) -
             .auto_shrink([false, false])
             .show(ui, |ui| match tab {
                 DetailTab::Activity => actions.extend(activity::show(ui, vm)),
+                DetailTab::RecentlyDeleted => actions.extend(recently_deleted::show(ui, vm)),
                 DetailTab::Conflicts => actions.extend(conflicts::show(ui, vm)),
                 DetailTab::Filters => actions.extend(filters::show(ui, vm)),
                 DetailTab::Options => actions.extend(options::sync(ui, vm)),
@@ -141,11 +159,16 @@ fn pair_detail(ui: &mut Ui, vm: &ViewModel, pair: &PairRow, palette: &Palette) -
     actions
 }
 
-/// Conflicts only exist in a two-way sync.
+/// Conflicts only exist in a two-way sync, and a mirror of Drive keeps
+/// nothing it deletes.
 fn tabs_of(mode: SyncMode) -> Vec<DetailTab> {
     DetailTab::ALL
         .into_iter()
-        .filter(|tab| *tab != DetailTab::Conflicts || mode == SyncMode::Bisync)
+        .filter(|tab| match tab {
+            DetailTab::Conflicts => mode == SyncMode::Bisync,
+            DetailTab::RecentlyDeleted => mode != SyncMode::MirrorDown,
+            _ => true,
+        })
         .collect()
 }
 

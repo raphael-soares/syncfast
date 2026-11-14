@@ -29,6 +29,7 @@ use syncfast_core::ops::{FIRST_ROUND_WAIT, FirstRound, first_round_confirmed};
 use syncfast_core::paths::Paths;
 use syncfast_core::preview::Preview;
 use syncfast_core::rclone::Rclone;
+use syncfast_core::recently_deleted::{DeletedList, DeletedSide};
 use syncfast_core::state::is_running;
 use syncfast_core::units::{ApplyEnv, SystemdMode, UserSystemctl, apply};
 use syncfast_core::watch::{Trigger, trigger_for};
@@ -91,6 +92,14 @@ pub enum Command {
         id: String,
         path: PathBuf,
         resolution: Resolution,
+    },
+    /// Read what a sync deleted or replaced that can still come back.
+    LoadDeleted(String),
+    /// Copy one deleted file back, read the list again and start a round.
+    RestoreDeleted {
+        id: String,
+        key: String,
+        side: DeletedSide,
     },
     /// List what the rules would leave out of `local`.
     TestFilters {
@@ -265,6 +274,11 @@ pub enum Event {
     Conflicts {
         id: String,
         found: Vec<Conflict>,
+    },
+    /// What a sync deleted that can still come back, or why it cannot be read.
+    Deleted {
+        id: String,
+        result: Result<Arc<DeletedList>, String>,
     },
     /// The outcome of `Test Filters` for exactly these rules.
     FilterTest {
@@ -533,6 +547,10 @@ async fn run(
                         path,
                         resolution,
                     } => spawn_resolve_conflict(&context, id, path, resolution),
+                    Command::LoadDeleted(id) => spawn_load_deleted(&context, id),
+                    Command::RestoreDeleted { id, key, side } => {
+                        spawn_restore_deleted(&context, id, key, side);
+                    }
                     Command::TestFilters {
                         id,
                         local,
@@ -751,6 +769,35 @@ fn spawn_resolve_conflict(
             }
         },
     );
+}
+
+fn spawn_load_deleted(context: &Arc<Context>, id: String) {
+    let context = Arc::clone(context);
+    guarded(
+        context.emitter.clone(),
+        "listing deleted files",
+        async move { load_deleted(&context, id).await },
+    );
+}
+
+async fn load_deleted(context: &Context, id: String) {
+    let result = pair_tools::list_deleted(&context.paths, &id)
+        .await
+        .map(Arc::new);
+    context.emitter.send(Event::Deleted { id, result });
+}
+
+fn spawn_restore_deleted(context: &Arc<Context>, id: String, key: String, side: DeletedSide) {
+    let context = Arc::clone(context);
+    guarded(context.emitter.clone(), "restoring a file", async move {
+        match pair_tools::restore_deleted(&context.paths, &id, &key, side).await {
+            Ok(_) => {
+                load_deleted(&context, id.clone()).await;
+                spawn_sync(&context, vec![id]);
+            }
+            Err(text) => fail(&context, text),
+        }
+    });
 }
 
 fn spawn_test_filters(

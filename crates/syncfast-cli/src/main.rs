@@ -5,8 +5,8 @@ mod mcp;
 mod render;
 
 use args::{
-    BackupAddArgs, BackupCommand, Cli, Command, ConflictsCommand, FiltersCommand, Operation,
-    ReviewCommand, SettingsCommand, TransferArgs,
+    BackupAddArgs, BackupCommand, Cli, Command, ConflictsCommand, DeletedCommand, FiltersCommand,
+    Operation, ReviewCommand, SettingsCommand, TransferArgs,
 };
 
 use std::process::ExitCode;
@@ -290,6 +290,7 @@ async fn operate(operation: Operation, json: bool) -> anyhow::Result<ExitCode> {
         Operation::Filters(command) => filters(&ops, command, json).await,
         Operation::Review(command) => review(&ops, command, json).await,
         Operation::Conflicts(command) => conflicts(&ops, command, json).await,
+        Operation::Deleted(command) => deleted(&ops, command, json).await,
         Operation::Accounts => emit(json, &ops.accounts().await?, |found| {
             render::accounts(found)
         }),
@@ -538,6 +539,18 @@ async fn conflicts(ops: &Ops, command: ConflictsCommand, json: bool) -> anyhow::
         ConflictsCommand::Resolve { id, path, keep } => {
             let resolved = ops.resolve_conflict(&id, &path, keep.into()).await?;
             emit(json, &resolved, render::resolved)
+        }
+    }
+}
+
+async fn deleted(ops: &Ops, command: DeletedCommand, json: bool) -> anyhow::Result<ExitCode> {
+    match command {
+        DeletedCommand::List { id } => {
+            emit(json, &ops.recently_deleted(&id).await?, render::deleted)
+        }
+        DeletedCommand::Restore { id, key, side } => {
+            let restored = ops.restore_deleted(&id, &key, side.into()).await?;
+            emit(json, &restored, render::restored)
         }
     }
 }

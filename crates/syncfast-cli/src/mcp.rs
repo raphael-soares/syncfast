@@ -17,6 +17,7 @@ use syncfast_core::ops::{
     DEFAULT_WAIT_SECONDS, ExploreOptions, Keep, KeepPartial, NewBackupRequest, NewSync, OpError,
     Ops, RestoreArgs, TransferOptions,
 };
+use syncfast_core::recently_deleted::DeletedSide;
 
 const INSTRUCTIONS: &str = "\
 syncfast keeps folders on this computer in sync with a cloud account (rclone bisync). \
@@ -36,15 +37,17 @@ true (nothing is deleted), call confirm_review with the filters_hash it returned
 review deletes files you cannot confirm it: ask the user to review it in syncfast.
 5. Follow. status and show_sync say where each sync stands; sync_now runs a round; \
 list_conflicts and resolve_conflict settle files that changed on both sides; list_activity \
-and show_round_log explain what a round did.
+and show_round_log explain what a round did. list_deleted shows what a sync deleted or \
+replaced that can still come back; restore_deleted puts one back in the local folder, never \
+over another file, and you may call it whenever the user wants a file back.
 
 6. Organize. copy and move take a file or folder on this computer or `account:path` on either \
 side. The destination is the new name itself and must not exist. Call with dry_run first to show \
 the user the files and bytes. A transfer that outlasts the wait goes on by itself: read it with \
 show_transfer. A folder that a sync keeps cannot be moved: remove the sync first.
 
-Rules: a changed filter or an error holds the sync for a new review. A sync held because many \
-files would be deleted is for the user to confirm. A first sync of a large folder can take \
+Rules: a changed filter or an error holds the sync for a new review. A sync held because files \
+would be deleted with no way back is for the user to confirm. A first sync of a large folder can take \
 longer than the wait: the round goes on by itself, read status later. get_settings shows how a \
 sync behaves and where each value comes from; set_setting and reset_setting change it, except \
 what lowers safety (a larger max_delete, versions off, conflict_loser delete, a switch to a mirror mode, \
@@ -247,6 +250,27 @@ struct ResolveConflictArgs {
     path: String,
     /// Which version to keep.
     keep: KeepArg,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum SideArg {
+    /// The versions folder of the sync, on this computer.
+    Local,
+    /// The versions a mirror to Drive keeps on the account.
+    Remote,
+    /// The Drive trash.
+    Drive,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct RestoreDeletedArgs {
+    /// The sync id.
+    id: String,
+    /// The `key` that `list_deleted` returned.
+    key: String,
+    /// The `side` that `list_deleted` returned.
+    side: SideArg,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -739,6 +763,30 @@ impl SyncfastMcp {
                 .resolve_conflict(&args.id, &PathBuf::from(args.path), keep)
                 .await,
         )
+    }
+
+    #[tool(
+        description = "What a sync deleted or replaced that can still be restored: local versions (side `local`, with when and kept_until) and files in the Drive trash (side `drive`). Each has its path, size and the key restore_deleted takes. `warning` says when the Drive trash could not be read.",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_deleted(&self, Parameters(args): Parameters<IdArgs>) -> CallToolResult {
+        reply(self.ops.recently_deleted(&args.id).await)
+    }
+
+    #[tool(
+        description = "Restore one item of list_deleted into the sync's local folder. It never overwrites: when a file is at the path, the restored one is named `<name> (restored <date time>).<ext>`. Returns the path written and starts a sync.",
+        annotations(read_only_hint = false, destructive_hint = false)
+    )]
+    async fn restore_deleted(
+        &self,
+        Parameters(args): Parameters<RestoreDeletedArgs>,
+    ) -> CallToolResult {
+        let side = match args.side {
+            SideArg::Local => DeletedSide::Local,
+            SideArg::Remote => DeletedSide::Remote,
+            SideArg::Drive => DeletedSide::Drive,
+        };
+        reply(self.ops.restore_deleted(&args.id, &args.key, side).await)
     }
 
     #[tool(

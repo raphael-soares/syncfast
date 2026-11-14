@@ -274,6 +274,7 @@ impl App {
             },
             settings_pane: self.gui.settings_pane,
             conflicts: Vec::new(),
+            deleted: None,
             filter_test: None,
             filters_saved: false,
             removing: None,
@@ -441,7 +442,7 @@ impl App {
                     self.backend.send(Command::SetAutostart(enabled));
                 }
                 let selected = self.selected_id();
-                if let Some(command) = self
+                for command in self
                     .screens
                     .on_snapshot(&self.snapshot, selected.as_deref())
                 {
@@ -487,6 +488,7 @@ impl App {
                 self.forward_to_sheets(&event);
             }
             event @ (Event::Conflicts { .. }
+            | Event::Deleted { .. }
             | Event::FilterTest { .. }
             | Event::FiltersSaved(_)
             | Event::AccountStatus { .. }) => self.screens.on_event(event),
@@ -810,6 +812,8 @@ impl App {
             | Action::CancelRemove
             | Action::ConfirmRemove { .. }
             | Action::RefreshConflicts(_)
+            | Action::RefreshDeleted(_)
+            | Action::RestoreDeleted { .. }
             | Action::ResolveConflict { .. }
             | Action::TestFilters { .. }
             | Action::SaveFilters { .. }

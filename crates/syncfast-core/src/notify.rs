@@ -97,9 +97,10 @@ pub enum Alert {
     /// The newest error line of the log.
     Failing(String),
     /// A round that followed a review syncfast confirmed by itself and
-    /// deleted `deleted` files.
+    /// deleted `deleted` files; `recoverable` when all of them can come back.
     AutoReviewed {
         deleted: u32,
+        recoverable: bool,
     },
     /// What a round that changed files moved.
     Synced {
@@ -228,18 +229,30 @@ pub fn notice(pair: &Pair, behavior: &Behavior, alert: &Alert) -> Notice {
             format!("{name}: synced"),
             synced_body(*uploaded, *downloaded, *deleted, *renamed),
         ),
-        Alert::AutoReviewed { deleted } => (
-            format!("{name}: reviewed automatically"),
-            format!(
-                "Deleted {deleted} {} after an automatic review.",
-                if *deleted == 1 { "file" } else { "files" }
-            ),
-        ),
+        Alert::AutoReviewed {
+            deleted,
+            recoverable,
+        } => auto_reviewed(name, *deleted, *recoverable),
     };
     Notice {
         pair_id: pair.id.clone(),
         title,
         body,
+    }
+}
+
+fn auto_reviewed(name: &str, deleted: u32, recoverable: bool) -> (String, String) {
+    let files = if deleted == 1 { "file" } else { "files" };
+    if recoverable {
+        (
+            format!("{name}: synced"),
+            format!("Moved {deleted} {files} to Recently Deleted."),
+        )
+    } else {
+        (
+            format!("{name}: reviewed automatically"),
+            format!("Deleted {deleted} {files} after an automatic review."),
+        )
     }
 }
 
@@ -638,15 +651,44 @@ mod tests {
     #[test]
     fn an_automatic_review_says_how_many_files_it_deleted() {
         assert_eq!(
-            text(&Alert::AutoReviewed { deleted: 12 }),
+            text(&Alert::AutoReviewed {
+                deleted: 12,
+                recoverable: false
+            }),
             (
                 "Documents: reviewed automatically".to_owned(),
                 "Deleted 12 files after an automatic review.".to_owned()
             )
         );
         assert_eq!(
-            text(&Alert::AutoReviewed { deleted: 1 }).1,
+            text(&Alert::AutoReviewed {
+                deleted: 1,
+                recoverable: false
+            })
+            .1,
             "Deleted 1 file after an automatic review."
+        );
+    }
+
+    #[test]
+    fn deletions_that_can_come_back_point_to_recently_deleted() {
+        assert_eq!(
+            text(&Alert::AutoReviewed {
+                deleted: 12,
+                recoverable: true
+            }),
+            (
+                "Documents: synced".to_owned(),
+                "Moved 12 files to Recently Deleted.".to_owned()
+            )
+        );
+        assert_eq!(
+            text(&Alert::AutoReviewed {
+                deleted: 1,
+                recoverable: true
+            })
+            .1,
+            "Moved 1 file to Recently Deleted."
         );
     }
 
@@ -988,7 +1030,10 @@ mod tests {
         assert!(policy.allows(&Alert::NewConflicts(1)));
         assert!(policy.allows(&Alert::Failing("x".into())));
         assert!(!policy.allows(&Alert::synced(&summary(1, 0, 0, 0)).unwrap()));
-        assert!(!policy.allows(&Alert::AutoReviewed { deleted: 1 }));
+        assert!(!policy.allows(&Alert::AutoReviewed {
+            deleted: 1,
+            recoverable: false
+        }));
     }
 
     #[test]
@@ -1004,7 +1049,10 @@ mod tests {
         assert!(!off.allows(&Alert::NewConflicts(1)));
         assert!(!off.allows(&Alert::Failing("x".into())));
         assert!(off.allows(&Alert::synced(&summary(1, 0, 0, 0)).unwrap()));
-        assert!(off.allows(&Alert::AutoReviewed { deleted: 1 }));
+        assert!(off.allows(&Alert::AutoReviewed {
+            deleted: 1,
+            recoverable: false
+        }));
     }
 
     #[test]

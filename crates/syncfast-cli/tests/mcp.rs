@@ -101,7 +101,7 @@ impl Drop for Client {
     }
 }
 
-const TOOLS: [&str; 39] = [
+const TOOLS: [&str; 41] = [
     "status",
     "show_sync",
     "add_sync",
@@ -122,6 +122,8 @@ const TOOLS: [&str; 39] = [
     "confirm_review",
     "list_conflicts",
     "resolve_conflict",
+    "list_deleted",
+    "restore_deleted",
     "list_activity",
     "show_round_log",
     "theme",

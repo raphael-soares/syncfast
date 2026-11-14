@@ -1,10 +1,13 @@
-//! What the Conflicts and Filters tabs, the `Remove Sync` alert and the
-//! accounts pane remember between frames, and what they ask of the backend.
+//! What the Recently Deleted, Conflicts and Filters tabs, the `Remove Sync`
+//! alert and the accounts pane remember between frames, and what they ask
+//! of the backend.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use jiff::Timestamp;
 use syncfast_core::conflicts::Conflict;
+use syncfast_core::recently_deleted::DeletedList;
 use syncfast_core::state::GateKind;
 
 use crate::backend::{Command, Event};
@@ -12,7 +15,7 @@ use crate::snapshot::Snapshot;
 use crate::ui::filters::{FilterRules, FilterTest, FilterTestState};
 use crate::ui::{AccountStatus, Action, ViewModel};
 
-/// What tells that a round changed the conflicts of a sync.
+/// What tells that a round changed the selected sync.
 type ConflictKey = (String, Option<Timestamp>, u32);
 
 #[derive(Debug, Default)]
@@ -22,6 +25,7 @@ pub struct Screens {
     account_status: BTreeMap<String, AccountStatus>,
     removing_account: Option<String>,
     conflicts: Option<(String, Vec<Conflict>)>,
+    deleted: Option<(String, Result<Arc<DeletedList>, String>)>,
     conflict_key: Option<ConflictKey>,
     filter_test: Option<FilterTest>,
     filters_saved: Option<String>,
@@ -41,6 +45,11 @@ impl Screens {
             .filter(|(id, _)| Some(id) == vm.selected.as_ref())
             .map(|(_, found)| found.clone())
             .unwrap_or_default();
+        vm.deleted = self
+            .deleted
+            .as_ref()
+            .filter(|(id, _)| Some(id) == vm.selected.as_ref())
+            .map(|(_, result)| result.clone());
         vm.filter_test.clone_from(&self.filter_test);
         vm.filters_saved = self.filters_saved.is_some() && self.filters_saved == vm.selected;
     }
@@ -51,6 +60,7 @@ impl Screens {
                 self.account_status.insert(name, status);
             }
             Event::Conflicts { id, found } => self.conflicts = Some((id, found)),
+            Event::Deleted { id, result } => self.deleted = Some((id, result)),
             Event::FilterTest {
                 id,
                 presets,
@@ -78,8 +88,9 @@ impl Screens {
     }
 
     /// A new snapshot: when the selected sync was just synced or the number
-    /// of its conflicts changed, look at its folder again.
-    pub fn on_snapshot(&mut self, snapshot: &Snapshot, selected: Option<&str>) -> Option<Command> {
+    /// of its conflicts changed, look at its folder again, and read what it
+    /// deleted again when that list is the one shown.
+    pub fn on_snapshot(&mut self, snapshot: &Snapshot, selected: Option<&str>) -> Vec<Command> {
         self.expire_saved_notice(snapshot);
         let key = snapshot
             .pairs
@@ -93,16 +104,23 @@ impl Screens {
                 )
             });
         if key == self.conflict_key {
-            return None;
+            return Vec::new();
         }
-        self.conflict_key.clone_from(&key);
-        match key {
-            Some((id, _, pending)) if pending > 0 => Some(Command::ScanConflicts(id)),
-            _ => {
-                self.conflicts = None;
-                None
+        let previous = std::mem::replace(&mut self.conflict_key, key.clone());
+        let mut commands = Vec::new();
+        match &key {
+            Some((id, _, pending)) if *pending > 0 => {
+                commands.push(Command::ScanConflicts(id.clone()));
             }
+            _ => self.conflicts = None,
         }
+        if let (Some((id, ..)), Some((before, ..))) = (&key, &previous)
+            && id == before
+            && self.deleted.as_ref().is_some_and(|(shown, _)| shown == id)
+        {
+            commands.push(Command::LoadDeleted(id.clone()));
+        }
+        commands
     }
 
     /// The `Saved.` notice lasts until the review of the new filters is done:
@@ -159,6 +177,10 @@ impl Screens {
                 Some(Command::RemoveAccount(name))
             }
             Action::RefreshConflicts(id) => Some(Command::ScanConflicts(id)),
+            Action::RefreshDeleted(id) => Some(Command::LoadDeleted(id)),
+            Action::RestoreDeleted { id, key, side } => {
+                Some(Command::RestoreDeleted { id, key, side })
+            }
             Action::ResolveConflict {
                 id,
                 path,
@@ -265,9 +287,9 @@ mod tests {
             Some("notes"),
         );
 
-        assert_eq!(first, Some(Command::ScanConflicts("notes".to_owned())));
-        assert_eq!(repeated, None);
-        assert_eq!(next_round, Some(Command::ScanConflicts("notes".to_owned())));
+        assert_eq!(first, [Command::ScanConflicts("notes".to_owned())]);
+        assert_eq!(repeated, []);
+        assert_eq!(next_round, [Command::ScanConflicts("notes".to_owned())]);
     }
 
     #[test]
@@ -280,8 +302,35 @@ mod tests {
 
         let command = screens.on_snapshot(&snapshot("notes", 0, None), Some("notes"));
 
-        assert_eq!(command, None);
+        assert_eq!(command, []);
         assert!(screens.conflicts.is_none());
+    }
+
+    #[test]
+    fn the_deleted_list_shown_is_read_again_after_each_round_of_its_sync() {
+        let mut screens = Screens::default();
+        screens.on_snapshot(&snapshot("notes", 0, None), Some("notes"));
+        let unread = screens.on_snapshot(
+            &snapshot("notes", 0, Some("2026-11-03T10:00:00Z")),
+            Some("notes"),
+        );
+        screens.on_event(Event::Deleted {
+            id: "notes".to_owned(),
+            result: Ok(Arc::new(DeletedList {
+                items: Vec::new(),
+                warning: None,
+            })),
+        });
+
+        let next_round = screens.on_snapshot(
+            &snapshot("notes", 0, Some("2026-11-03T10:05:00Z")),
+            Some("notes"),
+        );
+        let other_sync = screens.on_snapshot(&snapshot("work", 0, None), Some("work"));
+
+        assert_eq!(unread, []);
+        assert_eq!(next_round, [Command::LoadDeleted("notes".to_owned())]);
+        assert_eq!(other_sync, []);
     }
 
     #[test]

@@ -761,14 +761,17 @@ fn the_defaults_panel_warns_about_a_default_that_turns_versions_off() {
 
 const ASK_EVERY_TIME: &str =
     "Every first sync, filter change, mode change and mass deletion waits for you.";
-const ASK_ONLY_FOR_DELETIONS: &str = "A review is confirmed automatically when its preview deletes nothing. The first sync of a folder always waits for you.";
-const NEVER_ASK: &str = "Deletions are confirmed automatically, including mass deletions. Only an empty source folder or a critical error stops a sync.";
+const ASK_ONLY_FOR_DELETIONS: &str = "A review is confirmed automatically when everything it deletes can be restored from Recently Deleted. The first sync of a folder and deletions that cannot be undone wait for you.";
+const NEVER_ASK: &str = "Deletions are confirmed automatically, including mass deletions that cannot be undone. Only an empty source folder or a critical error stops a sync.";
 
 #[test]
 fn review_is_a_choice_that_names_the_level_it_is_on() {
     for (value, name) in [
         ("manual", "Ask every time"),
-        ("deletions", "Ask only for deletions"),
+        (
+            "deletions",
+            "Ask for the first sync and for deletions that cannot be undone",
+        ),
         ("automatic", "Never ask"),
     ] {
         let mut harness = harness(options("", &format!("review = \"{value}\"\n")), screen());

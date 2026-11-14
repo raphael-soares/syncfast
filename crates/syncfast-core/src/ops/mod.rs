@@ -7,6 +7,7 @@ mod activity;
 mod backup_edit;
 mod backups;
 mod conflicts;
+mod deleted;
 mod error;
 mod explore;
 mod pairs;
@@ -47,6 +48,7 @@ pub use backups::{
     KeepView, SnapshotFiles,
 };
 pub use conflicts::{ConflictView, FileView, Keep, Resolved};
+pub use deleted::Restored;
 pub use error::OpError;
 pub use explore::{
     DEFAULT_DEPTH, DEFAULT_MAX_FOLDERS, Exploration, ExploreOptions, ExtensionStat, FolderList,

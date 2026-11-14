@@ -292,7 +292,7 @@ fn note(section: &str, value_of: &dyn Fn(&str) -> Option<Value>) -> Option<&'sta
             Some("Every first sync, filter change, mode change and mass deletion waits for you.")
         }
         ("Review", Some(Value::Choice("deletions"))) => Some(
-            "A review is confirmed automatically when its preview deletes nothing. The first sync of a folder always waits for you.",
+            "A review is confirmed automatically when everything it deletes can be restored from Recently Deleted. The first sync of a folder and deletions that cannot be undone wait for you.",
         ),
         _ => None,
     }
@@ -325,7 +325,7 @@ fn warnings(section: &str, value_of: &dyn Fn(&str) -> Option<Value>) -> Vec<Stri
             vec!["Files replaced or deleted on this computer are not kept.".to_owned()]
         }
         "Review" if is("review", Value::Choice("automatic")) => vec![
-            "Deletions are confirmed automatically, including mass deletions. Only an empty source folder or a critical error stops a sync."
+            "Deletions are confirmed automatically, including mass deletions that cannot be undone. Only an empty source folder or a critical error stops a sync."
                 .to_owned(),
         ],
         _ => Vec::new(),
@@ -679,7 +679,7 @@ fn choice_label<'a>(key: &str, name: &'a str) -> &'a str {
         ("mode", "mirror_up") => "Mirror to Drive",
         ("mode", "mirror_down") => "Mirror to this computer",
         ("review", "manual") => "Ask every time",
-        ("review", "deletions") => "Ask only for deletions",
+        ("review", "deletions") => "Ask for the first sync and for deletions that cannot be undone",
         ("review", "automatic") => "Never ask",
         ("conflict_resolve", "none") => "Keep both",
         ("conflict_loser", "num") => "Rename as .conflictN",

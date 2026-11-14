@@ -103,7 +103,7 @@ pub enum Resolution {
 
 /// Splits at the last `.`, except when there is none or it is the first
 /// character (a dotfile): then the extension is empty.
-fn split_extension(name: &str) -> (&str, &str) {
+pub(crate) fn split_extension(name: &str) -> (&str, &str) {
     match name.rfind('.') {
         Some(index) if index > 0 => name.split_at(index),
         _ => (name, ""),
@@ -197,7 +197,7 @@ fn original_path(conflict: &Path, naming: Naming) -> Option<PathBuf> {
     Some(conflict.with_file_name(original))
 }
 
-fn occupied(path: &Path) -> bool {
+pub(crate) fn occupied(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok()
 }
 
@@ -236,7 +236,7 @@ impl Original {
 /// Copies `from` to `to`, creating the destination's folders, and never over
 /// an existing file: when `to` is taken the copy gets ` 2`, ` 3`... before
 /// the extension. A symlink is copied as a symlink. Returns where it went.
-fn copy_without_overwriting(from: &Path, to: &Path) -> io::Result<PathBuf> {
+pub(crate) fn copy_without_overwriting(from: &Path, to: &Path) -> io::Result<PathBuf> {
     let (Some(dir), Some(name)) = (to.parent(), to.file_name().and_then(|name| name.to_str()))
     else {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "no file name"));

@@ -1,5 +1,6 @@
-//! The I/O behind the Conflicts, Filters and Options tabs, Settings >
-//! Defaults and `Remove Sync…`: what the backend runs when those screens ask.
+//! The I/O behind the Recently Deleted, Conflicts, Filters and Options tabs,
+//! Settings > Defaults and `Remove Sync…`: what the backend runs when those
+//! screens ask.
 //! Errors are the text the screen shows.
 
 use std::path::{Path, PathBuf};
@@ -12,6 +13,7 @@ use syncfast_core::filters::{self, DirMatcher, ExclusionSummary};
 use syncfast_core::ops;
 use syncfast_core::paths::Paths;
 use syncfast_core::rclone::Rclone;
+use syncfast_core::recently_deleted::{self, DeletedList, DeletedSide};
 
 static TEST_FILES: AtomicU64 = AtomicU64::new(0);
 
@@ -83,6 +85,43 @@ pub async fn resolve_conflict(
     })
     .await
     .map_err(|err| err.to_string())?
+}
+
+/// What the sync deleted or replaced that can still come back.
+///
+/// # Errors
+/// The config cannot be read, there is no such sync, rclone is missing or
+/// the versions folder cannot be read.
+pub async fn list_deleted(paths: &Paths, id: &str) -> Result<DeletedList, String> {
+    let config = Config::load(paths).await.map_err(|err| err.to_string())?;
+    let pair = config
+        .pairs()
+        .iter()
+        .find(|pair| pair.id == id)
+        .ok_or_else(|| format!("there is no sync with id \"{id}\""))?;
+    let behavior = config.effective(pair).behavior;
+    let rclone = Rclone::from_env().map_err(|err| err.to_string())?;
+    recently_deleted::list(paths, &rclone, pair, &behavior)
+        .await
+        .map_err(|err| format!("cannot list what was deleted: {err}"))
+}
+
+/// Copies one item back into the sync's folder; the path it was written to.
+///
+/// # Errors
+/// The config cannot be read, there is no such sync or item, or the copy
+/// failed.
+pub async fn restore_deleted(
+    paths: &Paths,
+    id: &str,
+    key: &str,
+    side: DeletedSide,
+) -> Result<String, String> {
+    let pair = find_pair(paths, id).await?;
+    let rclone = Rclone::from_env().map_err(|err| err.to_string())?;
+    recently_deleted::restore(paths, &rclone, &pair, key, side)
+        .await
+        .map_err(|err| format!("cannot restore: {err}"))
 }
 
 /// Lists the files of `local` with and without the rules and says what they

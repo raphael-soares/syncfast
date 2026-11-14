@@ -2,15 +2,16 @@
 //! the winner and left the other as `<name>.conflict<N>` or, when the sync
 //! names losers by path, `<name>.path1` or `<name>.path2`.
 
-use egui::{Align, Id, Layout, RichText, Ui};
+use egui::{Align, Layout, RichText, Ui};
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, Zoned};
 use syncfast_core::behavior::ConflictLoser;
 use syncfast_core::conflicts::{Conflict, FileFacts, Resolution};
 
+use super::detail::just_opened;
 use super::format;
 use super::widgets::{empty_state, list_row, secondary_button};
-use super::{Action, ViewModel};
+use super::{Action, DetailTab, ViewModel};
 use crate::icons::Icon;
 use crate::theme::{self, space};
 
@@ -24,7 +25,7 @@ pub fn show(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
         return Vec::new();
     };
     let mut actions = Vec::new();
-    if just_opened(ui.ctx(), &pair.id) {
+    if just_opened(ui.ctx(), DetailTab::Conflicts, &pair.id) {
         actions.push(Action::RefreshConflicts(pair.id.clone()));
     }
     if vm.conflicts.is_empty() {
@@ -40,20 +41,6 @@ pub fn show(ui: &mut Ui, vm: &ViewModel) -> Vec<Action> {
         });
     }
     actions
-}
-
-/// True on the first frame the tab is drawn for `pair_id`, and again when
-/// frames stopped for a while (another tab, another sync): the folder is
-/// looked at again when the user comes back to the list.
-fn just_opened(ctx: &egui::Context, pair_id: &str) -> bool {
-    let frame = ctx.cumulative_frame_nr();
-    let key = Id::new(("conflicts-tab-frame", pair_id));
-    let previous = ctx.data_mut(|data| {
-        let previous = data.get_temp::<u64>(key);
-        data.insert_temp(key, frame);
-        previous
-    });
-    previous.is_none_or(|previous| previous.saturating_add(1) < frame)
 }
 
 fn row(
@@ -132,7 +119,7 @@ fn facts_text(facts: &FileFacts, now: Timestamp, tz: &TimeZone) -> String {
 
 /// `today 09:12`, `yesterday 18:40`, `Nov 01 09:12`, and with the year for
 /// another year.
-fn when(now: Timestamp, then: Timestamp, tz: &TimeZone) -> String {
+pub(super) fn when(now: Timestamp, then: Timestamp, tz: &TimeZone) -> String {
     let (now, then): (Zoned, Zoned) = (now.to_zoned(tz.clone()), then.to_zoned(tz.clone()));
     let (today, day) = (now.date(), then.date());
     let clock = then.strftime("%H:%M");

@@ -14,7 +14,7 @@ use crate::paths::Paths;
 const STAMP_LEN: usize = 15;
 const SECS_PER_DAY: i64 = 86_400;
 
-fn parse_stamp(name: &str) -> Option<DateTime> {
+pub(crate) fn parse_stamp(name: &str) -> Option<DateTime> {
     let bytes = name.as_bytes();
     let shaped = bytes.len() == STAMP_LEN
         && bytes[8] == b'-'
