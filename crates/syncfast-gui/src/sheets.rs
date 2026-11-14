@@ -126,6 +126,11 @@ impl Sheets {
     pub fn apply(&mut self, action: &Action, around: &Surroundings<'_>) -> Vec<Command> {
         match action {
             Action::AddSync => self.open_add_sync(AddSyncState::default()),
+            Action::AddSyncAt(folder) => {
+                let mut state = AddSyncState::default();
+                state.picked_local(folder);
+                self.open_add_sync(state)
+            }
             Action::OpenReview(id) => self.open_review(id, around),
             Action::AddAccount => self.open_account(AccountMode::Add, around),
             Action::ReconnectAccount(name) => {

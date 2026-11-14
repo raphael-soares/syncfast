@@ -301,6 +301,8 @@ pub enum Action {
     ResizeSidebar(f32),
     /// Opens the Add Sync sheet.
     AddSync,
+    /// Opens the Add Sync sheet on this folder.
+    AddSyncAt(PathBuf),
     NewBackup,
     AddExistingBackup,
     /// Asks to show the key of a backup (the alert decides; a backup whose

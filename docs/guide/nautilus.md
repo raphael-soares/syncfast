@@ -1,6 +1,6 @@
 # Nautilus emblems
 
-Optional. On Arch Linux with Nautilus, the **syncfast-nautilus** package shows the sync state of every file and folder in your synced folders, adds a **Sync** column to the list view and **Sync Now** to the right-click menu. It does not work on other distributions or file managers. syncfast works fully without it.
+Optional. On Arch Linux with Nautilus, the **syncfast-nautilus** package shows the sync state of every file and folder in your synced folders, adds a **Sync** column to the list view, and adds **Sync Now** and **Sync with Google Drive…** to the right-click menu. It does not work on other distributions or file managers. syncfast works fully without it.
 
 ## Install
 
@@ -30,4 +30,8 @@ In the list view, open the view menu, choose **Visible Columns…** and turn on 
 
 Right-click a synced folder, or a file or folder inside one, and choose **Sync Now** to start a round of that sync without waiting for the timer. The menu does not appear outside synced folders.
 
-If no emblem and no menu appear, syncfast is not running: start it and they come back by themselves.
+If no emblem and no Sync Now appear, syncfast is not running: start it and they come back by themselves.
+
+## Sync with Google Drive…
+
+Right-click one folder that is not synced yet and choose **Sync with Google Drive…**. syncfast opens New Sync with that folder already filled in; pick the account and confirm. The item does not appear on a file, on more than one item, or on a folder that is inside a sync or holds one.

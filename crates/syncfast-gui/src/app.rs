@@ -563,6 +563,10 @@ impl App {
                         self.actions.push(Action::OpenReview(id));
                     }
                 }
+                Request::AddSync(folder) => {
+                    self.actions.push(Action::ShowWindow);
+                    self.actions.push(Action::AddSyncAt(folder));
+                }
             }
         }
     }
@@ -786,6 +790,7 @@ impl App {
                 }
             }
             Action::AddSync
+            | Action::AddSyncAt(_)
             | Action::OpenReview(_)
             | Action::AddAccount
             | Action::ReconnectAccount(_)
@@ -1154,6 +1159,22 @@ mod tests {
                 "{gate:?}"
             );
         }
+    }
+
+    #[test]
+    fn sync_with_google_drive_from_the_file_manager_shows_the_window_and_the_new_sync_sheet() {
+        let (_dir, mut app) = app();
+        app.inbox
+            .push(Request::AddSync("/home/ada/My Notes".into()));
+        app.drain_inbox();
+
+        assert_eq!(
+            app.actions,
+            [
+                Action::ShowWindow,
+                Action::AddSyncAt("/home/ada/My Notes".into())
+            ]
+        );
     }
 
     #[test]

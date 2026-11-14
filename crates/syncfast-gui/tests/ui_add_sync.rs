@@ -9,7 +9,7 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use syncfast_core::behavior::SyncMode;
 use syncfast_core::state::DisplayStatus;
-use syncfast_gui::backend::Event;
+use syncfast_gui::backend::{Command, Event};
 use syncfast_gui::sheets::{Sheets, Surroundings};
 use syncfast_gui::theme::{self, Palette};
 use syncfast_gui::ui::account_sheet::AccountAction;
@@ -1035,17 +1035,7 @@ fn a_filter_test_of_another_sync_is_not_shown() {
     assert!(!shown(&harness, "nope"));
 }
 
-#[test]
-fn cancelling_connect_google_drive_brings_the_sheet_back_as_it_was() {
-    let around = Surroundings {
-        pairs: &[],
-        welcome: false,
-    };
-    let mut sheets = Sheets::new("/home/ada".into(), "/home/ada/.local/share/syncfast".into());
-    sheets.apply(&Action::AddSync, &around);
-    sheets.handle_event(&Event::FolderPicked(Some("/home/ada/Picked".into())));
-    sheets.apply(&Action::AddAccount, &around);
-    sheets.apply(&Action::Account(AccountAction::Cancel), &around);
+fn sheets_harness(sheets: Sheets) -> Harness<'static, Sheets> {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(960.0, 640.0))
         .build_ui_state(
@@ -1057,7 +1047,37 @@ fn cancelling_connect_google_drive_brings_the_sheet_back_as_it_was() {
             sheets,
         );
     harness.run_ok();
+    harness
+}
+
+#[test]
+fn cancelling_connect_google_drive_brings_the_sheet_back_as_it_was() {
+    let around = Surroundings {
+        pairs: &[],
+        welcome: false,
+    };
+    let mut sheets = Sheets::new("/home/ada".into(), "/home/ada/.local/share/syncfast".into());
+    sheets.apply(&Action::AddSync, &around);
+    sheets.handle_event(&Event::FolderPicked(Some("/home/ada/Picked".into())));
+    sheets.apply(&Action::AddAccount, &around);
+    sheets.apply(&Action::Account(AccountAction::Cancel), &around);
+    let harness = sheets_harness(sheets);
 
     let field = harness.get_by_role_and_label(Role::TextInput, "Folder on this computer");
     assert_eq!(field.value().as_deref(), Some("/home/ada/Picked"));
+}
+
+#[test]
+fn add_sync_at_opens_the_sheet_with_the_folder() {
+    let around = Surroundings {
+        pairs: &[],
+        welcome: false,
+    };
+    let mut sheets = Sheets::new("/home/ada".into(), "/home/ada/.local/share/syncfast".into());
+    let commands = sheets.apply(&Action::AddSyncAt("/home/ada/My Notes".into()), &around);
+    let harness = sheets_harness(sheets);
+
+    assert_eq!(commands, [Command::LoadRemotes]);
+    let field = harness.get_by_role_and_label(Role::TextInput, "Folder on this computer");
+    assert_eq!(field.value().as_deref(), Some("/home/ada/My Notes"));
 }

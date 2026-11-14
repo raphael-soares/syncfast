@@ -1,12 +1,15 @@
-"""Nautilus emblems, a "Sync" column and "Sync Now" for syncfast.
+"""Nautilus emblems, a "Sync" column, "Sync Now" and "Sync with Google
+Drive…" for syncfast.
 
 Reads the status service that `syncfast watch` publishes on the session bus
 (io.github.raphael_soares.syncfast.Status). Every file and folder inside a
 sync gets an emblem for its state (synced, waiting, syncing, failed or in
 conflict), and the list view can show the same state as text in the "Sync"
 column. What the filters leave out gets neither. Without the service there
-are no emblems and no menu. The D-Bus calls are asynchronous and the file
-callbacks only read a cache.
+are no emblems and no "Sync Now". "Sync with Google Drive…" opens syncfast's
+New Sync sheet on one selected folder that is outside every sync and holds
+none. The D-Bus calls are asynchronous and the file callbacks only read a
+cache.
 """
 
 import os
@@ -16,6 +19,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 BUS_NAME = "io.github.raphael_soares.syncfast.Status"
 OBJECT_PATH = "/io/github/raphael_soares/syncfast/Status"
 INTERFACE = BUS_NAME
+APP_ID = "io.github.raphael_soares.syncfast"
 
 EMBLEMS = {
     "synced": "emblem-default",
@@ -82,6 +86,22 @@ class StatusCache:
 def changed_paths(old: StatusCache, new: StatusCache) -> List[str]:
     candidates = set(old.roots) | set(new.roots)
     return sorted(p for p in candidates if old.root_state(p) != new.root_state(p))
+
+
+def add_sync_target(
+    cache: StatusCache, items: Sequence[Tuple[Optional[str], bool]]
+) -> Optional[str]:
+    """The folder to offer "Sync with Google Drive…" for: the selection is
+    one local folder, not inside a sync and not holding one. `items` are
+    (local path or None, is a folder)."""
+    if len(items) != 1:
+        return None
+    path, is_folder = items[0]
+    if path is None or not is_folder:
+        return None
+    if any(inside(root, path) or inside(path, root) for root in cache.roots):
+        return None
+    return path
 
 
 class DirectoryCache:
@@ -186,6 +206,7 @@ def _local_path(file_info) -> Optional[str]:
 
 
 if Nautilus is not None:
+    import subprocess
     import time
 
     _PROVIDERS = [GObject.GObject, Nautilus.InfoProvider, Nautilus.MenuProvider]
@@ -247,7 +268,21 @@ if Nautilus is not None:
 
         def get_file_items(self, files):
             paths = [p for p in map(_local_path, files) if p]
-            return self._menu(self._cache.sync_target(paths))
+            items = self._menu(self._cache.sync_target(paths))
+            folder = add_sync_target(
+                self._cache, [(_local_path(f), f.is_directory()) for f in files]
+            )
+            if folder is not None:
+                item = Nautilus.MenuItem(
+                    name="SyncfastExtension::add_sync",
+                    label="Sync with Google Drive…",
+                )
+                item.connect("activate", self._on_add_sync, folder)
+                items.append(item)
+            return items
+
+        def _on_add_sync(self, _item, path: str) -> None:
+            subprocess.Popen(["flatpak", "run", APP_ID, "add-sync", path])
 
         def get_background_items(self, folder):
             path = _local_path(folder)
