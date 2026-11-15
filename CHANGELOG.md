@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.0](https://github.com/raphael-soares/syncfast/compare/v0.22.1...v0.23.0) (2026-11-15)
+
+
+### Features
+
+* **dolphin:** adicionar emblemas e menu de sync no Dolphin ([#123](https://github.com/raphael-soares/syncfast/issues/123)) ([67efb89](https://github.com/raphael-soares/syncfast/commit/67efb89bec33e92ccb92c6bcf7ac6818ed5df6bf))
+
 ## [0.22.1](https://github.com/raphael-soares/syncfast/compare/v0.22.0...v0.22.1) (2026-11-14)
 
 
