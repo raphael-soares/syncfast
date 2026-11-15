@@ -60,3 +60,7 @@ pin-restic version:
 
 hooks:
     lefthook install
+
+# Builds and tests the Dolphin plugin; needs cmake, extra-cmake-modules, the Qt 6 and KF6 KIO headers, and dbus-run-session.
+dolphin-check:
+    cmake -S packaging/dolphin -B target/dolphin -DCMAKE_BUILD_TYPE=Debug && cmake --build target/dolphin && dbus-run-session -- ctest --test-dir target/dolphin --output-on-failure

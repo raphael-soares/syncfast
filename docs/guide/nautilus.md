@@ -1,6 +1,6 @@
 # Nautilus emblems
 
-Optional. On Arch Linux with Nautilus, the **syncfast-nautilus** package shows the sync state of every file and folder in your synced folders, adds a **Sync** column to the list view, and adds **Sync Now** and **Sync with Google Drive…** to the right-click menu. It does not work on other distributions or file managers. syncfast works fully without it.
+Optional. On Arch Linux with Nautilus, the **syncfast-nautilus** package shows the sync state of every file and folder in your synced folders, adds a **Sync** column to the list view, and adds **Sync Now** and **Sync with Google Drive…** to the right-click menu. For Dolphin, see [Dolphin emblems](dolphin.md). syncfast works fully without either.
 
 ## Install
 

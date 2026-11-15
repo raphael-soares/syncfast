@@ -1,0 +1,8 @@
+{
+    "KPlugin": {
+        "Description": "Sync state emblems from syncfast",
+        "ServiceTypes": [
+            "KOverlayIconPlugin"
+        ]
+    }
+}
