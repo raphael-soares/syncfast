@@ -23,7 +23,7 @@
 - **Two-way or a copy.** Changes go both ways, or files only go up to Drive and nothing on your computer is touched. A sync starts seconds after you save, and also runs on a schedule.
 - **No surprise deletions.** The first sync tells you in one sentence what it will copy and delete, and waits for your OK. Later, a round that would delete files with no way back stops and asks. Whatever a sync deleted or replaced shows in **Recently Deleted**, one click from coming back.
 - **Encrypted backups.** Keep versioned snapshots of the folders you choose on Drive or on a disk, encrypted with a key only you have, and restore any of them.
-- **Quiet in the background.** A tray icon, a notification when something needs you, and on Nautilus, sync emblems and a **Sync with Google Drive…** menu item.
+- **Quiet in the background.** A tray icon, a notification when something needs you, and on Nautilus or Dolphin, sync emblems and a **Sync with Google Drive…** menu item.
 
 ## Why not something else
 
@@ -59,7 +59,7 @@ flatpak run io.github.raphael_soares.syncfast
   <img src="assets/screenshot-review.png" alt="Check Before Syncing: one sentence says what the first sync will copy and that nothing will be deleted" width="45%">
 </p>
 
-The full walkthrough is in [Getting started](docs/guide/getting-started.md), backups in [Backups](docs/guide/backup.md). If something stops, see [Troubleshooting](docs/guide/troubleshooting.md). What syncfast sends and stores is in [Privacy](docs/guide/privacy.md). On Arch with Nautilus, [emblems and the menu items](docs/guide/nautilus.md) are optional.
+The full walkthrough is in [Getting started](docs/guide/getting-started.md), backups in [Backups](docs/guide/backup.md). If something stops, see [Troubleshooting](docs/guide/troubleshooting.md). What syncfast sends and stores is in [Privacy](docs/guide/privacy.md). Emblems and the menu items in the file manager are optional: [Nautilus on Arch](docs/guide/nautilus.md) or [Dolphin](docs/guide/dolphin.md).
 
 <p align="center">
   <img src="assets/screenshot-backup.png" alt="A backup of three folders to Google Drive with its snapshots" width="720">
