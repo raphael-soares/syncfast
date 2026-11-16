@@ -13,13 +13,18 @@ use jiff::civil::DateTime;
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp, Zoned};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::behavior::{Behavior, SyncMode};
 use crate::config::{Pair, split_remote};
 use crate::conflicts::{copy_without_overwriting, occupied, split_extension};
+use crate::drive_api::{DriveClient, DriveError, Method};
+use crate::gdocs::plan::folder_of;
+use crate::gdocs::remote::files_scope;
+use crate::gdocs::{link, remote_path};
 use crate::oneway::{REMOTE_VERSIONS_DIR, remote_versions_dir};
 use crate::paths::Paths;
-use crate::rclone::{DRIVE_TYPE, Rclone, RcloneError};
+use crate::rclone::{Rclone, RcloneError, TrashedEntry};
 use crate::versions::parse_stamp;
 
 const SECS_PER_DAY: i64 = 86_400;
@@ -72,6 +77,8 @@ pub struct DeletedList {
 pub enum DeletedError {
     #[error("nothing to restore under {0}")]
     NotFound(String),
+    #[error(transparent)]
+    Drive(#[from] DriveError),
     #[error(transparent)]
     Rclone(#[from] RcloneError),
     #[error(transparent)]
@@ -268,11 +275,7 @@ async fn on_drive(rclone: &Rclone, pair: &Pair) -> Result<Option<String>, Rclone
     let Some((account, _)) = split_remote(&pair.remote) else {
         return Ok(None);
     };
-    let drive = rclone
-        .remote_types()
-        .await?
-        .iter()
-        .any(|(name, kind)| name == account && kind == DRIVE_TYPE);
+    let drive = rclone.is_drive(account).await?;
     Ok(drive.then(|| account.to_owned()))
 }
 
@@ -393,11 +396,72 @@ async fn restore_drive(
         .find(|entry| entry.id == id && !in_remote_versions(&entry.path))
         .ok_or_else(not_found)?;
     let relative = plain_relative(Path::new(&entry.path)).ok_or_else(not_found)?;
+    if entry.size < 0 {
+        return untrash(rclone, pair, account, &entry).await;
+    }
     let now = Zoned::now().datetime();
     fetch_and_place(paths, pair, relative, now, |fetched| async move {
         rclone.copy_id(&account, &entry.id, &fetched).await
     })
     .await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Untrashed {
+    name: String,
+    mime_type: String,
+}
+
+#[derive(Deserialize)]
+struct Parents {
+    #[serde(default)]
+    parents: Vec<String>,
+}
+
+/// A native Google file (rclone lists it with size -1) cannot be
+/// downloaded: it leaves the trash into the folder at its old path, made
+/// again when missing, since a trashed folder stays trashed. The round the
+/// restore starts writes its link.
+async fn untrash(
+    rclone: &Rclone,
+    pair: &Pair,
+    account: String,
+    entry: &TrashedEntry,
+) -> Result<String, DeletedError> {
+    let folder = folder_of(&entry.path);
+    if !folder.is_empty() {
+        rclone.mkdir(&remote_path(&pair.remote, folder)).await?;
+    }
+    let mut client = DriveClient::new(rclone.clone(), account);
+    let target = client
+        .pair_folders(&pair.remote)
+        .await?
+        .into_iter()
+        .find(|known| known.path == folder)
+        .map(|known| known.id)
+        .ok_or_else(|| DriveError::FolderMissing(folder.to_owned()))?;
+    let file = format!("/files/{}", entry.id);
+    let mut query = files_scope(&client, false);
+    query.push(("fields", "parents".to_owned()));
+    let Parents { parents } = client.get(file.clone(), query).await?;
+    let mut query = files_scope(&client, false);
+    query.push(("fields", "name,mimeType".to_owned()));
+    if !parents.contains(&target) {
+        query.push(("addParents", target));
+        query.push(("removeParents", parents.join(",")));
+    }
+    let restored: Untrashed = client
+        .send_json(Method::Patch, file, query, json!({"trashed": false}))
+        .await?;
+    let Some(kind) = link::kind_of_mime(&restored.mime_type) else {
+        return Ok(entry.path.clone());
+    };
+    let name = link::file_name(&restored.name, None, kind.ext);
+    Ok(match folder {
+        "" => name,
+        folder => format!("{folder}/{name}"),
+    })
 }
 
 /// Downloads with `fetch` into syncfast's own data folder first, so a failed

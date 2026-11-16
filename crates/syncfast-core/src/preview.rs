@@ -9,7 +9,8 @@ use crate::behavior::{Behavior, SyncMode};
 use crate::bisync::{ReviewKind, RoundMode, bisync_args, log_file};
 use crate::bisync_log::{Change, ChangeKind, RunSummary, summarize};
 use crate::config::Pair;
-use crate::filters::{self, FiltersFile};
+use crate::filters::{self, DirMatcher, FiltersFile};
+use crate::gdocs::{self, Phase};
 use crate::listing::{LastSync, last_sync};
 use crate::notify::last_error_message;
 use crate::oneway::{self, oneway_args, summarize_oneway};
@@ -230,11 +231,27 @@ pub(crate) async fn preview_locked(
         );
         return Err(PreviewError::Failed { exit_code, message });
     }
-    let summary = if one_way {
+    let mut summary = if one_way {
         summarize_oneway(&changes, &lines, behavior.mode, exit_code)
     } else {
         summarize(&lines)
     };
+    if !one_way && behavior.google_docs {
+        let matcher = DirMatcher::new(&filters_file.rendered);
+        let at = env.now();
+        let cx = gdocs::Context {
+            paths: env.paths,
+            rclone: env.rclone,
+            pair,
+            behavior,
+            matcher: &matcher,
+            now: &at,
+        };
+        match gdocs::reconcile(cx, Phase::DryRun).await {
+            Ok(docs) => docs.add_to(&mut summary),
+            Err(err) => log::warn!("{pair_id}: Google Docs: {err}"),
+        }
+    }
     let returning = match (one_way, kind) {
         (false, ReviewKind::Resync) => last_sync(&env.paths.bisync_workdir(pair_id))
             .map(|last| coming_back(&summary.changes, &last))

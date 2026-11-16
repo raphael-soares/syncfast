@@ -22,7 +22,7 @@
 - A failure is judged by the log of the run that just ended. Listings count as lost only when some `X.lst-err` has no `X.lst` beside it (rclone renamed it in this run); a stale `.lst-err` next to a valid listing is ignored. A subfolder that vanished while rclone listed it (`error reading source directory` or `error reading destination directory` on a named object) is `Transient`: the next round lists the new state.
 - A local folder emptied behind the pair's back (an unmounted drive) deletes nothing on the remote: rclone refuses an empty current listing (`Empty current Path1 listing`, exit 7), and that is `Fault::LocalEmpty`, a `needs_attention` gate at once. Covered by `an_emptied_local_folder_needs_attention_at_once_and_the_remote_keeps_every_file`.
 - A failure the user can fix (account, quota, permission, missing remote folder, or transient failures lasting over 6 hours) sets `needs_attention`, the one gate that does not stop rounds. A `state.json` that is not valid JSON is set aside as `state.json.corrupt-<stamp>` and the pair goes back to its first review. A bisync workdir that cannot be read (other than being absent) counts as lost listings.
-- Google Docs are skipped (`--drive-skip-gdocs`). It is not a setting: the phase 2 spike rejected an `export` or `url` key (ADR 0010).
+- Google files never enter rclone (`--drive-skip-gdocs`, link files filtered); syncfast keeps them as link files by Drive ID (ADR 0010).
 
 ## Consequences
 - Some rounds stop and wait for the user; the UI and tray say so.

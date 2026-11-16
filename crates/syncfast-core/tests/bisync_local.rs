@@ -419,6 +419,27 @@ async fn new_local_file_is_uploaded_and_counted() {
 }
 
 #[tokio::test]
+async fn link_files_stay_local_even_when_a_filter_admits_them() {
+    let Some(bed) = bed() else { return };
+    bed.write_config(true, &["+ *.html", "- *"]);
+    write(&bed.local, "a.gdoc.html", "link");
+    write(&bed.local, "c.html", "page");
+
+    bed.first_sync().await;
+    let report = bed.run().await;
+
+    assert_eq!(
+        report,
+        RunReport::Ran {
+            mode: RoundMode::Normal,
+            outcome: Outcome::Ok
+        }
+    );
+    assert_eq!(names(&bed.remote), ["c.html"]);
+    assert_eq!(read(&bed.local, "a.gdoc.html"), "link");
+}
+
+#[tokio::test]
 async fn new_local_file_in_a_pair_that_started_empty_on_both_sides_reaches_the_remote() {
     let Some(bed) = bed() else { return };
     assert_eq!(
