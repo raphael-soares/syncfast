@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Captures how `rclone bisync` treats Google Docs, for the phase 2 spike.
+# Captures how `rclone bisync` treats Google Docs (export and link files).
 # Usage: capture_gdocs.sh <remote> <folder>
 # Runs against a REAL Google Drive: it creates <remote>:<folder> and purges it
 # at the end. It refuses to start when that folder already holds anything.
@@ -45,7 +45,9 @@ cleanup() {
 trap cleanup EXIT
 
 export_flags=(--drive-export-formats docx,xlsx,pptx,svg)
-url_flags=(--drive-export-formats url)
+link_flags=()
+ext=""
+rename_flags=(--track-renames --track-renames-strategy hash,modtime --max-delete-renames-aware)
 
 office() {
   python3 - "$@" <<'PY'
@@ -94,18 +96,23 @@ seed_docs() {
 }
 
 # Flags are the ones the app sends minus --drive-skip-gdocs, --max-delete and
-# --backup-dir1, which the scenarios that study them add themselves.
+# --backup-dir1, which the scenarios that study them add themselves. Renames
+# are tracked only outside resync, as in the app.
 bisync() {
   local log="$1"
   shift
+  local renames=()
+  if [[ " $* " != *" --resync "* ]]; then
+    renames=("${rename_flags[@]}")
+  fi
   rclone bisync "$root/local" "$remote_dir" \
     --workdir "$root/state/" \
     --resilient --recover --max-lock 2m \
     --conflict-resolve newer --conflict-loser num \
-    --create-empty-src-dirs \
+    --create-empty-src-dirs --drive-use-trash \
     --stats 2s --stats-log-level NOTICE \
     --use-json-log --log-file "$log" -v \
-    "$@"
+    "${renames[@]}" "$@"
 }
 
 prepare() {
@@ -198,14 +205,39 @@ edit_local() {
   fi
 }
 
-edit_local_url() {
-  setup url_edit_local
+# $1 scenario, $2 local link the heal removes, $3 function that changes the disk.
+link_case() {
+  local name="$1" heal="$2" mutate="$3"
+  setup "$name"
   seed_docs
-  prepare "${url_flags[@]}"
-  printf '[InternetShortcut]\nURL=https://example.invalid/edited\n' > "$root/local/notes.url"
-  capture url_edit_local "${url_flags[@]}"
-  capture url_edit_local_recover --resync --resync-mode newer "${url_flags[@]}"
+  prepare "${link_flags[@]}"
+  "$mutate"
+  capture "$name" "${link_flags[@]}"
+  if [[ "$(cat "$out/$name.exit")" -eq 0 ]]; then
+    again "$name" "${link_flags[@]}"
+  else
+    capture "${name}_recover" --resync --resync-mode newer "${link_flags[@]}"
+    rm -f "$root/local/$heal"
+    capture "${name}_heal" --resync --resync-mode newer "${link_flags[@]}"
+    again "${name}_heal" "${link_flags[@]}"
+  fi
 }
+
+link_body() {
+  case "$ext" in
+    desktop) printf '[Desktop Entry]\nType=Link\nName=%s\nURL=%s\n' "$1" "$2" ;;
+    url) printf '[InternetShortcut]\nURL=%s\n' "$2" ;;
+    link.html) printf '<html><head><meta http-equiv="refresh" content="0; url=%s"/></head></html>\n' "$2" ;;
+  esac
+}
+edit_link() { link_body notes https://example.invalid/edited > "$root/local/notes.$ext"; }
+rename_link() { mv "$root/local/notes.$ext" "$root/local/notes-renamed.$ext"; }
+move_link() {
+  mkdir -p "$root/local/moved"
+  mv "$root/local/notes.$ext" "$root/local/moved/notes.$ext"
+}
+new_link() { link_body fresh https://example.invalid/fresh > "$root/local/fresh.$ext"; }
+copy_link() { cp "$root/local/notes.$ext" "$root/local/notes-copy.$ext"; }
 
 edit_remote() {
   local prefix="$1"
@@ -305,6 +337,20 @@ under_cap() {
     --max-delete 50 --backup-dir1 "$root/backup/" "$@"
 }
 
+folder_only_docs() {
+  local prefix="$1"
+  shift
+  local name="${prefix}_delete_local_folder_only_docs"
+  setup "$name"
+  seed_docs
+  office docx "$root/only.docx" "only doc"
+  rclone copyto --drive-import-formats docx "$root/only.docx" "$remote_dir/only-docs/only.docx"
+  prepare "$@"
+  rm -rf "$root/local/only-docs"
+  capture "$name" "$@"
+  again "$name" "$@"
+}
+
 skip_baseline() {
   setup skip_baseline
   seed_docs
@@ -314,33 +360,38 @@ skip_baseline() {
 }
 
 first_sync export "${export_flags[@]}"
-first_sync url "${url_flags[@]}"
-
 edit_local export_edit_local_no_import notes.docx docx - "${export_flags[@]}"
 edit_local export_edit_local_import notes.docx docx docx "${export_flags[@]}"
 edit_local export_edit_local_import_xlsx budget.xlsx xlsx docx,xlsx "${export_flags[@]}"
-edit_local_url
-
 edit_remote export "${export_flags[@]}"
-edit_remote url "${url_flags[@]}"
 edit_both
 edit_both_no_import
-
 no_changes export "${export_flags[@]}"
-no_changes url "${url_flags[@]}"
-
 new_local export_new_local_no_import - "${export_flags[@]}"
 new_local export_new_local_import docx "${export_flags[@]}"
-
 delete_local export notes.docx "${export_flags[@]}"
-delete_local url notes.url "${url_flags[@]}"
-
 rename_remote export "${export_flags[@]}"
-rename_remote url "${url_flags[@]}"
-
 over_cap export notes.docx plan.docx budget.xlsx "${export_flags[@]}"
-over_cap url notes.url plan.url budget.url "${url_flags[@]}"
 under_cap export "${export_flags[@]}"
-under_cap url "${url_flags[@]}"
+
+for ext in desktop url link.html; do
+  p="${ext/./_}"
+  link_flags=(--drive-export-formats "$ext")
+  first_sync "$p" "${link_flags[@]}"
+  link_case "${p}_edit_local" "notes.$ext" edit_link
+  link_case "${p}_rename_local" "notes-renamed.$ext" rename_link
+  link_case "${p}_move_local" "moved/notes.$ext" move_link
+  link_case "${p}_new_local_link" "fresh.$ext" new_link
+  link_case "${p}_copy_local" "notes-copy.$ext" copy_link
+  edit_remote "$p" "${link_flags[@]}"
+  no_changes "$p" "${link_flags[@]}"
+  delete_local "$p" "notes.$ext" "${link_flags[@]}"
+  rename_remote "$p" "${link_flags[@]}"
+  over_cap "$p" "notes.$ext" "plan.$ext" "budget.$ext" "${link_flags[@]}"
+  under_cap "$p" "${link_flags[@]}"
+  folder_only_docs "$p" "${link_flags[@]}"
+done
+
+folder_only_docs skip --drive-skip-gdocs
 
 skip_baseline

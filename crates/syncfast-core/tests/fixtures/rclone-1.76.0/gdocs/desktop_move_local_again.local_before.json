@@ -1,0 +1,7 @@
+[
+{"Path":"budget.desktop","Name":"budget.desktop","Size":185,"MimeType":"application/x-link-desktop","ModTime":"2026-11-16T16:17:56.217000000-03:00","IsDir":false},
+{"Path":"moved","Name":"moved","Size":60,"MimeType":"inode/directory","ModTime":"2026-11-16T16:18:01.202467082-03:00","IsDir":true},
+{"Path":"plain.txt","Name":"plain.txt","Size":9,"MimeType":"text/plain; charset=utf-8","ModTime":"2026-11-16T16:17:50.547000000-03:00","IsDir":false},
+{"Path":"plan.desktop","Name":"plan.desktop","Size":176,"MimeType":"application/x-link-desktop","ModTime":"2026-11-16T16:17:56.729000000-03:00","IsDir":false},
+{"Path":"moved/notes.desktop","Name":"notes.desktop","Size":177,"MimeType":"application/x-link-desktop","ModTime":"2026-11-16T16:17:55.981000000-03:00","IsDir":false}
+]
