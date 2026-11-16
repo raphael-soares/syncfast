@@ -17,7 +17,7 @@ Two spikes against a real Drive settled what rclone can do. The first (rclone 1.
 
 ## Consequences
 - Rename, move, share and comment history of a Doc survive any change made through its link, because the file keeps its ID.
-- The Drive token needs the full `drive` scope (rclone's default) for the trash, rename, move and copy calls. Without it those calls fail per file and the links are still written.
+- The Drive token needs the full `drive` scope (rclone's default) for the trash, rename, move and copy calls. Without it the Drive part stops at the first refusal and logs it once per round; links are still written.
 - A failed Drive listing skips the Docs for that round; rclone still runs.
 - A `gdocs.json` that is not valid JSON is set aside as `gdocs.json.corrupt-<stamp>`; the next round adopts the links where Drive has them and changes nothing on Drive for the lost entries.
 - An rclone upgrade may change link or filter handling. Rerun `tests/capture_gdocs.sh` against a test folder before relying on it.

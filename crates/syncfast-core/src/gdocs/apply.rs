@@ -280,6 +280,13 @@ impl Drive<'_> {
             };
             match done {
                 Ok(()) => outcome.record(action),
+                Err(err) if lacks_scope(&err) => {
+                    log::warn!(
+                        "{}: Google Docs: {err}. Changing Google files needs the account's full drive scope; links are still written.",
+                        self.cx.pair.id
+                    );
+                    break;
+                }
                 Err(err) => outcome.error(action_path(action), failure(action, &err)),
             }
         }
@@ -437,6 +444,15 @@ fn failure(action: &Action, err: &DocsError) -> String {
     }
 }
 
+fn lacks_scope(err: &DocsError) -> bool {
+    matches!(
+        err,
+        DocsError::Drive(DriveError::Http { status: 403, message })
+            if message.contains("insufficient authentication scopes")
+                || message.contains("Insufficient Permission")
+    )
+}
+
 fn write_link(path: &Path, text: &str, read_only: bool) -> std::io::Result<()> {
     fastframe_file::write(path, text)?;
     if read_only {
@@ -584,6 +600,26 @@ mod tests {
         assert_eq!(remote_path("gd:Notes", "a/b"), "gd:Notes/a/b");
         assert_eq!(remote_path("gd:", "a"), "gd:a");
         assert_eq!(remote_path("gd:Notes", ""), "gd:Notes");
+    }
+
+    #[test]
+    fn only_a_missing_scope_stops_the_drive_part() {
+        let refused = |message: &str| {
+            DocsError::Drive(DriveError::Http {
+                status: 403,
+                message: message.into(),
+            })
+        };
+
+        assert!(lacks_scope(&refused(
+            "Request had insufficient authentication scopes."
+        )));
+        assert!(lacks_scope(&refused(
+            "Insufficient Permission: Request had insufficient authentication scopes."
+        )));
+        assert!(!lacks_scope(&refused(
+            "The user does not have sufficient permissions for this file."
+        )));
     }
 
     #[test]
