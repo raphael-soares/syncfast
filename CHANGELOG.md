@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.0](https://github.com/raphael-soares/syncfast/compare/v0.23.0...v0.24.0) (2026-11-16)
+
+
+### Features
+
+* **gdocs:** mostrar Google Docs como links mantidos pelo ID do Drive ([#126](https://github.com/raphael-soares/syncfast/issues/126)) ([03e4fc4](https://github.com/raphael-soares/syncfast/commit/03e4fc46b9f86d6290252fc8784e710efe8085d8))
+
 ## [0.23.0](https://github.com/raphael-soares/syncfast/compare/v0.22.1...v0.23.0) (2026-11-15)
 
 
