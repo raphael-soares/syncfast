@@ -95,13 +95,6 @@ impl ConflictLoser {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GoogleDocs {
-    Skip,
-    Export,
-    Url,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResyncMode {
     Newer,
     Older,
@@ -262,6 +255,7 @@ impl Bandwidth {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools, reason = "one switch per setting key")]
 pub struct Behavior {
     pub watch: bool,
     pub debounce: Duration,
@@ -273,7 +267,8 @@ pub struct Behavior {
     pub conflict_loser: ConflictLoser,
     pub versions: bool,
     pub versions_keep_days: u32,
-    pub google_docs: GoogleDocs,
+    /// Native Google files appear on disk as link files (ADR 0010).
+    pub google_docs: bool,
     /// Percentage for `--max-delete`.
     pub max_delete: u8,
     pub resync_mode: ResyncMode,
@@ -315,7 +310,7 @@ impl Default for Behavior {
             conflict_loser: ConflictLoser::Num,
             versions: true,
             versions_keep_days: 30,
-            google_docs: GoogleDocs::Skip,
+            google_docs: true,
             max_delete: 50,
             resync_mode: ResyncMode::Newer,
             mode: SyncMode::Bisync,
@@ -436,7 +431,7 @@ mod tests {
         assert_eq!(behavior.conflict_loser, ConflictLoser::Num);
         assert!(behavior.versions);
         assert_eq!(behavior.versions_keep_days, 30);
-        assert_eq!(behavior.google_docs, GoogleDocs::Skip);
+        assert!(behavior.google_docs);
         assert_eq!(behavior.max_delete, 50);
         assert_eq!(behavior.resync_mode, ResyncMode::Newer);
         assert!(behavior.empty_dirs);

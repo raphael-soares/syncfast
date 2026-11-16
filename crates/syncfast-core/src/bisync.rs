@@ -8,9 +8,10 @@ use std::path::{Path, PathBuf};
 use jiff::Zoned;
 use serde::{Deserialize, Serialize};
 
-use crate::behavior::{Bandwidth, Behavior, ConflictLoser, GoogleDocs};
+use crate::behavior::{Bandwidth, Behavior, ConflictLoser};
 use crate::bisync_log::LogLine;
 use crate::config::Pair;
+use crate::gdocs::LINK_FILTER;
 use crate::paths::Paths;
 
 const MAX_LOCK: &str = "2m";
@@ -182,6 +183,8 @@ pub fn bisync_args(
         "bisync".into(),
         pair.local.clone().into_os_string(),
         pair.remote.clone().into(),
+        "--filter".into(),
+        LINK_FILTER.into(),
         "--filters-file".into(),
         paths.filters_file(id).into_os_string(),
         "--workdir".into(),
@@ -208,9 +211,7 @@ pub fn bisync_args(
     if behavior.empty_dirs {
         args.push("--create-empty-src-dirs".into());
     }
-    if behavior.google_docs == GoogleDocs::Skip {
-        args.push("--drive-skip-gdocs".into());
-    }
+    args.push("--drive-skip-gdocs".into());
     if behavior.versions {
         let backup = paths.versions_dir(id).join(stamp(now));
         args.extend(["--backup-dir1".into(), dir_arg(&backup)]);
@@ -453,10 +454,12 @@ mod tests {
             .collect()
     }
 
-    const COMMON: [&str; 29] = [
+    const COMMON: [&str; 31] = [
         "bisync",
         "/home/ada/Drive",
         "gdrive:Notes",
+        "--filter",
+        "- *.{gdoc,gsheet,gslides,gform,gdraw,gmap,gsite}.html*",
         "--filters-file",
         "/s/syncfast/filters/drive.txt",
         "--workdir",
@@ -726,7 +729,6 @@ mod tests {
         let behavior = Behavior {
             versions: false,
             empty_dirs: false,
-            google_docs: GoogleDocs::Export,
             ..Behavior::default()
         };
 
@@ -734,7 +736,6 @@ mod tests {
 
         assert!(!args.contains(&"--backup-dir1".to_owned()));
         assert!(!args.contains(&"--create-empty-src-dirs".to_owned()));
-        assert!(!args.contains(&"--drive-skip-gdocs".to_owned()));
     }
 
     fn workdir_with(names: &[&str]) -> tempfile::TempDir {

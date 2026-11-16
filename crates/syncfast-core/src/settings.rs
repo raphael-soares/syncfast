@@ -151,7 +151,7 @@ fn downloads(mode: SyncMode) -> bool {
 }
 
 /// In the order the docs and `settings` list them.
-pub static KEYS: [KeyDef; 15] = [
+pub static KEYS: [KeyDef; 16] = [
     KeyDef {
         name: "watch",
         per_sync_only: false,
@@ -282,6 +282,16 @@ pub static KEYS: [KeyDef; 15] = [
         access: Access::Bool {
             get: |behavior| behavior.empty_dirs,
             set: |behavior, value| behavior.empty_dirs = value,
+        },
+        lowers_safety: None,
+    },
+    KeyDef {
+        name: "google_docs",
+        per_sync_only: false,
+        applies_to: downloads,
+        access: Access::Bool {
+            get: |behavior| behavior.google_docs,
+            set: |behavior, value| behavior.google_docs = value,
         },
         lowers_safety: None,
     },
@@ -749,6 +759,7 @@ mod tests {
                 "max_delete=50",
                 "resync_mode=newer",
                 "empty_dirs=true",
+                "google_docs=true",
                 "review=deletions",
                 "mode=bisync",
             ]

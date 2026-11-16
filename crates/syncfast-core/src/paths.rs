@@ -146,6 +146,12 @@ impl Paths {
         self.pair_state_dir(pair_id).join("confirm.json")
     }
 
+    /// The Google files a sync shows as links, by Drive id (ADR 0010).
+    #[must_use]
+    pub fn gdocs_file(&self, pair_id: &str) -> PathBuf {
+        self.pair_state_dir(pair_id).join("gdocs.json")
+    }
+
     /// The review an agent last looked at; `review confirm` only accepts it.
     #[must_use]
     pub fn preview_file(&self, pair_id: &str) -> PathBuf {

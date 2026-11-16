@@ -11,7 +11,7 @@ use rustix::process::{Pid, Signal};
 use tokio::process::Child;
 use tokio::signal::unix::{SignalKind, signal};
 
-use crate::behavior::{Behavior, GoogleDocs, ReviewLevel, SyncMode};
+use crate::behavior::{Behavior, ReviewLevel, SyncMode};
 use crate::bisync::{
     Fault, Outcome, RoundMode, bisync_args, classify, is_empty_prior_listing, log_file, stamp,
 };
@@ -19,6 +19,7 @@ use crate::bisync_log::{LogLine, RunSummary, read_log, summarize};
 use crate::config::{Config, GlobalConfigError, Pair, PairError, split_remote};
 use crate::conflicts::{Naming, find_conflicts};
 use crate::filters::{self, DirMatcher, FiltersError, FiltersFile};
+use crate::gdocs::{self, DocsOutcome, Phase};
 use crate::network::Network;
 use crate::notify::{Alert, Notice, Notifier, last_error_message, notice};
 use crate::oneway::{
@@ -27,7 +28,7 @@ use crate::oneway::{
 use crate::ops::views::review_kind;
 use crate::paths::Paths;
 use crate::preview::{ChangeCounts, PreviewError, preview_locked};
-use crate::rclone::{DRIVE_TYPE, Rclone, RcloneError};
+use crate::rclone::{Rclone, RcloneError};
 use crate::run_decision::{
     AutoReview, DecideInput, Decision, SkipReason, auto_review, decide, may_confirm,
 };
@@ -687,10 +688,8 @@ async fn deletions_recoverable(
     let Some((account, _)) = split_remote(&pair.remote) else {
         return false;
     };
-    match env.rclone.remote_types().await {
-        Ok(types) => types
-            .iter()
-            .any(|(name, kind)| name == account && kind == DRIVE_TYPE),
+    match env.rclone.is_drive(account).await {
+        Ok(drive) => drive,
         Err(err) => {
             log::warn!(
                 "{}: cannot tell whether {account} has a trash: {err}",
@@ -775,6 +774,19 @@ fn confirmable_cap(outcome: &Outcome, level: ReviewLevel) -> Option<GateKind> {
         _ => return None,
     };
     may_confirm(level, kind).then_some(kind)
+}
+
+/// A cap the review is about to settle is not announced.
+fn defer_cap_notices(
+    state: &mut State,
+    notices: &mut Vec<Notice>,
+    outcome: &Outcome,
+    defer_at: Option<ReviewLevel>,
+) {
+    if let Some(kind) = defer_at.and_then(|level| confirmable_cap(outcome, level)) {
+        notices.clear();
+        state.notified.retain(|key| *key != kind.notified_key());
+    }
 }
 
 struct Round<'a> {
@@ -869,17 +881,9 @@ impl Round<'_> {
         state.offline = false;
         state.save(env.paths, id).await?;
 
-        if let Some((outcome, detail)) = self.source_stops_the_round().await {
-            let ended = Ended {
-                exit_code: 1,
-                alerts: Vec::new(),
-                detail,
-                finished: env.now().timestamp(),
-                dest_files: None,
-            };
-            let notices = self.apply_outcome(state, &outcome, ended).await;
-            state.save(env.paths, id).await?;
-            send(env, notices);
+        let (stop, mut docs) = self.before_rclone(mode, &started).await;
+        if let Some((outcome, detail)) = stop {
+            self.stop(state, &outcome, detail, defer_at).await?;
             return Ok((mode, outcome));
         }
 
@@ -905,6 +909,10 @@ impl Round<'_> {
         let finished = env.now().timestamp();
         let behavior = self.behavior;
         let (outcome, mut summary) = self.judge(exit_code, &lines, &changes);
+        if self.shows_docs() && outcome == Outcome::Ok {
+            docs.merge(self.docs(Phase::Disk, &started).await);
+        }
+        docs.add_to(&mut summary);
         if mode == RoundMode::Normal && auto_reviewed.is_none() && is_idle(&outcome, &summary) {
             log_path = rename_to_idle(log_path).await;
         }
@@ -951,10 +959,7 @@ impl Round<'_> {
                 .then(|| files_at_destination(&changes)),
         };
         let mut notices = self.apply_outcome(state, &outcome, ended).await;
-        if let Some(kind) = defer_at.and_then(|level| confirmable_cap(&outcome, level)) {
-            notices.clear();
-            state.notified.retain(|key| *key != kind.notified_key());
-        }
+        defer_cap_notices(state, &mut notices, &outcome, defer_at);
         state.save(env.paths, id).await?;
         send(env, notices);
 
@@ -963,6 +968,82 @@ impl Round<'_> {
             ConfirmMarker::remove(env.paths, id).await?;
         }
         Ok((mode, outcome))
+    }
+
+    /// What runs before rclone: the cleanup of links the sync no longer
+    /// shows, the floor of the one-way modes and the Drive part of the
+    /// Docs. A stop ends the round there.
+    async fn before_rclone(
+        &self,
+        mode: RoundMode,
+        started: &Zoned,
+    ) -> (Option<(Outcome, Option<String>)>, DocsOutcome) {
+        let shows_docs = self.shows_docs();
+        if !shows_docs {
+            self.docs(Phase::Cleanup, started).await;
+        }
+        if let Some(stop) = self.source_stops_the_round().await {
+            return (Some(stop), DocsOutcome::default());
+        }
+        if !shows_docs
+            || self.behavior.mode != SyncMode::Bisync
+            || matches!(mode, RoundMode::DryRun(_))
+        {
+            return (None, DocsOutcome::default());
+        }
+        let capped = mode == RoundMode::Normal;
+        let docs = self.docs(Phase::Drive { capped }, started).await;
+        let stop = docs.capped.map(|trashed| {
+            let detail = format!("{trashed} Google Docs would go to the trash.");
+            (Outcome::TooManyDeletes, Some(detail))
+        });
+        (stop, docs)
+    }
+
+    /// Ends a round that never ran rclone.
+    async fn stop(
+        &self,
+        state: &mut State,
+        outcome: &Outcome,
+        detail: Option<String>,
+        defer_at: Option<ReviewLevel>,
+    ) -> Result<(), RunError> {
+        let ended = Ended {
+            exit_code: 1,
+            alerts: Vec::new(),
+            detail,
+            finished: self.env.now().timestamp(),
+            dest_files: None,
+        };
+        let mut notices = self.apply_outcome(state, outcome, ended).await;
+        defer_cap_notices(state, &mut notices, outcome, defer_at);
+        state.save(self.env.paths, &self.pair.id).await?;
+        send(self.env, notices);
+        Ok(())
+    }
+
+    /// `upload` and `mirror_up` never bring anything from Drive, links
+    /// included.
+    fn shows_docs(&self) -> bool {
+        self.behavior.google_docs
+            && !matches!(self.behavior.mode, SyncMode::Upload | SyncMode::MirrorUp)
+    }
+
+    /// A phase that fails is skipped, and the round goes on without it.
+    async fn docs(&self, phase: Phase, now: &Zoned) -> DocsOutcome {
+        let matcher = DirMatcher::new(&self.filters.rendered);
+        let cx = gdocs::Context {
+            paths: self.env.paths,
+            rclone: self.env.rclone,
+            pair: self.pair,
+            behavior: self.behavior,
+            matcher: &matcher,
+            now,
+        };
+        gdocs::reconcile(cx, phase).await.unwrap_or_else(|err| {
+            log::warn!("{}: Google Docs: {err}", self.pair.id);
+            DocsOutcome::default()
+        })
     }
 
     fn judge(&self, exit_code: i32, lines: &[LogLine], changes: &str) -> (Outcome, RunSummary) {
@@ -997,10 +1078,9 @@ impl Round<'_> {
         } else {
             pair.remote.clone()
         };
-        let skip_gdocs = self.behavior.google_docs == GoogleDocs::Skip;
         match env
             .rclone
-            .has_files(&source, &env.paths.filters_file(&pair.id), skip_gdocs)
+            .has_files(&source, &env.paths.filters_file(&pair.id))
             .await
         {
             Ok(true) => None,

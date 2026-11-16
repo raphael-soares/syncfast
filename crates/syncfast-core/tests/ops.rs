@@ -1317,7 +1317,7 @@ async fn settings_lists_every_key_with_origin_and_default() {
     let of_defaults = bed.ops.settings(None).await.unwrap();
 
     assert_eq!(of_sync.scope, "docs");
-    assert_eq!(of_sync.settings.len(), 15);
+    assert_eq!(of_sync.settings.len(), 16);
     let described = |view: &SettingsView, key: &str| {
         let row = row(view, key);
         (row.value.clone(), row.origin, row.default.clone())
@@ -1632,7 +1632,7 @@ async fn mode_is_set_per_sync_and_refused_for_defaults_with_exit_2() {
     assert_eq!(err.exit_code(), 2);
     let listed = bed.ops.settings(None).await.unwrap();
     assert!(listed.settings.iter().all(|row| row.key != "mode"));
-    assert_eq!(listed.settings.len(), 20);
+    assert_eq!(listed.settings.len(), 21);
 }
 
 #[tokio::test]

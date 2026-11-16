@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use jiff::Zoned;
 
-use crate::behavior::{Behavior, GoogleDocs, SyncMode};
+use crate::behavior::{Behavior, SyncMode};
 use crate::bisync::{
     EXIT_CRITICAL, EXIT_USAGE, Fault, Outcome, RoundMode, USE_TRASH, bwlimit_args, dir_arg,
     failure_msgs, fault_of, log_file, stamp,
@@ -18,6 +18,7 @@ use crate::bisync_log::{
     Change, ChangeKind, FileError, LogLine, RunSummary, file_errors, renamed_from,
 };
 use crate::config::{Pair, split_remote};
+use crate::gdocs::LINK_FILTER;
 use crate::paths::Paths;
 use crate::rclone::{Rclone, RcloneError};
 use crate::versions;
@@ -106,6 +107,8 @@ pub fn oneway_args(
         verb.into(),
         source,
         destination,
+        "--filter".into(),
+        LINK_FILTER.into(),
         "--filter-from".into(),
         paths.filters_file(id).into_os_string(),
     ];
@@ -123,9 +126,7 @@ pub fn oneway_args(
     if behavior.empty_dirs {
         args.push("--create-empty-src-dirs".into());
     }
-    if behavior.google_docs == GoogleDocs::Skip {
-        args.push("--drive-skip-gdocs".into());
-    }
+    args.push("--drive-skip-gdocs".into());
     if let Some(backup) = backup_dir(pair, behavior, paths, now) {
         args.extend(["--backup-dir".into(), backup]);
     }
@@ -492,7 +493,15 @@ mod tests {
         (changes, log): (&str, &str),
         after_log: &[&str],
     ) -> Vec<String> {
-        let mut args = strings(&[verb, source, destination, "--filter-from", FILTERS]);
+        let mut args = strings(&[
+            verb,
+            source,
+            destination,
+            "--filter",
+            "- *.{gdoc,gsheet,gslides,gform,gdraw,gmap,gsite}.html*",
+            "--filter-from",
+            FILTERS,
+        ]);
         args.extend(strings(before_combined));
         args.extend(strings(&["--combined", changes]));
         args.extend(strings(&[
@@ -714,17 +723,15 @@ mod tests {
     }
 
     #[test]
-    fn empty_dirs_off_drops_the_flag_and_google_docs_on_drops_the_skip() {
+    fn empty_dirs_off_drops_the_flag() {
         let behavior = Behavior {
             empty_dirs: false,
-            google_docs: GoogleDocs::Export,
             ..behavior(SyncMode::Download)
         };
 
         let args = args(&behavior, RoundMode::Normal);
 
         assert!(!args.contains(&"--create-empty-src-dirs".to_owned()));
-        assert!(!args.contains(&"--drive-skip-gdocs".to_owned()));
     }
 
     #[test]

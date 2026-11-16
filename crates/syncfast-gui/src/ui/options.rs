@@ -22,7 +22,7 @@ const SECTIONS: [(&str, &[&str]); 8] = [
     ("Versions", &["versions", "versions_keep_days"]),
     ("Deletions", &["max_delete"]),
     ("Review", &["review"]),
-    ("Advanced", &["resync_mode", "empty_dirs"]),
+    ("Advanced", &["resync_mode", "empty_dirs", "google_docs"]),
 ];
 
 const NOTIFICATION_KEYS: [&str; 4] = [
@@ -611,6 +611,7 @@ fn label(key: &str) -> &'static str {
         "review" => "Review",
         "resync_mode" => "When a first sync finds different files",
         "empty_dirs" => "Sync empty folders",
+        "google_docs" => "Show Google Docs as links",
         "mode" => "Mode",
         "notifications.needs_action" => "Needs action",
         "notifications.conflicts" => "Conflicts",

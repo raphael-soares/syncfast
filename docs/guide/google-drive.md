@@ -48,3 +48,19 @@ Press **Remove…** and confirm. syncfast forgets the account; files on Google D
 ## Several accounts
 
 Add each account the same way; syncfast names them `drive`, `drive-2` and so on, and **Rename…** changes the name. A sync belongs to one account. You can reuse one client file for all of them.
+
+## Google Docs
+
+Docs, Sheets, Slides, Forms, Drawings, My Maps and Sites have no file to download, so syncfast shows each one as a small link file named after it: `Minutes.gdoc.html`, `Budget.gsheet.html`, `Pitch.gslides.html`. Double-click a link to open the file in the browser.
+
+In a two-way sync, what you do with a link happens to the Google file itself:
+
+- **Delete** the link, or the folder it is in, and the file goes to the Drive trash. You can bring it back from **Recently Deleted**.
+- **Rename** or **move** the link and the same file is renamed or moved on Drive. Sharing and comments stay.
+- **Copy** the link and the file is copied on Drive; the copied link then opens the new copy.
+
+Changes made on Drive come back the same way: a new, renamed, moved or deleted file gets its link added, renamed, moved or removed. If you renamed a link while the file was also renamed on Drive, Drive's name wins and your link is kept next to it as a conflict file.
+
+Deleting many Docs at once stops for review, like deleting many files. In **Download only** and **Mirror to this computer** syncs the links are read-only and nothing you do to them changes Drive. Two files with the same name in one folder get `(2)`, `(3)` and so on.
+
+To stop seeing links, turn off **Show Google Docs as links** in the sync's options; syncfast deletes the links it wrote. The links never upload to Drive as files.
