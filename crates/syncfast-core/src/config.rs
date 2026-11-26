@@ -9,7 +9,8 @@ use serde::Deserialize;
 use toml_edit::{Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table, TableLike, Value};
 
 use crate::backup::config::{
-    BACKUP_KEYS, BackupConfig, BackupValidation, Surroundings, validate_backups,
+    BACKUP_KEYS, BackupConfig, BackupValidation, Exposure, Surroundings, exposures,
+    validate_backups,
 };
 use crate::behavior::{Behavior, SyncMode};
 use crate::filters;
@@ -89,6 +90,10 @@ pub enum ConfigUpdateError {
     Load(#[from] GlobalConfigError),
     #[error(transparent)]
     Save(#[from] ConfigSaveError),
+    #[error(
+        "\"{sync}\" would hold the destination of backup \"{backup}\"; keep it excluded in that sync's filters"
+    )]
+    BackupDestinationExposed { backup: String, sync: String },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -347,14 +352,14 @@ impl Config {
     /// the rclone remote names, as for [`Config::validate`].
     #[must_use]
     pub fn validate_backups(&self, paths: &Paths, accounts: &[String]) -> BackupValidation {
-        self.validate_backups_in(paths, accounts, flatpak::app_id().is_some())
+        self.validate_backups_in(paths, accounts, flatpak::app_id().as_deref())
     }
 
     fn validate_backups_in(
         &self,
         paths: &Paths,
         accounts: &[String],
-        sandboxed: bool,
+        app_id: Option<&str>,
     ) -> BackupValidation {
         let accounts: HashSet<&str> = accounts
             .iter()
@@ -367,7 +372,7 @@ impl Config {
                 accounts: &accounts,
                 pairs: &self.pairs,
                 defaults: &self.defaults(),
-                sandboxed,
+                app_id,
             },
         )
     }
@@ -401,7 +406,7 @@ impl Config {
                 accounts: &accounts,
                 pairs: &self.pairs,
                 defaults: &self.defaults(),
-                sandboxed: flatpak::app_id().is_some(),
+                app_id: flatpak::app_id().as_deref(),
             },
         )
         .errors
@@ -689,7 +694,8 @@ impl Config {
     /// never overwrite each other; nothing is saved if it changes nothing.
     ///
     /// # Errors
-    /// The lock, the load or the save fails.
+    /// The lock, the load or the save fails, or the change would leave a
+    /// backup that was out of every sync inside one (nothing is saved).
     pub async fn edit<T>(
         paths: &Paths,
         change: impl FnOnce(&mut Self) -> T,
@@ -697,11 +703,30 @@ impl Config {
         let _lock = lock_config(paths).await?;
         let mut config = Self::load(paths).await?;
         let before = config.to_toml();
+        let exposed: HashSet<_> = config.exposures().into_iter().map(|e| e.key).collect();
+        let kept: HashSet<(String, String)> = config
+            .backups
+            .iter()
+            .map(|backup| (backup.id.clone(), backup.dest.clone()))
+            .collect();
         let outcome = change(&mut config);
         if config.to_toml() != before {
+            if let Some(new) = config.exposures().into_iter().find(|exposure| {
+                let (id, dest, _) = &exposure.key;
+                kept.contains(&(id.clone(), dest.clone())) && !exposed.contains(&exposure.key)
+            }) {
+                return Err(ConfigUpdateError::BackupDestinationExposed {
+                    backup: new.backup,
+                    sync: new.sync,
+                });
+            }
             config.save(paths).await?;
         }
         Ok(outcome)
+    }
+
+    fn exposures(&self) -> Vec<Exposure> {
+        exposures(&self.backups, &self.pairs, &self.defaults())
     }
 
     /// Writes `config.toml` atomically. A symlinked file (GNU stow) is
@@ -2240,6 +2265,85 @@ mod tests {
             std::fs::read_to_string(paths.config_file()).unwrap(),
             "version = 9\n"
         );
+    }
+
+    const EXCLUDED_BACKUP: &str = "version = 3\n\n[[pair]]\nid = \"drive\"\nname = \"Drive\"\nlocal = \"/d\"\nremote = \"gdrive:\"\nfilters = [\"- /Backups/**\"]\n\n[[backup]]\nid = \"docs\"\nname = \"Documents\"\npaths = [\"/work/docs\"]\ndest = \"gdrive:Backups/docs\"\n";
+
+    fn rules(lines: &[&str]) -> Vec<String> {
+        lines.iter().map(|line| (*line).to_owned()).collect()
+    }
+
+    #[tokio::test]
+    async fn removing_the_rule_that_excludes_a_backup_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths_in(root.path());
+        write_config_file(&paths, EXCLUDED_BACKUP);
+
+        let err = Config::edit(&paths, |config| config.set_filters("drive", &[], &[]))
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "\"Drive\" would hold the destination of backup \"Documents\"; keep it excluded in that sync's filters"
+        );
+        assert_eq!(
+            std::fs::read_to_string(paths.config_file()).unwrap(),
+            EXCLUDED_BACKUP
+        );
+    }
+
+    #[tokio::test]
+    async fn changing_other_filters_of_that_sync_is_allowed() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths_in(root.path());
+        write_config_file(&paths, EXCLUDED_BACKUP);
+
+        let found = Config::edit(&paths, |config| {
+            config.set_filters("drive", &[], &rules(&["- /Backups/**", "- *.tmp"]))
+        })
+        .await
+        .unwrap();
+
+        assert!(found);
+    }
+
+    #[tokio::test]
+    async fn a_new_sync_around_a_backup_destination_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths_in(root.path());
+        let text = EXCLUDED_BACKUP.replace("remote = \"gdrive:\"", "remote = \"gdrive:Other\"");
+        write_config_file(&paths, &text);
+
+        let err = Config::edit(&paths, |config| {
+            let mut pair = sample_pair("b");
+            pair.name = "Everything".into();
+            pair.remote = "gdrive:".into();
+            config.add_pair(pair)
+        })
+        .await
+        .unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "\"Everything\" would hold the destination of backup \"Documents\"; keep it excluded in that sync's filters"
+        );
+    }
+
+    #[tokio::test]
+    async fn renaming_a_backup_already_inside_a_sync_is_allowed() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths_in(root.path());
+        let text = EXCLUDED_BACKUP.replace("filters = [\"- /Backups/**\"]\n", "");
+        write_config_file(&paths, &text);
+        let mut renamed = Config::load(&paths).await.unwrap().backups()[0].clone();
+        renamed.name = "Docs".into();
+
+        let found = Config::edit(&paths, |config| config.replace_backup(&renamed))
+            .await
+            .unwrap();
+
+        assert!(found);
     }
 
     #[tokio::test]

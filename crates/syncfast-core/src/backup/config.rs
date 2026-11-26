@@ -9,7 +9,8 @@ use serde::{Deserialize, Deserializer};
 use super::destination::{Destination, DestinationError};
 use crate::behavior::{Bandwidth, Behavior};
 use crate::config::{
-    Pair, expand_tilde, lexical_clean, occupied_remotes, remotes_overlap, resolve, valid_id,
+    Pair, expand_tilde, lexical_clean, occupied_remotes, remote_within, remotes_overlap, resolve,
+    valid_id,
 };
 use crate::filters;
 use crate::paths::Paths;
@@ -475,14 +476,128 @@ fn place(backup: &BackupConfig) -> Option<Place> {
     }
 }
 
-fn overlap_with_a_sync(place: &Place, pairs: &[(&Pair, Vec<String>, PathBuf)]) -> Option<String> {
-    pairs.iter().find_map(|(pair, occupied, local)| {
-        let overlaps = match place {
-            Place::Account(remote) => occupied.iter().any(|taken| remotes_overlap(remote, taken)),
-            Place::Local(folder) => folder.starts_with(local) || local.starts_with(folder),
-        };
-        overlaps.then(|| format!("backup destination overlaps \"{}\"", pair.name))
-    })
+/// A sync as the destination checks see it: the remotes it holds, its
+/// resolved local folder and its rendered filters.
+struct SyncSpot<'a> {
+    pair: &'a Pair,
+    occupied: Vec<String>,
+    local: PathBuf,
+    rendered: String,
+}
+
+impl<'a> SyncSpot<'a> {
+    fn of(pair: &'a Pair, defaults: &Behavior) -> Self {
+        let behavior = Behavior::for_pair(defaults, pair);
+        Self {
+            pair,
+            occupied: occupied_remotes(pair, &behavior),
+            local: resolve(&pair.local),
+            rendered: filters::render(pair, &[]),
+        }
+    }
+}
+
+/// The path of `remote` below `root` when it is strictly inside it.
+fn below_remote(remote: &str, root: &str) -> Option<PathBuf> {
+    if !remote_within(remote, root) {
+        return None;
+    }
+    let segments = |text: &str| -> Vec<String> {
+        text.split_once(':')
+            .map(|(_, path)| {
+                path.split('/')
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let rel: PathBuf = segments(remote)
+        .into_iter()
+        .skip(segments(root).len())
+        .collect();
+    (!rel.as_os_str().is_empty()).then_some(rel)
+}
+
+/// Why the destination may not sit where it is relative to `sync`, or
+/// `None`. A destination strictly inside the sync is fine when the sync's
+/// filters exclude it.
+fn unexcluded_overlap(place: &Place, sync: &SyncSpot<'_>) -> Option<String> {
+    let overlaps = || {
+        Some(format!(
+            "backup destination overlaps \"{}\"",
+            sync.pair.name
+        ))
+    };
+    let rel = match place {
+        Place::Account(remote) => {
+            if sync.occupied[1..]
+                .iter()
+                .any(|taken| remotes_overlap(remote, taken))
+            {
+                return overlaps();
+            }
+            if !remotes_overlap(remote, &sync.pair.remote) {
+                return None;
+            }
+            below_remote(remote, &sync.pair.remote)
+        }
+        Place::Local(folder) => {
+            if !(folder.starts_with(&sync.local) || sync.local.starts_with(folder)) {
+                return None;
+            }
+            folder
+                .strip_prefix(&sync.local)
+                .ok()
+                .filter(|rel| !rel.as_os_str().is_empty())
+                .map(Path::to_path_buf)
+        }
+    };
+    match rel {
+        None => overlaps(),
+        Some(rel) if filters::subtree_excluded(&sync.rendered, &rel) => None,
+        Some(rel) => Some(format!(
+            "backup destination is inside \"{}\"; exclude it in that sync's filters (- /{}/**) or pick another folder",
+            sync.pair.name,
+            rel.display()
+        )),
+    }
+}
+
+/// A backup whose destination sits in a sync that does not exclude it.
+/// `key` (backup id, destination, sync id) identifies it; the names are for
+/// the message.
+#[derive(Debug, Clone)]
+pub(crate) struct Exposure {
+    pub key: (String, String, String),
+    pub backup: String,
+    pub sync: String,
+}
+
+pub(crate) fn exposures(
+    backups: &[BackupConfig],
+    pairs: &[Pair],
+    defaults: &Behavior,
+) -> Vec<Exposure> {
+    let syncs: Vec<SyncSpot<'_>> = pairs
+        .iter()
+        .map(|pair| SyncSpot::of(pair, defaults))
+        .collect();
+    backups
+        .iter()
+        .filter_map(|backup| place(backup).map(|own| (backup, own)))
+        .flat_map(|(backup, own)| {
+            syncs
+                .iter()
+                .filter(|sync| unexcluded_overlap(&own, sync).is_some())
+                .map(|sync| Exposure {
+                    key: (backup.id.clone(), backup.dest.clone(), sync.pair.id.clone()),
+                    backup: backup.name.clone(),
+                    sync: sync.pair.name.clone(),
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 fn places_overlap(a: &Place, b: &Place) -> bool {
@@ -506,8 +621,8 @@ pub(crate) struct Surroundings<'a> {
     pub accounts: &'a HashSet<&'a str>,
     pub pairs: &'a [Pair],
     pub defaults: &'a Behavior,
-    /// Running inside the Flatpak sandbox.
-    pub sandboxed: bool,
+    /// The Flatpak app id when running inside its sandbox.
+    pub app_id: Option<&'a str>,
 }
 
 /// Checks every backup in the order of the spec's table: the first problem
@@ -530,17 +645,10 @@ pub(crate) fn validate_backups(
         .zip(&candidates)
         .map(|(backup, &ok)| if ok { place(backup) } else { None })
         .collect();
-    let syncs: Vec<(&Pair, Vec<String>, PathBuf)> = around
+    let syncs: Vec<SyncSpot<'_>> = around
         .pairs
         .iter()
-        .map(|pair| {
-            let behavior = Behavior::for_pair(around.defaults, pair);
-            (
-                pair,
-                occupied_remotes(pair, &behavior),
-                resolve(&pair.local),
-            )
-        })
+        .map(|pair| SyncSpot::of(pair, around.defaults))
         .collect();
     for (i, backup) in backups.iter().enumerate() {
         let Some(own) = places[i].as_ref().filter(|_| candidates[i]) else {
@@ -560,6 +668,7 @@ pub(crate) fn validate_backups(
                     .map(|(_, other)| format!("backup destination is used by \"{}\"", other.name))
             })
             .or_else(|| sandbox_problem(backup, around))
+            .or_else(|| hidden_folder_problem(backup, around))
             .or_else(|| backup.behavior_problem());
     }
     let mut valid = Vec::new();
@@ -582,9 +691,9 @@ pub(crate) fn validate_backups(
 fn problem_after_overlap(
     backup: &BackupConfig,
     own: &Place,
-    syncs: &[(&Pair, Vec<String>, PathBuf)],
+    syncs: &[SyncSpot<'_>],
 ) -> Option<String> {
-    if let Some(message) = overlap_with_a_sync(own, syncs) {
+    if let Some(message) = syncs.iter().find_map(|sync| unexcluded_overlap(own, sync)) {
         return Some(message);
     }
     if let Place::Local(dest) = own
@@ -599,12 +708,36 @@ fn problem_after_overlap(
 }
 
 fn sandbox_problem(backup: &BackupConfig, around: &Surroundings<'_>) -> Option<String> {
-    (around.sandboxed
+    (around.app_id.is_some()
         && matches!(backup.destination(), Ok(Destination::Local(_)))
         && !reachable_from_the_sandbox(&backup.dest, &around.paths.home))
     .then(|| {
         "backup destination is not reachable from the sandbox; use a folder under your home folder, /run/media or /mnt"
             .to_owned()
+    })
+}
+
+/// A backed-up folder the sandbox cannot see: missing here, and either
+/// another app's data or outside what the sandbox mounts.
+fn hidden_folder_problem(backup: &BackupConfig, around: &Surroundings<'_>) -> Option<String> {
+    let app_id = around.app_id?;
+    let apps = around.paths.home.join(".var/app");
+    backup.paths.iter().find_map(|path| {
+        let folder = resolve(path);
+        let other_app = folder
+            .strip_prefix(&apps)
+            .ok()
+            .and_then(|rest| rest.components().next())
+            .is_some_and(|id| id.as_os_str() != app_id);
+        let hidden = other_app
+            || !reachable_from_the_sandbox(&folder.to_string_lossy(), &around.paths.home);
+        (hidden && !folder.exists()).then(|| {
+            format!(
+                "\"{}\" is not visible inside the Flatpak sandbox. Grant read access with:\nflatpak override --user --filesystem={}:ro {app_id}",
+                folder.display(),
+                folder.display()
+            )
+        })
     })
 }
 
@@ -636,6 +769,8 @@ mod tests {
         Config::parse(&text, Path::new(HOME)).unwrap()
     }
 
+    const APP: &str = "io.github.raphael_soares.syncfast";
+
     fn check_in(config: &Config, sandboxed: bool) -> BackupValidation {
         let accounts: HashSet<&str> = ["gdrive", "work"].into_iter().collect();
         validate_backups(
@@ -645,7 +780,7 @@ mod tests {
                 accounts: &accounts,
                 pairs: config.pairs(),
                 defaults: &config.defaults(),
-                sandboxed,
+                app_id: sandboxed.then_some(APP),
             },
         )
     }
@@ -925,14 +1060,17 @@ mod tests {
         ]);
         let other_account = message_of(&[sync_block("/n", "work:Backups"), backup_block("")]);
 
-        assert_eq!(inside, "backup destination overlaps \"Notes\"");
+        assert_eq!(
+            inside,
+            "backup destination is inside \"Notes\"; exclude it in that sync's filters (- /docs/**) or pick another folder"
+        );
         assert_eq!(around, "backup destination overlaps \"Notes\"");
         assert_eq!(other_account, "");
     }
 
     #[test]
     fn the_versions_folder_of_a_mirror_up_sync_counts_as_the_sync() {
-        let sync = "[[pair]]\nid = \"notes\"\nname = \"Notes\"\nlocal = \"/n\"\nremote = \"gdrive:Notes\"\nmode = \"mirror_up\"\nversions = true\n";
+        let sync = "[[pair]]\nid = \"notes\"\nname = \"Notes\"\nlocal = \"/n\"\nremote = \"gdrive:Notes\"\nmode = \"mirror_up\"\nversions = true\nfilters = [\"- /.syncfast-versions/**\"]\n";
         let backup = backup_block("").replace("gdrive:Backups/docs", "gdrive:.syncfast-versions");
 
         let message = message_of(&[sync.to_owned(), backup]);
@@ -947,12 +1085,69 @@ mod tests {
 
         assert_eq!(
             message_of(&[sync_block("/n", "work:Notes"), inside]),
-            "backup destination overlaps \"Notes\""
+            "backup destination is inside \"Notes\"; exclude it in that sync's filters (- /backups/**) or pick another folder"
         );
         assert_eq!(
             message_of(&[sync_block("/n", "work:Notes"), around]),
             "backup destination overlaps \"Notes\""
         );
+    }
+
+    fn excluding(sync: &str, rules: &[&str]) -> String {
+        let quoted: Vec<String> = rules.iter().map(|rule| format!("\"{rule}\"")).collect();
+        format!("{sync}filters = [{}]\n", quoted.join(", "))
+    }
+
+    #[test]
+    fn a_destination_the_sync_excludes_is_accepted() {
+        let sync = excluding(&sync_block("/n", "gdrive:"), &["- /Backups/**"]);
+
+        assert_eq!(message_of(&[sync, backup_block("")]), "");
+    }
+
+    #[test]
+    fn the_owners_drive_sync_accepts_a_backup_under_backups() {
+        let sync = excluding(
+            &sync_block("/d", "gdrive:").replace("Notes", "Drive"),
+            &[
+                "- /Backups/**",
+                "- /Personal/Wallpaper/wallz/**",
+                "- /Personal/Wallpaper/forest-4.jpg",
+                "- *.mkv",
+                "- *.iso",
+                "- *.nsp",
+                "- *.xci",
+                "- *.nsz",
+            ],
+        ) + "presets = [\"system_junk\", \"dev_dirs\", \"git_repos\"]\n";
+
+        assert_eq!(message_of(&[sync, backup_block("")]), "");
+    }
+
+    #[test]
+    fn a_destination_inside_a_sync_that_does_not_exclude_it_names_the_fix() {
+        assert_eq!(
+            message_of(&[sync_block("/n", "gdrive:"), backup_block("")]),
+            "backup destination is inside \"Notes\"; exclude it in that sync's filters (- /Backups/docs/**) or pick another folder"
+        );
+    }
+
+    #[test]
+    fn a_destination_on_the_sync_root_is_refused_even_when_excluded() {
+        let sync = excluding(&sync_block("/n", "gdrive:Backups/docs"), &["- /x/**"]);
+
+        assert_eq!(
+            message_of(&[sync, backup_block("")]),
+            "backup destination overlaps \"Notes\""
+        );
+    }
+
+    #[test]
+    fn a_local_destination_the_sync_excludes_is_accepted() {
+        let sync = excluding(&sync_block("/n", "work:Notes"), &["- /backups/**"]);
+        let inside = backup_block("").replace("gdrive:Backups/docs", "/n/backups");
+
+        assert_eq!(message_of(&[sync, inside]), "");
     }
 
     #[test]
@@ -1013,7 +1208,9 @@ mod tests {
     #[test]
     fn inside_the_sandbox_a_local_destination_must_be_where_the_sandbox_can_reach() {
         let reachable = |dest: &str| {
-            let block = backup_block("").replace("gdrive:Backups/docs", dest);
+            let block = backup_block("")
+                .replace("gdrive:Backups/docs", dest)
+                .replace("/work/docs", "/mnt/docs");
             check_in(&parse(&[block]), true).errors
         };
 
@@ -1043,11 +1240,62 @@ mod tests {
 
     #[test]
     fn an_account_destination_is_not_limited_by_the_sandbox() {
-        assert!(
-            check_in(&parse(&[backup_block("")]), true)
-                .errors
-                .is_empty()
+        let block = backup_block("").replace("/work/docs", "/mnt/docs");
+
+        assert!(check_in(&parse(&[block]), true).errors.is_empty());
+    }
+
+    fn sandboxed_message(folder: &str) -> String {
+        let block = backup_block("").replace("/work/docs", folder);
+        check_in(&parse(&[block]), true)
+            .errors
+            .first()
+            .map(|err| err.message.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_folder_of_another_flatpak_names_the_override() {
+        let folder = "/home/ada/.var/app/org.example.Game/saves";
+
+        assert_eq!(
+            sandboxed_message(folder),
+            format!(
+                "\"{folder}\" is not visible inside the Flatpak sandbox. Grant read access with:\nflatpak override --user --filesystem={folder}:ro {APP}"
+            )
         );
+    }
+
+    #[test]
+    fn the_apps_own_folder_is_not_flagged() {
+        assert_eq!(
+            sandboxed_message("/home/ada/.var/app/io.github.raphael_soares.syncfast/x"),
+            ""
+        );
+    }
+
+    #[test]
+    fn outside_the_sandbox_roots_names_the_override() {
+        assert_eq!(
+            sandboxed_message("/srv/data"),
+            format!(
+                "\"/srv/data\" is not visible inside the Flatpak sandbox. Grant read access with:\nflatpak override --user --filesystem=/srv/data:ro {APP}"
+            )
+        );
+    }
+
+    #[test]
+    fn unsandboxed_a_missing_folder_keeps_todays_behavior() {
+        let block = backup_block("").replace("/work/docs", "/srv/data");
+
+        assert!(check_in(&parse(&[block]), false).errors.is_empty());
+    }
+
+    #[test]
+    fn an_existing_folder_is_not_flagged() {
+        let existing = tempfile::tempdir().unwrap();
+
+        assert_eq!(sandboxed_message(existing.path().to_str().unwrap()), "");
     }
 
     #[test]

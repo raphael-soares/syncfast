@@ -98,6 +98,7 @@ impl From<ConfigUpdateError> for OpError {
         match err {
             ConfigUpdateError::Load(err) => err.into(),
             ConfigUpdateError::Save(err) => err.into(),
+            ConfigUpdateError::BackupDestinationExposed { .. } => Self::Invalid(err.to_string()),
         }
     }
 }

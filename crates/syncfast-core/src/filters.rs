@@ -366,6 +366,27 @@ impl DirMatcher {
     }
 }
 
+/// Whether the rules provably exclude everything under `rel` (relative to
+/// the pair's root): a directory rule, or a `/**` rule, matches `rel` or a
+/// folder above it before the first `+ ` rule. rclone stops at the first
+/// match, so rules after an include cannot be trusted and are not read.
+#[must_use]
+pub fn subtree_excluded(rendered: &str, rel: &Path) -> bool {
+    let dirs: String = rendered
+        .lines()
+        .take_while(|line| !line.starts_with("+ "))
+        .filter_map(|line| {
+            let rule = line.strip_prefix("- ")?;
+            match rule.strip_suffix("/**") {
+                Some(dir) => Some(format!("- {dir}/")),
+                None => rule.ends_with('/').then(|| line.to_owned()),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    DirMatcher::new(&dirs).is_excluded(rel)
+}
+
 /// How many top-level folders [`summarize_exclusions`] lists.
 pub const TOP_FOLDERS: usize = 20;
 
@@ -435,6 +456,57 @@ mod tests {
 
     fn matcher(rules: &[&str]) -> DirMatcher {
         DirMatcher::new(&rules.join("\n"))
+    }
+
+    fn covered(rules: &[&str], rel: &str) -> bool {
+        subtree_excluded(&rules.join("\n"), Path::new(rel))
+    }
+
+    #[test]
+    fn subtree_excluded_by_an_anchored_double_star_rule() {
+        assert!(covered(&["- /Backups/**"], "Backups/minecraft"));
+        assert!(covered(&["- /Backups/**"], "Backups"));
+    }
+
+    #[test]
+    fn subtree_excluded_by_a_dir_rule_on_an_ancestor() {
+        assert!(covered(&["- /Backups/"], "Backups/a/b"));
+    }
+
+    #[test]
+    fn subtree_excluded_by_glob_rules() {
+        assert!(covered(&["- Back*/"], "Backups/minecraft"));
+        assert!(covered(&["- **/Backups/**"], "Backups/minecraft"));
+    }
+
+    #[test]
+    fn an_unanchored_double_star_rule_covers_any_depth() {
+        assert!(covered(&["- Backups/**"], "x/Backups/y"));
+    }
+
+    #[test]
+    fn a_rule_inside_the_destination_proves_nothing() {
+        assert!(!covered(&["- node_modules/"], "Backups"));
+    }
+
+    #[test]
+    fn a_file_rule_proves_nothing() {
+        assert!(!covered(&["- *.mkv"], "Backups"));
+        assert!(!covered(&["- /Backups/*"], "Backups/x"));
+    }
+
+    #[test]
+    fn an_include_rule_before_the_exclusion_makes_it_unprovable() {
+        assert!(!covered(
+            &["+ /Backups/keep/**", "- /Backups/**"],
+            "Backups"
+        ));
+    }
+
+    #[test]
+    fn an_include_rule_after_the_exclusion_cannot_reach_inside_it() {
+        assert!(covered(&["- /Backups/**", "+ /Backups/keep/**"], "Backups"));
+        assert!(covered(&["- /Backups/**", "+ *.txt"], "Backups"));
     }
 
     fn excluded(matcher: &DirMatcher, dir: &str) -> bool {
