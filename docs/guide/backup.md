@@ -43,11 +43,11 @@ An agent cannot lower the safety of a backup: it cannot reduce any **Keep** valu
 
 The destination holds one backup only. It must be new or empty, and:
 
-- outside the remote folder and the local folder of every sync,
+- outside the remote folder and the local folder of every sync, unless that sync's filters exclude it (for example `- /Backups/**` in a sync of the whole drive),
 - not inside a folder you back up (for a folder on this computer),
 - not used or contained by another backup.
 
-The sheet shows the problem when a folder breaks one of these. Choose a folder that only this backup uses. With the Flatpak, a folder on this computer must be under your home folder, `/run/media` or `/mnt`.
+The sheet shows the problem when a folder breaks one of these, and for a destination inside a sync it names the rule to add. Choose a folder that only this backup uses. While a backup lives inside a sync, syncfast refuses to remove the rule that excludes it. With the Flatpak, a folder on this computer must be under your home folder, `/run/media` or `/mnt`; a folder you back up that the sandbox cannot see (another Flatpak's data under `~/.var/app`, or outside those places) shows the `flatpak override` command that lets syncfast read it.
 
 An external disk that is not plugged in shows **Destination not available**. Backups resume when it is back. If it stays away for much longer than the schedule (twice the period, at least 48 hours), the backup needs attention.
 
