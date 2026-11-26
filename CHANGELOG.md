@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.0](https://github.com/raphael-soares/syncfast/compare/v0.24.0...v0.25.0) (2026-11-26)
+
+
+### Features
+
+* **backup:** aceitar destino dentro de sync que o exclui ([#130](https://github.com/raphael-soares/syncfast/issues/130)) ([ca6bb48](https://github.com/raphael-soares/syncfast/commit/ca6bb48f01486c54791fac0b10ac461b6a961500))
+
 ## [0.24.0](https://github.com/raphael-soares/syncfast/compare/v0.23.0...v0.24.0) (2026-11-16)
 
 
